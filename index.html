@@ -1,0 +1,1743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>SIGIL — a desire engine</title>
+<meta name="description" content="Reduce a desire to its consonants; hear and watch it become a sigil." />
+<!--
+  ╔══════════════════════════════════════════════════════════════════════════╗
+  ║  SIGIL — a desire engine                                                 ║
+  ║                                                                          ║
+  ║  A single-file, serverless, dependency-free generative audio/visual      ║
+  ║  instrument. A written desire is reduced (Spare / Morrison method) to a  ║
+  ║  string of non-repeating consonants. That string is hashed (SHA-256)     ║
+  ║  and becomes:                                                            ║
+  ║     • a geometric sigil: a path across a 21-letter consonant wheel       ║
+  ║     • a song: melody, harmony, bass, rhythm and form derived from        ║
+  ║       that same geometry                                                 ║
+  ║  The drawing is clocked by the audio hardware, so line and note are      ║
+  ║  one gesture.                                                            ║
+  ║                                                                          ║
+  ║  Source map                                                              ║
+  ║     §0  Utilities             §5  Composer (geometry → song)             ║
+  ║     §1  Cryptography          §6  Audio engine (Web Audio synthesis)     ║
+  ║     §2  Reduction             §7  Renderer (Canvas 2D)                   ║
+  ║     §3  Sigil geometry        §8  Application / UI / ritual flow         ║
+  ║     §4  Music theory                                                     ║
+  ╚══════════════════════════════════════════════════════════════════════════╝
+-->
+<style>
+  /* ─────────────────────────────────────────────────────────────────────
+     VISUAL LANGUAGE
+     • One near-black ground, one "ink" colour, one "ember" accent.
+       These are CSS variables that JS rewrites per sigil, so the whole
+       interface takes on the palette of each desire.
+     • Old-style serif with generous tracking evokes grimoires and
+       engraved seals. Only system fonts are used, so nothing is fetched
+       from the network.
+     • The UI is quiet by default and dissolves completely in Charge mode.
+     ───────────────────────────────────────────────────────────────────── */
+  :root {
+    --bg: #0a0807;
+    --line: 236, 206, 140;   /* rgb triplet so we can vary alpha */
+    --accent: 255, 150, 80;
+    --serif: "Cormorant Garamond", "EB Garamond", "Iowan Old Style", "Palatino Linotype",
+             Palatino, "Book Antiqua", Georgia, serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: rgb(var(--line));
+    font-family: var(--serif);
+    transition: background-color 2.5s ease;
+    -webkit-font-smoothing: antialiased;
+  }
+  canvas#stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  #ui { position: fixed; inset: 0; pointer-events: none; }
+  #ui button, #ui input, #hud, #about, #invoke, header#top { pointer-events: auto; }
+
+  /* Header */
+  header#top {
+    position: absolute; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 20px 26px; transition: opacity 1.2s;
+  }
+  .brand { font-size: 12px; letter-spacing: .55em; opacity: .8; }
+  .brand .sub { letter-spacing: .2em; opacity: .45; margin-left: 1.1em; font-style: italic; text-transform: lowercase; }
+
+  /* Buttons: hairline, small caps, warm on hover */
+  button {
+    font-family: inherit; color: rgb(var(--line)); background: transparent;
+    border: 1px solid rgba(var(--line), .2); border-radius: 1px;
+    padding: 9px 15px; font-size: 10.5px; letter-spacing: .26em; text-transform: uppercase;
+    cursor: pointer; transition: color .35s, border-color .35s, box-shadow .35s, opacity .35s;
+  }
+  button:hover, button:focus-visible {
+    outline: none; border-color: rgba(var(--accent), .8); color: rgb(var(--accent));
+    box-shadow: 0 0 20px rgba(var(--accent), .16);
+  }
+  button.ghost { border-color: transparent; }
+  button.rec-on { color: #ff5a4a; border-color: rgba(255, 90, 74, .7); animation: blink 1.4s infinite; }
+  @keyframes blink { 50% { opacity: .45; } }
+
+  /* Invocation (the input screen) */
+  #invoke {
+    position: absolute; left: 50%; bottom: 8vh; transform: translateX(-50%);
+    width: min(720px, 90vw); text-align: center;
+    transition: opacity 1.1s ease, transform 1.1s ease;
+    animation: arrive 2.4s ease both .3s;
+  }
+  @keyframes arrive { from { opacity: 0; transform: translate(-50%, 14px); } }
+  #invoke.away { opacity: 0; transform: translate(-50%, 18px); pointer-events: none; }
+  #invoke label { display: block; font-style: italic; opacity: .62; font-size: 15.5px; margin-bottom: 12px; letter-spacing: .03em; }
+  .field { display: flex; gap: 14px; align-items: flex-end; }
+  #desire {
+    flex: 1; min-width: 0; background: transparent; border: 0;
+    border-bottom: 1px solid rgba(var(--line), .28);
+    color: rgb(var(--line)); font-family: inherit; font-size: clamp(18px, 2.5vw, 25px);
+    padding: 8px 4px; text-align: center; outline: none; caret-color: rgb(var(--accent));
+    transition: border-color .4s; border-radius: 0;
+  }
+  #desire:focus { border-bottom-color: rgba(var(--accent), .75); }
+  #desire::placeholder { color: rgba(var(--line), .24); font-style: italic; }
+  .hint { font-size: 12.5px; opacity: .36; letter-spacing: .05em; margin: 16px 0 0; line-height: 1.6; }
+  #err { color: rgb(var(--accent)); font-style: italic; min-height: 1.3em; font-size: 14px; margin: 8px 0 0; transition: opacity .4s; }
+
+  /* Reduction overlay (the striking-out of letters) */
+  #reduction {
+    position: absolute; left: 50%; top: 43%; transform: translate(-50%, -50%);
+    width: min(920px, 92vw); text-align: center; pointer-events: none;
+    opacity: 0; transition: opacity .8s ease;
+  }
+  #reduction.show { opacity: 1; }
+  #reduction .line { font-size: clamp(17px, 2.8vw, 32px); letter-spacing: .16em; line-height: 1.7; transition: opacity .6s, filter .6s; }
+  #reduction .fade { opacity: 0; filter: blur(6px); }
+  #reduction .ch { display: inline-block; position: relative; transition: opacity .5s, color .5s, transform .5s, text-shadow .5s; }
+  #reduction .ch.struck { opacity: .13; }
+  #reduction .ch.struck::after {
+    content: ''; position: absolute; left: -10%; right: -10%; top: 54%; height: 1px;
+    background: rgb(var(--accent)); transform: scaleX(0); transform-origin: left;
+    animation: strike .3s forwards;
+  }
+  #reduction .ch[data-fate="space"]::after { display: none; }
+  @keyframes strike { to { transform: scaleX(1); } }
+  #reduction .ch.lit { color: rgb(var(--accent)); text-shadow: 0 0 18px rgba(var(--accent), .85); transform: translateY(-5px); }
+  #reduction .cap { margin-top: 1.4em; font-style: italic; font-size: 14px; opacity: .5; letter-spacing: .08em; transition: opacity .6s; min-height: 1.4em; }
+  #reduction .final { font-size: clamp(30px, 6vw, 66px); letter-spacing: .48em; padding-left: .48em; }
+  #reduction .final span { opacity: 0; display: inline-block; animation: rise 1s forwards; text-shadow: 0 0 24px rgba(var(--accent), .5); }
+  @keyframes rise { from { opacity: 0; transform: translateY(12px); filter: blur(8px); } to { opacity: 1; transform: none; filter: blur(0); } }
+
+  /* HUD (performance screen) */
+  #hud {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 0 26px 20px; display: grid; grid-template-columns: 1fr auto 1fr;
+    align-items: end; gap: 18px;
+    opacity: 0; transform: translateY(14px); transition: opacity 1.4s ease, transform 1.4s ease;
+    pointer-events: none;
+  }
+  #hud.on { opacity: 1; transform: none; pointer-events: auto; }
+  #secInfo .roman { color: rgb(var(--accent)); font-size: 12px; letter-spacing: .4em; display: block; margin-bottom: 2px; }
+  #secInfo .name { font-size: 26px; font-style: italic; display: block; transition: opacity .6s; }
+  #secInfo .desc { font-size: 12.5px; opacity: .5; letter-spacing: .06em; display: block; margin-top: 3px; }
+  #center { text-align: center; }
+  #letters { font-size: 21px; letter-spacing: .42em; padding-left: .42em; margin-bottom: 10px; white-space: nowrap; }
+  #letters span { transition: color .18s, text-shadow .18s, opacity .3s; opacity: .55; }
+  #letters span.cur { color: rgb(var(--accent)); text-shadow: 0 0 14px rgba(var(--accent), .9); opacity: 1; }
+  #progress { position: relative; width: min(380px, 70vw); height: 16px; margin: 0 auto; cursor: pointer; }
+  #progress .track { position: absolute; left: 0; right: 0; top: 7px; height: 1px; background: rgba(var(--line), .16); }
+  #progress .fill { position: absolute; left: 0; right: 0; top: 7px; height: 1px; background: rgba(var(--accent), .85); transform-origin: left; transform: scaleX(0); }
+  #progress .mark { position: absolute; top: 4px; width: 1px; height: 7px; background: rgba(var(--line), .35); }
+  #right { text-align: right; }
+  #meta { font-size: 12px; opacity: .5; letter-spacing: .08em; margin-bottom: 10px; font-style: italic; }
+  #controls { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+
+  /* Charge mode: everything but the sigil fades */
+  body.charging header#top, body.charging #hud { opacity: 0 !important; pointer-events: none !important; }
+  #chargeHint {
+    position: absolute; left: 0; right: 0; bottom: 4vh; text-align: center;
+    font-style: italic; letter-spacing: .2em; font-size: 12px; opacity: 0; transition: opacity 3s;
+    pointer-events: none;
+  }
+  body.charging #chargeHint { opacity: .32; }
+  body.charging { cursor: none; }
+
+  /* Toast / oracle text */
+  #toast {
+    position: absolute; left: 50%; top: 43%; transform: translate(-50%, -50%);
+    font-size: clamp(22px, 3.4vw, 38px); font-style: italic; letter-spacing: .08em;
+    opacity: 0; transition: opacity 1.2s ease; pointer-events: none; text-align: center; white-space: nowrap;
+  }
+  #toast.small { top: auto; bottom: 15vh; font-size: 15px; letter-spacing: .12em; }
+  #toast.show { opacity: .85; }
+
+  /* About modal */
+  #about {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    background: rgba(0, 0, 0, .62); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    opacity: 0; pointer-events: none !important; transition: opacity .6s;
+  }
+  #about.open { opacity: 1; pointer-events: auto !important; }
+  #about .panel {
+    width: min(660px, 90vw); max-height: 84vh; overflow: auto; padding: 34px 38px;
+    border: 1px solid rgba(var(--line), .18); background: rgba(0, 0, 0, .45);
+    line-height: 1.65; font-size: 16px;
+  }
+  #about h2 { font-weight: normal; font-style: italic; font-size: 28px; margin: 0 0 14px; }
+  #about h3 { font-weight: normal; letter-spacing: .3em; text-transform: uppercase; font-size: 11px; color: rgb(var(--accent)); margin: 22px 0 6px; }
+  #about p { margin: 0 0 10px; opacity: .82; }
+  #about table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  #about td { padding: 5px 8px 5px 0; border-bottom: 1px solid rgba(var(--line), .08); vertical-align: top; }
+  #about td:first-child { font-style: italic; opacity: .65; white-space: nowrap; padding-right: 18px; }
+  #about .close { margin-top: 18px; }
+
+  @media (max-width: 780px) {
+    #hud { grid-template-columns: 1fr; text-align: center; gap: 12px; padding-bottom: 14px; }
+    #right { text-align: center; }
+    #controls { justify-content: center; }
+    #secInfo .name { font-size: 21px; }
+    .brand .sub { display: none; }
+    #letters { font-size: 17px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="Animated sigil"></canvas>
+
+<div id="ui">
+  <header id="top">
+    <div class="brand">✶ SIGIL<span class="sub">desire · reduction · song</span></div>
+    <button id="aboutBtn" class="ghost">The Method</button>
+  </header>
+
+  <section id="invoke">
+    <label for="desire" id="desireLabel">State your desire in the present tense, as though it were already so.</label>
+    <div class="field">
+      <input id="desire" autocomplete="off" spellcheck="false" maxlength="180" placeholder="It is my will to…" />
+      <button id="castBtn">Cast</button>
+    </div>
+    <p class="hint">Vowels are struck out. Repeated letters are struck out.<br>What remains becomes line, and the line becomes song.</p>
+    <p id="err"></p>
+  </section>
+
+  <div id="reduction" aria-live="polite"></div>
+
+  <section id="hud" aria-label="Performance controls">
+    <div id="secInfo"><span class="roman"></span><span class="name"></span><span class="desc"></span></div>
+    <div id="center">
+      <div id="letters"></div>
+      <div id="progress" title="Jump to a section">
+        <div class="track"></div><div class="fill"></div>
+      </div>
+    </div>
+    <div id="right">
+      <div id="meta"></div>
+      <div id="controls">
+        <button data-act="pause" title="Space">Pause</button>
+        <button data-act="charge" title="C — fullscreen gnosis mode">Charge</button>
+        <button data-act="seal" title="Download the sigil as a PNG seal">Seal</button>
+        <button data-act="record" title="Record video + audio (WebM)">Record</button>
+        <button data-act="share" title="Copy a link containing only the consonants">Share</button>
+        <button data-act="new" title="Return to the invocation">New</button>
+        <button data-act="forget" title="Burn the sigil and forget the desire">Forget</button>
+      </div>
+    </div>
+  </section>
+
+  <div id="chargeHint">breathe with the outer circle · let the sigil enter you · esc to return</div>
+  <div id="toast"></div>
+
+  <div id="about" role="dialog" aria-modal="true">
+    <div class="panel">
+      <h2>The Method</h2>
+      <p>In the sigil magic of Austin Osman Spare, later popularised by Grant Morrison, a desire is written out,
+         its vowels and repeated letters are struck away, and the remaining letters are woven into a glyph.
+         The glyph is then <em>charged</em>, by gazing at it in a state of absorbed attention, and then
+         <em>forgotten</em>, so that the conscious mind stops worrying at it.</p>
+      <p>This engine performs that rite in sound. Your reduced consonants are hashed with SHA-256. The hash arranges
+         the twenty-one consonants around a wheel, and your letters trace a path across it. That path is then read as a score.</p>
+      <h3>How the line becomes music</h3>
+      <table>
+        <tr><td>Angle on the wheel</td><td>Scale degree. The wheel holds three octaves of seven positions, so the faint triangle marks the tonic.</td></tr>
+        <tr><td>Ring (inner / middle / outer)</td><td>Octave register</td></tr>
+        <tr><td>Length of a stroke</td><td>How long the note is held</td></tr>
+        <tr><td>Curved vs straight stroke</td><td>Legato glide vs detached note</td></tr>
+        <tr><td>Rotating the sigil</td><td>Transposing the melody</td></tr>
+        <tr><td>Mirroring the sigil</td><td>Inverting the melody</td></tr>
+        <tr><td>Tracing it backwards</td><td>Playing the melody in retrograde</td></tr>
+        <tr><td>Polygons at the centre</td><td>Euclidean rhythms: beats spaced as evenly as possible around a circle</td></tr>
+      </table>
+      <h3>The rite</h3>
+      <p><em>Charge</em> opens a fullscreen mode with a breathing guide that is synchronised to the music.
+         <em>Forget</em> burns the sigil, clears your words, and returns you to silence.
+         Nothing you type ever leaves this page. <em>Share</em> sends only the consonants, which is the sigil itself
+         and not the desire behind it.</p>
+      <button class="close" id="aboutClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* ══════════════════════════════════════════════════════════════════════════
+   §0  UTILITIES
+   Small pure helpers used everywhere. TAU is a full turn (2π) because this
+   project thinks in circles.
+   ══════════════════════════════════════════════════════════════════════════ */
+const $ = (s) => document.querySelector(s);
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const TAU = Math.PI * 2;
+const mod = (n, m) => ((n % m) + m) % m;
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+/** Cosine ease-in-out: gentle start and end, like a hand lifting a pen. */
+const ease = (t) => 0.5 - 0.5 * Math.cos(Math.PI * clamp(t, 0, 1));
+const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${clamp(a, 0, 1).toFixed(3)})`;
+const te = new TextEncoder();
+const SERIF = '"Cormorant Garamond","EB Garamond","Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif';
+
+/* ══════════════════════════════════════════════════════════════════════════
+   §1  CRYPTOGRAPHY
+   ----------------------------------------------------------------------------
+   Why a hand-written SHA-256 instead of crypto.subtle?
+     • crypto.subtle only exists in "secure contexts". Opening this file from
+       disk (file://) can disable it in some browsers, and "self-contained"
+       should mean it works anywhere.
+     • It is synchronous, so composition is a simple pure function.
+   SHA-256 gives an avalanche effect: changing one letter of the desire
+   changes the whole sigil and song. That makes each sigil an individual,
+   which is what "determined cryptographically" should mean.
+   The constants are derived from prime roots (as in the spec) rather than
+   pasted, and a self-test verifies them at startup.
+   ══════════════════════════════════════════════════════════════════════════ */
+const SHA256 = (() => {
+  const K = new Uint32Array(64), H0 = new Uint32Array(8);
+  const frac = (x) => ((x - Math.floor(x)) * 0x100000000) >>> 0;
+  // K = first 32 bits of the fractional parts of the cube roots of the first 64 primes.
+  // H0 = the same for the square roots of the first 8 primes.
+  for (let n = 2, found = 0; found < 64; n++) {
+    let prime = true;
+    for (let d = 2; d * d <= n; d++) if (n % d === 0) { prime = false; break; }
+    if (!prime) continue;
+    if (found < 8) H0[found] = frac(Math.sqrt(n));
+    K[found] = frac(Math.cbrt(n));
+    found++;
+  }
+  const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+
+  /** @param {Uint8Array} msg  @returns {Uint8Array} 32-byte digest */
+  return function sha256(msg) {
+    const len = msg.length;
+    const padded = new Uint8Array(((len + 9 + 63) >> 6) << 6);
+    padded.set(msg);
+    padded[len] = 0x80;                                   // the single '1' bit
+    const dv = new DataView(padded.buffer);
+    dv.setUint32(padded.length - 8, Math.floor(len / 0x20000000)); // bit length, high word
+    dv.setUint32(padded.length - 4, (len << 3) >>> 0);             // bit length, low word
+    const H = H0.slice(), W = new Uint32Array(64);
+    for (let off = 0; off < padded.length; off += 64) {
+      for (let i = 0; i < 16; i++) W[i] = dv.getUint32(off + i * 4);
+      for (let i = 16; i < 64; i++) {
+        const a = W[i - 15], b = W[i - 2];
+        W[i] = (W[i - 16] + (rotr(a, 7) ^ rotr(a, 18) ^ (a >>> 3)) + W[i - 7] +
+                (rotr(b, 17) ^ rotr(b, 19) ^ (b >>> 10))) >>> 0;
+      }
+      let a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+      for (let i = 0; i < 64; i++) {
+        const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + W[i]) >>> 0;
+        const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0;
+        h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+      }
+      H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h; // Uint32 wraps mod 2^32
+    }
+    const out = new Uint8Array(32), odv = new DataView(out.buffer);
+    for (let i = 0; i < 8; i++) odv.setUint32(i * 4, H[i]);
+    return out;
+  };
+})();
+const toHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+const hashStr = (s) => SHA256(te.encode(s));
+console.assert(toHex(hashStr('abc')) ===
+  'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', 'SHA-256 self-test failed');
+
+/** sfc32: a small, fast, statistically strong PRNG seeded from 128 hash bits. */
+function sfc32(a, b, c, d) {
+  return function () {
+    a >>>= 0; b >>>= 0; c >>>= 0; d >>>= 0;
+    let t = (a + b) | 0;
+    a = b ^ (b >>> 9); b = (c + (c << 3)) | 0;
+    c = (c << 21) | (c >>> 11); d = (d + 1) | 0;
+    t = (t + d) | 0; c = (c + t) | 0;
+    return (t >>> 0) / 4294967296;
+  };
+}
+
+/** Deterministic random stream with musical conveniences. */
+class Rng {
+  constructor(bytes) {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    this.next = sfc32(dv.getUint32(0), dv.getUint32(4), dv.getUint32(8), dv.getUint32(12));
+    for (let i = 0; i < 16; i++) this.next(); // warm up
+  }
+  float() { return this.next(); }
+  range(a, b) { return a + (b - a) * this.next(); }
+  int(a, b) { return a + Math.floor(this.next() * (b - a + 1)); }
+  pick(arr) { return arr[Math.floor(this.next() * arr.length)]; }
+  chance(p) { return this.next() < p; }
+  weighted(items, weights) {
+    let r = this.next() * weights.reduce((s, w) => s + w, 0);
+    for (let i = 0; i < items.length; i++) { r -= weights[i]; if (r <= 0) return items[i]; }
+    return items[items.length - 1];
+  }
+  shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(this.next() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  }
+}
+
+/**
+ * Independent labelled sub-streams: stream(hash,'geometry'), stream(hash,'music') …
+ * Design choice: each domain draws from its own hash-derived stream. Editing
+ * how the music uses randomness can never shift the geometry, and vice versa.
+ * A given sigil therefore stays stable across future versions of any one subsystem.
+ */
+function stream(hash, label) {
+  const lab = te.encode('::' + label);
+  const buf = new Uint8Array(hash.length + lab.length);
+  buf.set(hash); buf.set(lab, hash.length);
+  return new Rng(SHA256(buf));
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   §2  REDUCTION (the Spare / Morrison method)
+   Uppercase, strip accents, strike vowels (A E I O U), strike repeats, keep
+   the rest in order. Y is kept as a consonant so the alphabet splits cleanly
+   into 21 consonants: 21 = 3 × 7, which §3 uses as three octaves of a
+   seven-note scale.
+   ══════════════════════════════════════════════════════════════════════════ */
+const VOWELS = new Set(['A', 'E', 'I', 'O', 'U']);
+
+/** @returns {{chars:{ch:string,fate:'kept'|'vowel'|'repeat'|'space'|'mark'}[], reduced:string}} */
+function reduceDesire(text) {
+  const clean = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+  const seen = new Set(); const chars = []; let reduced = '';
+  for (const ch of clean) {
+    let fate;
+    if (!/[A-Z]/.test(ch)) fate = /\s/.test(ch) ? 'space' : 'mark';
+    else if (VOWELS.has(ch)) fate = 'vowel';
+    else if (seen.has(ch)) fate = 'repeat';
+    else { fate = 'kept'; seen.add(ch); reduced += ch; }
+    chars.push({ ch, fate });
+  }
+  return { chars, reduced };
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   §3  SIGIL GEOMETRY
+   ----------------------------------------------------------------------------
+   Based on the traditional "Rose Cross lamen" wheel method: letters sit
+   around a circle and the word is drawn as a path between them, starting
+   with a small circle and ending with a bar.
+
+   Cryptographic extensions:
+     • The order of the 21 consonants around the wheel is a Fisher–Yates
+       shuffle seeded by SHA-256 of the reduced string, so every desire gets
+       its own wheel.
+     • Each letter sits on one of three concentric rings (its octave).
+     • Each stroke is either a straight chord or a quadratic curve whose
+       bulge is hash-derived.
+
+   Transform model (shared by the visuals AND the music):
+     T = { k: rotation in slots, m: ±1 mirror, reverse: bool }
+     displayed slot = m·slot + k   (mod 21)
+   ══════════════════════════════════════════════════════════════════════════ */
+const SLOTS = 21;
+const CONSONANTS = [...'BCDFGHJKLMNPQRSTVWXYZ'];
+const RINGS = [0.34, 0.6, 0.86];               // ring radii as fractions of R
+const ID_T = { phi: 0, s: 1 };                 // continuous display transform (identity)
+const UNIT_F = { cx: 0, cy: 0, R: 1, base: 0 }; // abstract unit frame for measuring strokes
+
+/** Curated palettes: [background, line ink, ember accent]. */
+const PALETTES = [
+  { name: 'Aurum',     bg: '#0a0807', line: [236, 206, 140], accent: [255, 146, 76] },
+  { name: 'Cinnabar',  bg: '#0b0706', line: [242, 230, 214], accent: [228, 74, 50] },
+  { name: 'Verdigris', bg: '#060f0d', line: [166, 230, 208], accent: [236, 214, 158] },
+  { name: 'Nocturne',  bg: '#08070f', line: [206, 192, 255], accent: [120, 232, 255] },
+  { name: 'Ossuary',   bg: '#0a0a09', line: [232, 226, 212], accent: [196, 38, 58] },
+  { name: 'Saffron',   bg: '#0c0905', line: [255, 216, 154], accent: [255, 108, 64] },
+];
+
+function buildSigil(reduced) {
+  const hash = hashStr('SIGIL/v1::' + reduced);
+  const g = stream(hash, 'geometry');
+  const wheel = g.shuffle(CONSONANTS);                 // wheel[slot] = letter
+  const slotOf = {}; wheel.forEach((L, i) => (slotOf[L] = i));
+  const ringOf = {}; CONSONANTS.forEach((L) => (ringOf[L] = g.int(0, 2)));
+  const baseAngle = g.float() * TAU;                   // orientation of the whole seal
+  const nodes = [...reduced].map((L) => ({ letter: L, slot: slotOf[L], ring: ringOf[L] }));
+  // Curve factor per stroke: 0 = straight chord, ±k = bulge toward/away from centre
+  const curves = nodes.slice(1).map(() => (g.chance(0.42) ? g.range(0.28, 0.62) * (g.chance(0.5) ? 1 : -1) : 0));
+  return {
+    reduced, hash, hex: toHex(hash), wheel, baseAngle, nodes, curves,
+    letterSet: new Set(reduced),
+    palette: PALETTES[stream(hash, 'palette').int(0, PALETTES.length - 1)],
+  };
+}
+
+/**
+ * Polar → screen. Mirror is applied first (x *= s), then rotation by base+phi.
+ * Positive angles run clockwise on screen, matching increasing slot numbers.
+ * s is continuous, so a mirror flip animates like a coin turning over.
+ */
+function polar(slot, rf, T, F) {
+  const th = (TAU * slot) / SLOTS, r = rf * F.R;
+  const x = r * Math.sin(th) * T.s, y = -r * Math.cos(th);
+  const A = F.base + T.phi, ca = Math.cos(A), sa = Math.sin(A);
+  return [F.cx + x * ca - y * sa, F.cy + x * sa + y * ca];
+}
+const nodeXY = (nd, T, F) => polar(nd.slot, RINGS[nd.ring], T, F);
+
+/** Points along one stroke (quadratic Bézier) from t=0 to t=tEnd. Flat [x,y,x,y…]. */
+function segmentPoints(a, b, k, T, F, tEnd = 1, N = 24) {
+  const [x0, y0] = nodeXY(a, T, F), [x1, y1] = nodeXY(b, T, F);
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  const qx = mx + (F.cx - mx) * k, qy = my + (F.cy - my) * k; // control point pulled toward/away from centre
+  const pts = [];
+  for (let j = 0; j <= N; j++) {
+    const t = (tEnd * j) / N, u = 1 - t;
+    pts.push(u * u * x0 + 2 * u * t * qx + t * t * x1, u * u * y0 + 2 * u * t * qy + t * t * y1);
+  }
+  return pts;
+}
+
+/** Whole path drawn up to progress `prog` (0 … n-1, fractional = mid-stroke). */
+function tracePoints(seq, curves, T, F, prog) {
+  const out = [];
+  const whole = Math.floor(prog), frac = prog - whole;
+  for (let i = 0; i < seq.length - 1 && i <= whole; i++) {
+    const tEnd = i < whole ? 1 : frac;
+    if (tEnd <= 0) break;
+    const pts = segmentPoints(seq[i], seq[i + 1], curves[i] || 0, T, F, tEnd);
+    if (out.length) pts.splice(0, 2);
+    for (const v of pts) out.push(v);
+  }
+  if (!out.length) { const p = nodeXY(seq[0], T, F); out.push(p[0], p[1]); }
+  return out;
+}
+
+function polyLength(pts) {
+  let L = 0;
+  for (let i = 2; i < pts.length; i += 2) L += Math.hypot(pts[i] - pts[i - 2], pts[i + 1] - pts[i - 1]);
+  return L;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   §4  MUSIC THEORY
+   Pitch is stored as a scale DEGREE (an integer; 7 = one octave up) rather
+   than a MIDI note. Diatonic transposition and inversion are then plain
+   integer arithmetic, which is exactly what rotation and mirroring of the
+   wheel produce.
+   ══════════════════════════════════════════════════════════════════════════ */
+const MODES = {
+  Aeolian:    [0, 2, 3, 5, 7, 8, 10],
+  Dorian:     [0, 2, 3, 5, 7, 9, 10],
+  Phrygian:   [0, 1, 3, 5, 7, 8, 10],
+  Lydian:     [0, 2, 4, 6, 7, 9, 11],
+  Mixolydian: [0, 2, 4, 5, 7, 9, 10],
+  Ionian:     [0, 2, 4, 5, 7, 9, 11],
+  'Harmonic minor': [0, 2, 3, 5, 7, 8, 11],
+};
+// Darker, modal colours are weighted up: they suit the occult mood without being one-note.
+const MODE_NAMES = Object.keys(MODES);
+const MODE_WEIGHTS = [3, 3, 1.2, 1.6, 1.5, 1.4, 1.1];
+const NOTE_NAMES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
+const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
+/** Scale degree → MIDI, relative to a tonic MIDI note. Handles negatives and octaves. */
+const degToMidi = (deg, base, scale) => base + 12 * Math.floor(deg / 7) + scale[mod(deg, 7)];
+const fold = (m, lo, hi) => { while (m < lo) m += 12; while (m > hi) m -= 12; return m; };
+/**
+ * Euclidean rhythm E(k,n): k onsets spread as evenly as possible over n steps.
+ * This is the rhythmic analogue of a regular polygon inscribed in a circle,
+ * so the drums share the sigil's geometry (Toussaint, "The Euclidean
+ * Algorithm Generates Traditional Musical Rhythms").
+ */
+const euclid = (k, n, rot = 0) => Array.from({ length: n }, (_, i) => ((((i + rot) % n) * k) % n) < k);
+
+/* ══════════════════════════════════════════════════════════════════════════
+   §5  COMPOSER — geometry → song
+   ----------------------------------------------------------------------------
+   Core mapping, one note per node of the path:
+     pitch     = (displayed slot mod 7) + 7·(ring − 1)   → scale degree
+     duration  = length of the stroke leaving that node  → rhythm
+     legato    = the stroke arriving at the node is curved → glide
+   Because pitch comes from position, the sigil's symmetries ARE the
+   classical melodic transformations:
+     rotation by k slots → diatonic transposition by k mod 7
+     mirror (slot → −slot) → melodic inversion about the tonic
+     reversed path → retrograde
+   The song form is then built from those transformations.
+   ══════════════════════════════════════════════════════════════════════════ */
+const INTERVAL_WORD = { 2: 'third', 3: 'fourth', 4: 'fifth' };
+
+/** Seven-section form: a ritual arc of invocation → exaltation → banishing. */
+function makePlan(rotK, shift) {
+  const id = { k: 0, m: 1, reverse: false };
+  return [
+    { id: 'intro', roman: 'I', name: 'Invocation', desc: 'the wheel turns · the letters are named',
+      phrases: 1, T: id, intensity: 0, voice: 'bell', pad: 0.55, drone: true, density: 0 },
+    { id: 'verse1', roman: 'II', name: 'Inscription', desc: 'the sigil, exactly as written',
+      phrases: 2, T: id, intensity: 1, voice: 'lead', pad: 0.8, bass: true, density: 0 },
+    { id: 'chorus1', roman: 'III', name: 'Exaltation', desc: `turned ${rotK}⁄21 · the melody rises a ${INTERVAL_WORD[shift]}`,
+      phrases: 2, T: { k: rotK, m: 1, reverse: false }, intensity: 3, voice: 'lead', harm: true, arp: 'full', pad: 1, bass: true, density: 1 },
+    { id: 'verse2', roman: 'IV', name: 'Reflection', desc: 'mirrored · the melody inverted',
+      phrases: 2, T: { k: 0, m: -1, reverse: false }, intensity: 2, voice: 'lead', arp: 'light', pad: 0.85, bass: true, density: 0 },
+    { id: 'bridge', roman: 'V', name: 'Reversal', desc: 'retraced · the melody in retrograde',
+      phrases: 2, T: { k: 0, m: 1, reverse: true }, intensity: 2, halfTime: true, voice: 'alt', drone: true, pad: 0.95, bass: true, density: 1 },
+    { id: 'chorus2', roman: 'VI', name: 'Apotheosis', desc: 'turned again · every voice at once',
+      phrases: 2, T: { k: rotK, m: 1, reverse: false }, intensity: 3, voice: 'lead', harm: true, arp: 'full', octave: true, pad: 1, bass: true, density: 1 },
+    { id: 'outro', roman: 'VII', name: 'Banishing', desc: 'the line returns to silence',
+      phrases: 1, tail: 8, T: id, intensity: 0, voice: 'bell', drone: true, pad: 0.6, density: 0, final: true },
+  ];
+}
+
+/**
+ * Share `total` integer units among weights (largest-remainder method).
+ * Every note gets at least one unit, so strokes become eighth-note rhythms
+ * that always fill the phrase exactly.
+ */
+function allocate(weights, total) {
+  const sum = weights.reduce((a, b) => a + b, 0) || 1;
+  const raw = weights.map((w) => (w / sum) * total);
+  const out = raw.map((r) => Math.max(1, Math.floor(r)));
+  let diff = total - out.reduce((a, b) => a + b, 0);
+  const order = raw.map((r, i) => [r - Math.floor(r), i]).sort((a, b) => b[0] - a[0]);
+  for (let j = 0; diff > 0; j++, diff--) out[order[j % order.length][1]]++;
+  while (diff < 0) { let mi = 0; out.forEach((v, i) => { if (v > out[mi]) mi = i; }); out[mi]--; diff++; }
+  return out;
+}
+
+/**
+ * One 4-bar phrase (32 eighth notes) from the sigil under transform T.
+ * Short sigils (≤ 6 letters) are traced twice per phrase so the melody is
+ * never too sparse. Visually the pen simply goes round the path twice.
+ */
+function buildPhrase(sigil, T, density) {
+  let seq = T.reverse ? sigil.nodes.slice().reverse() : sigil.nodes.slice();
+  let curves = T.reverse ? sigil.curves.slice().reverse() : sigil.curves.slice();
+  if (seq.length <= 6) { seq = seq.concat(seq); curves = curves.concat([0], curves); }
+
+  // Rhythm from geometry: each note lasts in proportion to the stroke that leaves it.
+  const lens = [];
+  for (let i = 0; i < seq.length - 1; i++) lens.push(polyLength(segmentPoints(seq[i], seq[i + 1], curves[i], ID_T, UNIT_F, 1, 16)));
+  const mean = lens.reduce((a, b) => a + b, 0) / Math.max(1, lens.length);
+  const units = allocate(lens.concat([mean * 1.6]), 32); // final node rests longer: a cadence
+
+  const notes = [], path = [];
+  let prev = null, u = 0;
+  seq.forEach((nd, i) => {
+    const s2 = mod(T.m * nd.slot + T.k, SLOTS);          // displayed slot under the transform
+    let deg = mod(s2, 7) + 7 * (nd.ring - 1);             // angle → degree, ring → octave
+    // Voice-leading regulariser: leaps larger than a ninth are folded by an
+    // octave toward the previous note, so the melody stays singable.
+    if (prev !== null) { while (deg - prev > 8) deg -= 7; while (prev - deg > 8) deg += 7; }
+    while (deg < -2) deg += 7; while (deg > 10) deg -= 7;
+    prev = deg;
+    path.push({ ...nd, beat: u * 0.5 });
+    notes.push({ start: u * 0.5, dur: units[i] * 0.5, deg, passing: false, glide: i > 0 && curves[i - 1] !== 0 });
+    u += units[i];
+  });
+  return { seq, curves, path, notes: density > 0 ? addPassing(notes) : notes };
+}
+
+/**
+ * Passing tones ("dense" sections). A long note followed by a leap gives up
+ * its tail to 1–2 stepwise notes that walk into the next note. Geometrically
+ * these are the scale positions the pen sweeps past on a long stroke.
+ */
+function addPassing(notes) {
+  const out = [];
+  for (let i = 0; i < notes.length; i++) {
+    const n = notes[i], nx = notes[i + 1];
+    if (!nx) { out.push(n); continue; }
+    const units = Math.round(n.dur * 2), diff = nx.deg - n.deg;
+    const k = Math.min(2, units - 2, Math.abs(diff) - 1);
+    if (k >= 1) {
+      out.push({ ...n, dur: (units - k) * 0.5 });
+      for (let j = 0; j < k; j++)
+        out.push({ start: n.start + (units - k + j) * 0.5, dur: 0.5, deg: nx.deg - Math.sign(diff) * (k - j), passing: true, glide: false });
+    } else out.push(n);
+  }
+  return out;
+}
+
+/**
+ * Harmoniser. The melody is sacred (it IS the sigil), so harmony adapts to
+ * it, one chord per bar, chosen by a Viterbi search over diatonic triads:
+ *   emission  = how well the chord fits the bar's notes (weighted by duration
+ *               and metric strength)
+ *   transition = preference for strong root motion (4ths/5ths) over stasis
+ *   cadence   = tonic at the start, half cadence (V) or full cadence (I) at the end
+ *   bias      = a small hash-derived "personality" per chord
+ */
+const TRANS = [-0.6, 0.15, 0.1, 0.5, 0.35, 0.4, 0.2]; // by root motion in degrees (0 = repeat, 3 = up a 4th …)
+function harmonize(notes, scale, bias, cadence) {
+  const cands = [];
+  for (let c = 0; c < 7; c++) {
+    const third = mod(scale[(c + 2) % 7] - scale[c], 12), fifth = mod(scale[(c + 4) % 7] - scale[c], 12);
+    if (fifth === 7 && (third === 3 || third === 4)) cands.push(c); // major/minor triads only
+  }
+  const E = [];
+  for (let b = 0; b < 4; b++) {
+    const b0 = b * 4, b1 = b0 + 4;
+    E.push(cands.map((c) => {
+      let s = bias[c];
+      for (const n of notes) {
+        const ov = Math.min(b1, n.start + n.dur) - Math.max(b0, n.start);
+        if (ov <= 0) continue;
+        let w = ov;
+        const inBar = n.start >= b0 && n.start < b1, pos = n.start - b0;
+        if (inBar && pos === 0) w *= 2; else if (inBar && pos === 2) w *= 1.4; else if (!inBar) w *= 0.5;
+        if (n.passing) w *= 0.35;
+        const rel = mod(n.deg - c, 7);
+        s += rel === 0 || rel === 2 || rel === 4 ? w : rel === 6 ? 0.15 * w : rel === 5 ? -0.25 * w : -0.7 * w;
+      }
+      if (b === 0 && c === 0) s += 1.0;
+      if (b === 3) {
+        if (cadence === 'full' && c === 0) s += 1.4;
+        if (cadence === 'half' && c === 4) s += 1.0;
+        if (cadence === 'half' && c === 3) s += 0.4;
+      }
+      return s;
+    }));
+  }
+  let score = E[0].slice(); const back = [];
+  for (let b = 1; b < 4; b++) {
+    const ns = [], bk = [];
+    cands.forEach((c, ci) => {
+      let best = -1e9, bi = 0;
+      cands.forEach((p, pi) => { const v = score[pi] + TRANS[mod(c - p, 7)]; if (v > best) { best = v; bi = pi; } });
+      ns.push(best + E[b][ci]); bk.push(bi);
+    });
+    score = ns; back.push(bk);
+  }
+  let ci = score.indexOf(Math.max(...score));
+  const out = [cands[ci]];
+  for (let b = 2; b >= 0; b--) { ci = back[b][ci];
+    out.unshift(cands[ci]); }
+  return out;
+}
+
+/** Close-position pad voicing inside a fixed one-octave window (gives smooth voice leading for free), plus a low root. */
+function padVoicing(c, scale, base, opt) {
+  const degs = [c, c + 2, c + 4];
+  if (opt.seventh) degs.push(c + 6); else if (opt.ninth) degs.push(c + 8);
+  const lo = base - 7;
+  const ms = degs.map((d) => fold(degToMidi(d, base, scale), lo, lo + 11));
+  const root = fold(degToMidi(c, base, scale), base - 19, base - 8);
+  return [root, ...ms].sort((a, b) => a - b);
+}
+
+/* ── Per-bar emitters for rhythm section and accompaniment ─────────────── */
+
+function drumBar(ev, t0, sec, P, fill, R) {
+  const I = sec.intensity;
+  if (I === 0) return;
+  const sw = (s) => (s % 2 ? P.swing * 0.25 : 0); // swing delays odd 16ths
+  for (let s = 0; s < 16; s++) {
+    const t = t0 + s * 0.25 + sw(s);
+    if (sec.halfTime) { // the bridge breathes: backbeat on 3, sparse kicks
+      if (s === 0 || (s === 10 && P.kick[10])) ev.push({ beat: t, type: 'kick', vel: s === 0 ? 0.9 : 0.6 });
+      if (s === 8) ev.push({ beat: t, type: 'snare', vel: 0.75 });
+      if (s % 4 === 2) ev.push({ beat: t, type: 'shaker', vel: 0.5 });
+      continue;
+    }
+    if (s === 0 || (I >= 2 && P.kick[s])) ev.push({ beat: t, type: 'kick', vel: s === 0 ? 0.95 : 0.7 });
+    if (I >= 2 && (s === 4 || s === 12) && !(fill && s >= 12)) ev.push({ beat: t, type: 'snare', vel: 0.8 });
+    if (I >= 3 && P.ghost[s] && s !== 4 && s !== 12) ev.push({ beat: t, type: 'snare', vel: 0.16 });
+    if (I === 1 && s % 4 === 2) ev.push({ beat: t, type: 'shaker', vel: 0.55 });
+    if (I >= 2) {
+      const on = I >= 3 ? s % 2 === 0 || P.hat[s] : P.hat[s];
+      if (on) ev.push({ beat: t, type: 'hat', vel: (s % 4 === 0 ? 0.5 : 0.8) * (0.7 + R.float() * 0.3), open: I >= 3 && s === 14, pan: (R.float() - 0.5) * 0.6 });
+    }
+  }
+  if (fill) { // rising snare roll + noise swell into a chorus
+    for (let s = 12; s < 16; s++) ev.push({ beat: t0 + s * 0.25 + sw(s), type: 'snare', vel: 0.3 + 0.15 * (s - 12) });
+    ev.push({ beat: t0, type: 'swell', dur: 4, vel: 0.8 });
+  }
+}
+
+function bassBar(ev, t0, root, fifth, sec, P, R) {
+  if (sec.halfTime || sec.intensity <= 1) { // long, patient roots
+    ev.push({ beat: t0, type: 'bass', midi: root, dur: 2.6, vel: 0.8 });
+    ev.push({ beat: t0 + 3, type: 'bass', midi: R.chance(0.5) ? fifth : root, dur: 0.8, vel: 0.6 });
+    return;
+  }
+  const hits = []; for (let s = 0; s < 16; s++) if (P.bass[s]) hits.push(s);
+  hits.forEach((s, i) => {
+    const nxt = i < hits.length - 1 ? hits[i + 1] : 16;
+    let m = root;
+    if (sec.intensity >= 3 && i === hits.length - 1 && hits.length > 2) m = fifth;
+    if (sec.intensity >= 3 && i === 1 && R.chance(0.35)) m = root + 12;
+    ev.push({ beat: t0 + s * 0.25 + (s % 2 ? P.swing * 0.25 : 0), type: 'bass', midi: m, dur: Math.min((nxt - s) * 0.25 * 0.85, 2), vel: i === 0 ? 0.9 : 0.7 });
+  });
+}
+
+const ARP_PATTERNS = {
+  up: [0, 1, 2, 3, 4], updown: [0, 1, 2, 3, 4, 3, 2, 1],
+  pendulum: [0, 2, 1, 3, 2, 4, 3, 1], broken: [0, 2, 4, 1, 3, 2, 4, 3],
+};
+function arpBar(ev, t0, c, sec, P, scale, leadBase, barIdx) {
+  let tones = [c, c + 2, c + 4, c + 7, c + 9].map((d) => degToMidi(d, leadBase, scale));
+  if (tones[0] > leadBase + 9) tones = tones.map((m) => m - 12);
+  const pat = ARP_PATTERNS[P.arp], rate = sec.arp === 'full' ? 0.25 : 0.5, steps = 4 / rate;
+  const vel = sec.arp === 'full' ? 0.8 : 0.55;
+  for (let i = 0; i < steps; i++) {
+    const idx = pat[(i + barIdx * steps) % pat.length];
+    ev.push({ beat: t0 + i * rate + (rate === 0.25 && i % 2 ? P.swing * 0.25 : 0), type: 'arp',
+      midi: tones[idx], dur: rate * 0.9, vel: vel * (i % 4 === 0 ? 1 : 0.78), pan: ((i % 4) / 3 - 0.5) * 0.8 });
+  }
+}
+
+/**
+ * composeSong: the full score. Everything is precomputed into one sorted
+ * event list (beats, not seconds). Playback then only needs a lookahead
+ * scheduler, and the renderer can read the same data for perfect sync.
+ */
+function composeSong(sigil) {
+  const R = stream(sigil.hash, 'music');
+  const tonicPc = R.int(0, 11);
+  const modeName = R.weighted(MODE_NAMES, MODE_WEIGHTS);
+  const scale = MODES[modeName];
+  const bpm = R.int(74, 98);            // contemplative, but with pulse
+  const leadTimbre = R.pick(['glass', 'reed', 'koto']);
+  const altTimbre = leadTimbre === 'glass' ? 'reed' : 'glass';
+  const shift = R.pick([2, 3, 4]);      // chorus transposition (3rd, 4th, 5th)
+  const rotK = shift + 7 * R.int(1, 2); // same pitch shift, but a big, visible rotation
+  const leadBase = 57 + mod(tonicPc - 9, 12); // tonic in A3…G#4
+  const bassBase = leadBase - 24;
+  const P = {
+    kick: euclid(R.pick([3, 4, 5]), 16, 0),
+    hat: euclid(R.pick([5, 7, 9, 11]), 16, R.int(0, 15)),
+    ghost: euclid(R.pick([2, 3]), 16, R.int(1, 15)),
+    bass: euclid(R.pick([3, 5, 7]), 16, 0),
+    swing: R.pick([0, 0.12, 0.2, 0.3]),
+    arp: R.pick(Object.keys(ARP_PATTERNS)),
+  };
+  const voicing = { seventh: R.chance(0.65), ninth: R.chance(0.4) };
+  const bias = Array.from({ length: 7 }, () => R.range(-0.25, 0.25));
+  const plan = makePlan(rotK, shift);
+
+  const events = [], phrases = [];
+  let beat = 0;
+  plan.forEach((sec, si) => {
+    const next = plan[si + 1];
+    sec.start = beat;
+    sec.Tdisp = { phi: (TAU * sec.T.k) / SLOTS, s: sec.T.m };
+    sec.key = sec.T.k + '|' + sec.T.m;
+    if (sec.intensity >= 3) events.push({ beat, type: 'crash', vel: 0.7 });
+    for (let p = 0; p < sec.phrases; p++) {
+      const ph = buildPhrase(sigil, sec.T, sec.density);
+      const lastPhrase = p === sec.phrases - 1;
+      const chords = harmonize(ph.notes, scale, bias, lastPhrase ? 'full' : 'half');
+      if (sec.final) chords[3] = 0;
+      ph.start = beat; ph.end = beat + 16; ph.chords = chords; ph.si = si;
+      ph.path.forEach((n) => (n.beat += beat));
+
+      // Melody and its shadows
+      let prevMidi = null;
+      for (const n of ph.notes) {
+        const midi = degToMidi(n.deg, leadBase, scale), t = beat + n.start;
+        const len = n.passing ? n.dur * 0.92 : n.glide ? n.dur * 1.04 : n.dur * 0.86;
+        const vel = (n.passing ? 0.5 : 0.78) + (mod(n.start, 4) === 0 ? 0.14 : 0) + R.range(-0.05, 0.05);
+        if (sec.voice === 'lead' || sec.voice === 'alt')
+          events.push({ beat: t, type: 'lead', timbre: sec.voice === 'alt' ? altTimbre : leadTimbre, midi, dur: len, vel, from: n.glide ? prevMidi : null });
+        if (sec.voice === 'bell' && !n.passing)
+          events.push({ beat: t, type: 'bell', midi: midi + 12 > 90 ? midi : midi + 12, dur: n.dur, vel: vel * 0.75 });
+        if (sec.octave && !n.passing) events.push({ beat: t, type: 'bell', midi: midi + 12, dur: n.dur, vel: vel * 0.3 });
+        if (sec.harm && !n.passing) events.push({ beat: t, type: 'harm', midi: degToMidi(n.deg - 2, leadBase, scale), dur: n.dur * 0.95, vel: vel * 0.8 });
+        prevMidi = midi;
+      }
+      // Harmony, bass, arpeggio, drums, bar by bar
+      chords.forEach((c, b) => {
+        const t0 = beat + b * 4;
+        const isLastBar = lastPhrase && b === 3;
+        const padDur = sec.final && isLastBar ? 4 + (sec.tail || 0) + 0.5 : 4.25;
+        events.push({ beat: t0, type: 'pad', midis: padVoicing(c, scale, leadBase, voicing), dur: padDur, vel: sec.pad, bright: sec.intensity });
+        const root = fold(degToMidi(c, bassBase, scale), bassBase - 2, bassBase + 10);
+        const fifth = fold(degToMidi(c + 4, bassBase, scale), bassBase - 2, bassBase + 12);
+        if (sec.bass) bassBar(events, t0, root, fifth, sec, P, R);
+        if (sec.arp) arpBar(events, t0, c, sec, P, scale, leadBase, b);
+        drumBar(events, t0, sec, P, isLastBar && next && next.intensity >= 3 && sec.intensity >= 1, R);
+      });
+      if (sec.final) events.push({ beat: beat + 16, type: 'bell', midi: leadBase + 12, dur: 8, vel: 0.7 }); // the last stroke
+      phrases.push(ph);
+      beat += 16;
+    }
+    beat += sec.tail || 0;
+    sec.end = beat;
+    if (sec.drone) events.push({ beat: sec.start, type: 'drone', midi: fold(leadBase - 24, 36, 47), dur: sec.end - sec.start, vel: 1 });
+  });
+
+  events.sort((a, b) => a.beat - b.beat);
+  const chimeNotes = buildPhrase(sigil, { k: 0, m: 1, reverse: false }, 0).notes;
+  return {
+    bpm, spb: 60 / bpm, tonicPc, modeName, scale, leadTimbre, altTimbre, rotK, shift, leadBase, P,
+    sections: plan, phrases, events, total: beat,
+    kicks: events.filter((e) => e.type === 'kick').map((e) => e.beat),
+    snares: events.filter((e) => e.type === 'snare' && e.vel > 0.5).map((e) => e.beat),
+    chimes: sigil.nodes.map((_, i) => degToMidi(chimeNotes[i].deg, leadBase, scale) + 12),
+    keyName: `${NOTE_NAMES[tonicPc]} ${modeName}`,
+  };
+}
+
+/* ── Time-lookup helpers shared by renderer and HUD ─────────────────────── */
+function sectionIndexAt(song, beat) {
+  let j = 0; song.sections.forEach((s, i) => { if (beat >= s.start) j = i; }); return j;
+}
+function phraseIndexAt(song, beat) {
+  let j = 0; song.phrases.forEach((p, i) => { if (beat >= p.start) j = i; }); return j;
+}
+/** Pen position along a phrase path (node index + eased fraction). The pen arrives at each node exactly on its note. */
+function penProgress(ph, beat) {
+  const p = ph.path;
+  if (beat <= p[0].beat) return 0;
+  for (let i = 0; i < p.length - 1; i++)
+    if (beat < p[i + 1].beat) return i + ease((beat - p[i].beat) / (p[i + 1].beat - p[i].beat));
+  return p.length - 1;
+}
+/** Exponential decay since the most recent event in a sorted list of beats (binary search). */
+function pulse(arr, beat, rate) {
+  let lo = 0, hi = arr.length - 1, last = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (arr[m] <= beat) { last = m; lo = m + 1; } else hi = m - 1; }
+  return last < 0 ? 0 : Math.exp(-(beat - arr[last]) * rate);
+}
+/** Continuous display transform: morphs from one section's T to the next across the section boundary. */
+function displayTransform(song, beat) {
+  const S = song.sections; let j = 0;
+  for (let i = 0; i < S.length; i++) if (beat >= S[i].start - 1) j = i;
+  const to = S[j].Tdisp, from = S[mod(j - 1, S.length)].Tdisp;
+  const p = ease((beat - (S[j].start - 1)) / 2.5);
+  const dphi = mod(to.phi - from.phi + Math.PI, TAU) - Math.PI; // shortest way round
+  return { phi: from.phi + dphi * p, s: lerp(from.s, to.s, p) };
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   §6  AUDIO ENGINE
+   ----------------------------------------------------------------------------
+   Everything is synthesised live with the Web Audio API; there are no samples.
+   Signal flow:
+     voices → instrument bus ─┬→ mix → tone (LP) → compressor → out → speakers
+                              ├→ convolution reverb (generated IR) → mix
+                              └→ tempo-synced feedback delay → mix (+ reverb)
+   Scheduling uses the "two clocks" pattern: a 25 ms JS timer looks a short
+   way ahead and books events on the sample-accurate AudioContext clock.
+   Buses are rebuilt per song, so stopping a song fades its buses without
+   touching the shared effects. There are no clicks and no orphaned drones.
+   ══════════════════════════════════════════════════════════════════════════ */
+class Engine {
+  constructor() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const c = (this.ctx = new AC({ latencyHint: 'interactive' }));
+    this.out = this.gain(0.85);
+    this.comp = c.createDynamicsCompressor();
+    Object.assign(this.comp, {});
+    this.comp.threshold.value = -16; this.comp.ratio.value = 3; this.comp.knee.value = 12;
+    this.comp.attack.value = 0.008; this.comp.release.value = 0.25;
+    this.tone = c.createBiquadFilter(); this.tone.type = 'lowpass'; this.tone.frequency.value = 20000; this.tone.Q.value = 0.4;
+    this.mix = this.gain(1);
+    this.mix.connect(this.tone); this.tone.connect(this.comp); this.comp.connect(this.out); this.out.connect(c.destination);
+    // Recording tap (video export)
+    this.recDest = c.createMediaStreamDestination ? c.createMediaStreamDestination() : null;
+    if (this.recDest) this.out.connect(this.recDest);
+    // Reverb: generated impulse response (no samples to download)
+    this.reverb = c.createConvolver(); this.reverb.buffer = this.makeIR(4.2, 2.6);
+    const rr = this.gain(0.85); this.reverb.connect(rr); rr.connect(this.mix);
+    // Delay with filtered feedback (a darker echo each repeat)
+    this.delayIn = this.gain(1);
+    this.delay = c.createDelay(3); this.delay.delayTime.value = 0.5;
+    const fbf = c.createBiquadFilter(); fbf.type = 'lowpass'; fbf.frequency.value = 2600;
+    const fb = this.gain(0.36), dr = this.gain(0.55), d2r = this.gain(0.25);
+    this.delayIn.connect(this.delay); this.delay.connect(fbf); fbf.connect(fb); fb.connect(this.delay);
+    fbf.connect(dr); dr.connect(this.mix); dr.connect(d2r); d2r.connect(this.reverb);
+    // Shared white noise (drums, breath, fire)
+    this.noiseBuf = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
+    const nd = this.noiseBuf.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+    // Gentle tanh saturation for bass warmth on small speakers
+    this.satCurve = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) { const x = (i / 1023) * 2 - 1; this.satCurve[i] = Math.tanh(1.8 * x) / Math.tanh(1.8); }
+    this.buses = null; this.song = null; this.running = false; this.anchor = 0;
+  }
+
+  /* ── node helpers ── */
+  gain(v = 0) { const g = this.ctx.createGain(); g.gain.value = v; return g; }
+  osc(type, f, t) { const o = this.ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t); return o; }
+  filt(type, f, q = 0.7) { const b = this.ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; return b; }
+  noise(t, dur) { const s = this.ctx.createBufferSource(); s.buffer = this.noiseBuf; s.start(t, Math.random() * 1.2, dur); return s; }
+  /** ADSR on an AudioParam; returns a safe stop time. */
+  adsr(p, t, dur, { a = 0.01, d = 0.2, s = 0.7, r = 0.3, peak = 1 } = {}) {
+    const end = t + Math.max(dur, a + 0.01);
+    p.setValueAtTime(0, t); p.linearRampToValueAtTime(peak, t + a);
+    p.setTargetAtTime(peak * s, t + a, Math.max(0.001, d / 3));
+    p.setTargetAtTime(0, end, Math.max(0.001, r / 3));
+    return end + r * 1.7 + 0.05;
+  }
+  /** Percussive envelope; returns a stop time. */
+  perc(p, t, peak, tc) {
+    p.setValueAtTime(0, t); p.linearRampToValueAtTime(peak, t + 0.002); p.setTargetAtTime(0, t + 0.002, tc);
+    return t + 0.01 + tc * 7;
+  }
+  makeIR(sec, decay) {
+    const c = this.ctx, sr = c.sampleRate, len = Math.floor(sr * sec), buf = c.createBuffer(2, len, sr);
+    const pre = Math.floor(sr * 0.018);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = buf.getChannelData(ch); let lp = 0;
+      for (let i = pre; i < len; i++) {
+        const tt = i / len;
+        lp += (0.6 - 0.5 * tt) * ((Math.random() * 2 - 1) - lp); // one-pole LP that darkens over time
+        d[i] = lp * Math.pow(1 - tt, decay) * 1.6;
+      }
+    }
+    return buf;
+  }
+
+  /** Per-song instrument buses: [level, reverb send, delay send]. */
+  makeBuses() {
+    const spec = {
+      lead: [0.9, 0.32, 0.22], harm: [0.55, 0.45, 0.1], bell: [0.8, 0.55, 0.28], pad: [0.8, 0.5, 0],
+      bass: [0.85, 0.04, 0], arp: [0.55, 0.35, 0.42], drums: [0.85, 0.12, 0], drone: [0.7, 0.45, 0],
+    };
+    const buses = {};
+    for (const [k, [lvl, rev, del]] of Object.entries(spec)) {
+      const inp = this.gain(lvl); let node = inp;
+      if (k === 'bass') { const ws = this.ctx.createWaveShaper(); ws.curve = this.satCurve; ws.oversample = '2x'; inp.connect(ws); node = ws; }
+      node.connect(this.mix);
+      if (rev) { const s = this.gain(rev); node.connect(s); s.connect(this.reverb); }
+      if (del) { const s = this.gain(del); node.connect(s); s.connect(this.delayIn); }
+      buses[k] = inp;
+    }
+    return buses;
+  }
+
+  /* ── transport ── */
+  load(song) {
+    this.song = song; this.spb = song.spb; this.events = song.events;
+    this.buses = this.makeBuses();
+    this.delay.delayTime.setValueAtTime(song.spb * 0.75, this.ctx.currentTime); // dotted-eighth echo
+  }
+  start(lead = 0.12) {
+    this.anchor = this.ctx.currentTime + lead; this.loopIndex = 0; this.ptr = 0; this.running = true;
+    clearInterval(this.timer); this.timer = setInterval(() => this.pump(), 25); this.pump();
+  }
+  stop(fade = 0.8) {
+    this.running = false; clearInterval(this.timer);
+    const b = this.buses; if (!b) return; this.buses = null;
+    const now = this.ctx.currentTime;
+    Object.values(b).forEach((n) => { n.gain.cancelScheduledValues(now); n.gain.setValueAtTime(n.gain.value, now); n.gain.linearRampToValueAtTime(0, now + fade); });
+    setTimeout(() => Object.values(b).forEach((n) => n.disconnect()), fade * 1000 + 300);
+  }
+  /** Jump to a beat (used with section starts so drones and pads re-enter cleanly). */
+  seek(beat) {
+    this.anchor = this.ctx.currentTime + 0.06 - beat * this.spb; this.loopIndex = 0;
+    this.ptr = this.events.findIndex((e) => e.beat >= beat); if (this.ptr < 0) this.ptr = this.events.length;
+  }
+  /** Musical time for visuals, compensated for output latency (Bluetooth etc.). */
+  beatNow() {
+    if (!this.song) return 0;
+    const lat = this.ctx.outputLatency || this.ctx.baseLatency || 0;
+    const b = (this.ctx.currentTime - lat - this.anchor) / this.spb;
+    return b < 0 ? 0 : b % this.song.total;
+  }
+  /** Lookahead scheduler; loops the song forever. */
+  pump() {
+    if (!this.running || !this.buses) return;
+    const c = this.ctx, horizon = c.currentTime + (document.hidden ? 1.6 : 0.18);
+    const totalSec = this.song.total * this.spb;
+    for (let guard = 0; guard < 4000; guard++) {
+      if (this.ptr >= this.events.length) {
+        if (this.anchor + (this.loopIndex + 1) * totalSec > horizon) break;
+        this.loopIndex++; this.ptr = 0; continue;
+      }
+      const ev = this.events[this.ptr];
+      const t = this.anchor + (this.loopIndex * this.song.total + ev.beat) * this.spb;
+      if (t > horizon) break;
+      if (t >= c.currentTime - 0.03) this.play(ev, Math.max(t, c.currentTime));
+      this.ptr++;
+    }
+  }
+  play(ev, t) {
+    switch (ev.type) {
+      case 'lead': return this.lead(ev, t);
+      case 'bell': return this.bell(ev.midi, t, ev.vel, this.buses.bell);
+      case 'harm': return this.harm(ev, t);
+      case 'pad': return this.pad(ev, t);
+      case 'bass': return this.bass(ev, t);
+      case 'arp': return this.arp(ev, t);
+      case 'kick': return this.kick(ev, t);
+      case 'snare': return this.snare(ev, t);
+      case 'hat': return this.hat(ev, t);
+      case 'shaker': return this.shaker(ev, t);
+      case 'crash': return this.crash(ev, t);
+      case 'swell': return this.swell(ev, t);
+      case 'drone': return this.drone(ev, t);
+    }
+  }
+
+  /* ── VOICES ────────────────────────────────────────────────────────────
+     Three lead timbres give each sigil a distinct "voice":
+       glass — 2-operator FM bell: luminous, temple-like
+       reed  — triangle+saw with delayed vibrato and breath: vocal, human
+       koto  — plucked saw with a snapping filter: intimate, ritual
+  ─────────────────────────────────────────────────────────────────────── */
+  lead(ev, t) {
+    const out = this.buses.lead, f = mtof(ev.midi), d = ev.dur * this.spb, v = ev.vel;
+    if (ev.timbre === 'glass') {
+      const car = this.osc('sine', f, t), md = this.osc('sine', f * 2, t), mg = this.gain(), amp = this.gain();
+      mg.gain.setValueAtTime(f * 2.4 * v, t); mg.gain.setTargetAtTime(f * 0.15, t, 0.18); // bright strike that mellows
+      md.connect(mg); mg.connect(car.frequency);
+      const sh = this.osc('sine', f * 4, t), sg = this.gain();
+      this.perc(sg.gain, t, v * 0.05, 0.12); sh.connect(sg); sg.connect(out);
+      const ring = Math.max(d * 1.5, 1.2);
+      amp.gain.setValueAtTime(0, t); amp.gain.linearRampToValueAtTime(v * 0.42, t + 0.005); amp.gain.setTargetAtTime(0, t + 0.005, ring / 3.5);
+      car.connect(amp); amp.connect(out);
+      const end = t + ring + 0.6; [car, md, sh].forEach((o) => { o.start(t); o.stop(end); });
+    } else if (ev.timbre === 'reed') {
+      const o1 = this.osc('triangle', f, t), o2 = this.osc('sawtooth', f, t), lp = this.filt('lowpass', Math.min(f * 5, 5000), 0.5);
+      const m2 = this.gain(0.18), amp = this.gain();
+      o2.detune.setValueAtTime(5, t);
+      if (ev.from) { const f0 = mtof(ev.from); [o1, o2].forEach((o) => { o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f, t + 0.09); }); }
+      const lfo = this.osc('sine', 5.2, t), lg = this.gain();
+      lg.gain.setValueAtTime(0, t); lg.gain.linearRampToValueAtTime(f * 0.008, t + 0.45); // vibrato blooms late, like a singer
+      lfo.connect(lg); lg.connect(o1.frequency); lg.connect(o2.frequency);
+      o1.connect(lp); o2.connect(m2); m2.connect(lp); lp.connect(amp); amp.connect(out);
+      const stop = this.adsr(amp.gain, t, d, { a: 0.05, d: 0.35, s: 0.72, r: 0.28, peak: v * 0.36 });
+      const br = this.noise(t, 0.5), bf = this.filt('bandpass', f * 1.5, 1), bg = this.gain();
+      this.perc(bg.gain, t, v * 0.035, 0.08); br.connect(bf); bf.connect(bg); bg.connect(out);
+      [o1, o2, lfo].forEach((o) => { o.start(t); o.stop(stop); });
+    } else { // koto
+      const o = this.osc('sawtooth', f, t), o2 = this.osc('triangle', f, t), lp = this.filt('lowpass', Math.min(f * 10, 9000), 5);
+      lp.frequency.setValueAtTime(Math.min(f * 10, 9000), t); lp.frequency.setTargetAtTime(f * 1.4, t, 0.07);
+      const g2 = this.gain(0.5), amp = this.gain(), tc = clamp(d * 0.45, 0.18, 0.9);
+      o.connect(lp); o2.connect(g2); g2.connect(lp); lp.connect(amp); amp.connect(out);
+      amp.gain.setValueAtTime(0, t); amp.gain.linearRampToValueAtTime(v * 0.42, t + 0.003); amp.gain.setTargetAtTime(0, t + 0.003, tc);
+      [o, o2].forEach((x) => { x.start(t); x.stop(t + tc * 7); });
+    }
+  }
+  /** Inharmonic FM bell (ratio 3.5): used for the invocation, banishing, chimes and the final stroke. */
+  bell(midi, t, v, out) {
+    const f = mtof(midi), car = this.osc('sine', f, t), md = this.osc('sine', f * 3.5, t), mg = this.gain(), amp = this.gain();
+    mg.gain.setValueAtTime(f * 1.4 * v, t); mg.gain.setTargetAtTime(0, t, 0.6);
+    md.connect(mg); mg.connect(car.frequency); car.connect(amp); amp.connect(out);
+    amp.gain.setValueAtTime(0, t); amp.gain.linearRampToValueAtTime(v * 0.28, t + 0.003); amp.gain.setTargetAtTime(0, t + 0.003, 0.95);
+    const p2 = this.osc('sine', f * 2.76, t), g2 = this.gain(); this.perc(g2.gain, t, v * 0.06, 0.35); p2.connect(g2); g2.connect(out);
+    [car, md, p2].forEach((o) => { o.start(t); o.stop(t + 5.5); });
+  }
+  /** "Choir": soft detuned triangles for the chorus harmony line (a diatonic third below). */
+  harm(ev, t) {
+    const f = mtof(ev.midi), d = ev.dur * this.spb, lp = this.filt('lowpass', 1500, 0.6), amp = this.gain();
+    const os = [this.osc('triangle', f, t), this.osc('triangle', f, t), this.osc('sine', f * 2, t)];
+    os[0].detune.value = -7; os[1].detune.value = 7;
+    const g3 = this.gain(0.15); os[2].connect(g3); g3.connect(lp); os[0].connect(lp); os[1].connect(lp);
+    lp.connect(amp); amp.connect(this.buses.harm);
+    const stop = this.adsr(amp.gain, t, d, { a: 0.14, d: 0.4, s: 0.8, r: 0.6, peak: ev.vel * 0.2 });
+    os.forEach((o) => { o.start(t); o.stop(stop); });
+  }
+  /** Pad: pairs of detuned saws through a slowly breathing low-pass; brightness follows section intensity. */
+  pad(ev, t) {
+    const d = ev.dur * this.spb, base = 480 + 420 * ev.bright;
+    const lp = this.filt('lowpass', base * 0.6, 0.7), amp = this.gain();
+    lp.frequency.setValueAtTime(base * 0.6, t); lp.frequency.linearRampToValueAtTime(base, t + d * 0.5);
+    const lfo = this.osc('sine', 0.11, t), lg = this.gain(160); lfo.connect(lg); lg.connect(lp.frequency);
+    const oscs = [lfo];
+    for (const m of ev.midis) for (const dt of [-9, 9]) {
+      const o = this.osc('sawtooth', mtof(m), t); o.detune.value = dt; o.connect(lp); oscs.push(o);
+    }
+    lp.connect(amp); amp.connect(this.buses.pad);
+    const stop = this.adsr(amp.gain, t, d, { a: 1.1, d: 1, s: 0.85, r: 1.8, peak: ev.vel * 0.045 });
+    oscs.forEach((o) => { o.start(t); o.stop(stop); });
+  }
+  bass(ev, t) {
+    const f = mtof(ev.midi), d = ev.dur * this.spb;
+    const o = this.osc('sine', f, t), o2 = this.osc('triangle', f, t), g2 = this.gain(0.45), lp = this.filt('lowpass', f * 7, 0.8), amp = this.gain();
+    lp.frequency.setValueAtTime(f * 7, t); lp.frequency.setTargetAtTime(f * 2.5, t, 0.09);
+    o.connect(lp); o2.connect(g2); g2.connect(lp); lp.connect(amp); amp.connect(this.buses.bass);
+    const stop = this.adsr(amp.gain, t, d, { a: 0.006, d: 0.3, s: 0.65, r: 0.1, peak: ev.vel * 0.55 });
+    [o, o2].forEach((x) => { x.start(t); x.stop(stop); });
+  }
+  arp(ev, t) {
+    const f = mtof(ev.midi), o = this.osc('triangle', f, t), o2 = this.osc('sine', f * 2, t), g2 = this.gain(0.15), amp = this.gain();
+    const pan = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
+    o.connect(amp); o2.connect(g2); g2.connect(amp);
+    if (pan) { pan.pan.value = ev.pan || 0; amp.connect(pan); pan.connect(this.buses.arp); } else amp.connect(this.buses.arp);
+    const stop = this.perc(amp.gain, t, ev.vel * 0.22, 0.09);
+    [o, o2].forEach((x) => { x.start(t); x.stop(stop); });
+  }
+  kick(ev, t) {
+    const o = this.osc('sine', 150, t), g = this.gain();
+    o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(ev.vel * 0.8, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+    o.connect(g); g.connect(this.buses.drums); o.start(t); o.stop(t + 0.5);
+    const n = this.noise(t, 0.02), nf = this.filt('lowpass', 2500), ng = this.gain();
+    this.perc(ng.gain, t, ev.vel * 0.15, 0.004); n.connect(nf); nf.connect(ng); ng.connect(this.buses.drums);
+  }
+  snare(ev, t) {
+    const n = this.noise(t, 0.35), bp = this.filt('bandpass', 1900, 0.8), g = this.gain();
+    this.perc(g.gain, t, ev.vel * 0.5, 0.05); n.connect(bp); bp.connect(g); g.connect(this.buses.drums);
+    const o = this.osc('triangle', 190, t), og = this.gain();
+    o.frequency.exponentialRampToValueAtTime(150, t + 0.06);
+    this.perc(og.gain, t, ev.vel * 0.3, 0.03); o.connect(og); og.connect(this.buses.drums); o.start(t); o.stop(t + 0.3);
+  }
+  hat(ev, t) {
+    const n = this.noise(t, 0.35), hp = this.filt('highpass', 7500, 0.7), g = this.gain();
+    const pan = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
+    this.perc(g.gain, t, ev.vel * 0.16, ev.open ? 0.08 : 0.012);
+    n.connect(hp); hp.connect(g);
+    if (pan) { pan.pan.value = ev.pan || 0; g.connect(pan); pan.connect(this.buses.drums); } else g.connect(this.buses.drums);
+  }
+  shaker(ev, t) {
+    const n = this.noise(t, 0.2), bp = this.filt('bandpass', 5500, 1.2), g = this.gain();
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(ev.vel * 0.12, t + 0.015); g.gain.setTargetAtTime(0, t + 0.015, 0.025);
+    n.connect(bp); bp.connect(g); g.connect(this.buses.drums);
+  }
+  crash(ev, t) {
+    const n = this.noise(t, 2), hp = this.filt('highpass', 4200, 0.5), g = this.gain();
+    this.perc(g.gain, t, ev.vel * 0.12, 0.5); n.connect(hp); hp.connect(g); g.connect(this.buses.bell);
+  }
+  swell(ev, t) { // rising filtered noise: the breath before a chorus
+    const d = ev.dur * this.spb, n = this.noise(t, Math.min(d, 1.95)), bp = this.filt('bandpass', 300, 1.5), g = this.gain();
+    bp.frequency.setValueAtTime(300, t); bp.frequency.exponentialRampToValueAtTime(6000, t + d);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(ev.vel * 0.09, t + d - 0.02); g.gain.linearRampToValueAtTime(0, t + d);
+    n.connect(bp); bp.connect(g); g.connect(this.buses.bell);
+    if (d > 1.95) { const n2 = this.noise(t + 1.9, d - 1.9); n2.connect(bp); }
+  }
+  drone(ev, t) {
+    const d = ev.dur * this.spb, f = mtof(ev.midi);
+    const lp = this.filt('lowpass', 320, 3), amp = this.gain();
+    const lfo = this.osc('sine', 0.06, t), lg = this.gain(140); lfo.connect(lg); lg.connect(lp.frequency);
+    const os = [this.osc('sawtooth', f, t), this.osc('sawtooth', f * 1.4983, t), this.osc('sine', f / 2, t)];
+    os[1].detune.value = 4; os.forEach((o) => o.connect(lp));
+    lp.connect(amp); amp.connect(this.buses.drone);
+    amp.gain.setValueAtTime(0, t); amp.gain.linearRampToValueAtTime(ev.vel * 0.11, t + Math.min(4, d / 3));
+    amp.gain.setTargetAtTime(0, t + d - 1, 1.3);
+    [lfo, ...os].forEach((o) => { o.start(t); o.stop(t + d + 6); });
+  }
+
+  /* ── Ritual sounds used outside the score ── */
+  tick(kind) { // a quill striking a letter
+    if (!this.buses) return;
+    const t = this.ctx.currentTime, n = this.noise(t, 0.05), bp = this.filt('bandpass', kind === 'vowel' ? 2600 : 4200, 3), g = this.gain();
+    this.perc(g.gain, t, 0.22, 0.012); n.connect(bp); bp.connect(g); g.connect(this.buses.bell);
+  }
+  chime(midi) { if (this.buses) this.bell(midi, this.ctx.currentTime + 0.01, 0.7, this.buses.bell); }
+  /** Banishing: a low-pass sweep on the master and a crackling fire. */
+  banish(sec) {
+    const now = this.ctx.currentTime, f = this.tone.frequency;
+    f.cancelScheduledValues(now); f.setValueAtTime(f.value, now);
+    f.exponentialRampToValueAtTime(140, now + sec); f.setValueAtTime(140, now + sec + 0.4);
+    f.exponentialRampToValueAtTime(20000, now + sec + 1.6);
+    const n = this.noise(now, 1.99), bp = this.filt('bandpass', 900, 0.6), g = this.gain();
+    g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(0.05, now + 1); g.gain.linearRampToValueAtTime(0, now + 1.99);
+    n.connect(bp); bp.connect(g); g.connect(this.comp);
+    for (let i = 0; i < 46; i++) { // crackles
+      const t = now + Math.random() * sec, c = this.noise(t, 0.03), cf = this.filt('highpass', 1500 + Math.random() * 3000), cg = this.gain();
+      this.perc(cg.gain, t, 0.05 + Math.random() * 0.12, 0.004 + Math.random() * 0.01);
+      c.connect(cf); cf.connect(cg); cg.connect(this.comp);
+    }
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   §7  RENDERER (Canvas 2D)
+   ----------------------------------------------------------------------------
+   The renderer owns no clock. Each frame asks the engine what beat it is and
+   draws the state of the score at that beat, so visuals cannot drift from
+   the audio. If the audio pauses, the pen stops; on seek, the drawing jumps.
+   Layers (back to front):
+     ground & vignette → drifting motes → wheel (circles, ticks, letters,
+     tonic triangle) → rhythm polygons → ghosts of past transformations →
+     faint template → fading previous phrase → live stroke + pen →
+     note flares → start circle / end bar → centre bindu & snare ripple
+   Lines use additive blending with three stroke widths to suggest ink
+   that glows like an ember without costly blur filters.
+   ══════════════════════════════════════════════════════════════════════════ */
+class Renderer {
+  constructor(canvas) {
+    this.cv = canvas; this.g = canvas.getContext('2d');
+    this.F = { cx: 0, cy: 0, R: 100, base: 0 };
+    this.pal = PALETTES[0]; this.parts = []; this.lastLines = []; this.info = null;
+    this.motes = Array.from({ length: 70 }, () => ({
+      x: Math.random(), y: Math.random(), vx: (Math.random() - 0.5) * 0.004, vy: -(0.002 + Math.random() * 0.006),
+      ph: Math.random() * TAU, s: Math.random() * 1.3 + 0.3,
+    }));
+    this.last = performance.now() / 1000;
+    this.resize(true);
+    addEventListener('resize', () => this.resize(false));
+  }
+  resize(first) {
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2); this.w = innerWidth; this.h = innerHeight;
+    this.cv.width = Math.round(this.w * this.dpr); this.cv.height = Math.round(this.h * this.dpr);
+    if (first) Object.assign(this.F, this.targetFrame(false));
+  }
+  /** Layout: sigil sits above the UI normally; centred and enlarged when charging. */
+  targetFrame(charging) {
+    const w = this.w, h = this.h;
+    return charging ? { cx: w / 2, cy: h / 2, R: Math.min(w, h) * 0.36 } : { cx: w / 2, cy: h * 0.43, R: Math.min(w * 0.33, h * 0.28) };
+  }
+
+  /* ── primitives ── */
+  strokeGlow(pts, col, alpha, width) {
+    if (pts.length < 4) return;
+    const g = this.g, p = new Path2D();
+    p.moveTo(pts[0], pts[1]); for (let i = 2; i < pts.length; i += 2) p.lineTo(pts[i], pts[i + 1]);
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    g.strokeStyle = rgba(col, alpha * 0.07); g.lineWidth = width * 7; g.stroke(p);
+    g.strokeStyle = rgba(col, alpha * 0.2); g.lineWidth = width * 2.6; g.stroke(p);
+    g.strokeStyle = rgba(col, alpha); g.lineWidth = width; g.stroke(p);
+  }
+  circle(x, y, r, col, a, fill = false, lw = 1) {
+    const g = this.g; g.beginPath(); g.arc(x, y, Math.max(0.1, r), 0, TAU);
+    if (fill) { g.fillStyle = rgba(col, a); g.fill(); } else { g.strokeStyle = rgba(col, a); g.lineWidth = lw; g.stroke(); }
+  }
+  spawn(x, y, o) {
+    if (this.parts.length > 2000) return;
+    this.parts.push({ x, y, vx: o.vx, vy: o.vy, life: o.life, max: o.life, size: o.size, col: o.col });
+  }
+
+  /** The wheel: circles, 21 ticks, the letters, the ring guides and the "tonic triangle". */
+  drawWheel(F, letters, T, o) {
+    const g = this.g, L = this.pal.line, A = this.pal.accent, a = o.alpha ?? 1;
+    this.circle(F.cx, F.cy, F.R, L, (0.3 + 0.35 * (o.kick || 0)) * a);
+    this.circle(F.cx, F.cy, F.R * 1.045, L, 0.14 * a);
+    g.setLineDash([1.5, 7]);
+    RINGS.forEach((r) => this.circle(F.cx, F.cy, F.R * r, L, 0.08 * a));
+    g.setLineDash([]);
+    // Tonic triangle: frame positions 0, 7 and 14 are where melody degrees ≡ tonic.
+    g.beginPath();
+    for (let j = 0; j < 3; j++) { const [x, y] = polar(j * 7, 1, ID_T, F); j ? g.lineTo(x, y) : g.moveTo(x, y); }
+    g.closePath(); g.strokeStyle = rgba(L, 0.055 * a); g.lineWidth = 1; g.stroke();
+    const fs = Math.max(10, F.R * 0.062);
+    g.font = `${fs}px ${SERIF}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    for (let s = 0; s < SLOTS; s++) {
+      const [x0, y0] = polar(s, 1, T, F), [x1, y1] = polar(s, 1.045, T, F);
+      g.strokeStyle = rgba(L, 0.28 * a); g.lineWidth = 1; g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+      const letter = letters[s], inS = o.set && o.set.has(letter), cur = o.current === letter;
+      const [lx, ly] = polar(s, 1.15, T, F);
+      if (cur) { g.shadowColor = rgba(A, 0.9); g.shadowBlur = 14; }
+      g.fillStyle = cur ? rgba(A, a) : rgba(L, (inS ? 0.62 : 0.16) * a);
+      g.fillText(letter, lx, ly);
+      if (cur) g.shadowBlur = 0;
+    }
+  }
+
+  /** Euclidean rhythms drawn as polygons at the centre, with a rotating step marker. */
+  drawRhythm(F, P, beat, kp, alpha) {
+    const g = this.g, L = this.pal.line, A = this.pal.accent;
+    const poly = (pat, rf, al) => {
+      const pts = [];
+      for (let i = 0; i < 16; i++) if (pat[i]) { const th = (TAU * i) / 16; pts.push(F.cx + Math.sin(th) * rf * F.R, F.cy - Math.cos(th) * rf * F.R); }
+      if (pts.length < 4) return;
+      g.beginPath(); g.moveTo(pts[0], pts[1]); for (let i = 2; i < pts.length; i += 2) g.lineTo(pts[i], pts[i + 1]); g.closePath();
+      g.strokeStyle = rgba(L, al); g.lineWidth = 1; g.stroke();
+    };
+    poly(P.hat, 0.2, 0.09 * alpha);
+    poly(P.kick, 0.12, (0.08 + 0.3 * kp) * alpha);
+    const th = (TAU * Math.floor(mod(beat, 4) * 4)) / 16;
+    this.circle(F.cx + Math.sin(th) * 0.2 * F.R, F.cy - Math.cos(th) * 0.2 * F.R, 1.6, A, 0.7 * alpha, true);
+  }
+
+  /** Traditional sigil terminals: a small circle at the start, a crossbar at the end. */
+  drawTerminals(pts, F, alpha, ended) {
+    const L = this.pal.line;
+    this.circle(pts[0], pts[1], F.R * 0.028, L, 0.85 * alpha, false, 1.3);
+    if (ended && pts.length >= 4) {
+      const n = pts.length, x = pts[n - 2], y = pts[n - 1];
+      let dx = x - pts[n - 4], dy = y - pts[n - 3]; const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l;
+      const h = F.R * 0.045;
+      this.strokeGlow([x - dy * h, y + dx * h, x + dy * h, y - dx * h], L, 0.9 * alpha, 1.4);
+    }
+  }
+
+  /* ── main frame ── */
+  draw(app) {
+    const now = performance.now() / 1000, dt = Math.min(0.05, now - this.last); this.last = now;
+    const g = this.g, w = this.w, h = this.h, F = this.F;
+    const tf = this.targetFrame(app.charging), k = 1 - Math.pow(0.03, dt); // frame-rate independent easing
+    F.cx += (tf.cx - F.cx) * k; F.cy += (tf.cy - F.cy) * k; F.R += (tf.R - F.R) * k;
+
+    g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+    g.fillStyle = this.pal.bg; g.fillRect(0, 0, w, h);
+    const vg = g.createRadialGradient(F.cx, F.cy, F.R * 0.1, F.cx, F.cy, Math.max(w, h) * 0.75);
+    vg.addColorStop(0, rgba(this.pal.accent, 0.045)); vg.addColorStop(0.45, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.62)');
+    g.fillStyle = vg; g.fillRect(0, 0, w, h);
+
+    g.globalCompositeOperation = 'lighter';
+    for (const m of this.motes) { // dust in a shaft of light
+      m.x = mod(m.x + m.vx * dt, 1); m.y = mod(m.y + m.vy * dt, 1); m.ph += dt * 0.7;
+      this.circle(m.x * w, m.y * h, m.s, this.pal.line, 0.05 + 0.05 * Math.sin(m.ph), true);
+    }
+
+    if (app.mode === 'idle') {
+      F.base = 0;
+      this.drawWheel(F, CONSONANTS, { phi: now * 0.02, s: 1 }, { alpha: 0.55 + 0.1 * Math.sin(now * 0.6) });
+    } else if (app.mode === 'reducing') this.drawReducing(app, now);
+    else if (app.mode === 'playing') this.drawPlaying(app, dt);
+    else if (app.mode === 'burning') this.drawBurning(app, now);
+
+    // particles (sparks, embers)
+    g.globalCompositeOperation = 'lighter';
+    for (let i = this.parts.length - 1; i >= 0; i--) {
+      const p = this.parts[i]; p.life -= dt;
+      if (p.life <= 0) { this.parts[i] = this.parts[this.parts.length - 1]; this.parts.pop(); continue; }
+      p.vx *= 0.985; p.vy = p.vy * 0.985 - 8 * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+      g.fillStyle = rgba(p.col, (p.life / p.max) * 0.85); g.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+    }
+  }
+
+  /** During reduction: the seal's own wheel fades in and each chimed letter extends the path. */
+  drawReducing(app, now) {
+    const sig = app.sigil, F = this.F; F.base = sig.baseAngle;
+    const a = clamp((now - app.reduceStart) / 2.5, 0, 1);
+    this.drawWheel(F, sig.wheel, ID_T, { alpha: a * 0.75, set: new Set(sig.nodes.slice(0, app.lit).map((n) => n.letter)) });
+    if (app.lit >= 1) {
+      const pts = tracePoints(sig.nodes, sig.curves, ID_T, F, app.lit - 1);
+      this.strokeGlow(pts, this.pal.line, 0.55, 1.2);
+      this.drawTerminals(pts, F, 0.6, false);
+      const n = nodeXY(sig.nodes[app.lit - 1], ID_T, F);
+      this.circle(n[0], n[1], 4, this.pal.accent, 0.9, true);
+    }
+  }
+
+  drawPlaying(app, dt) {
+    const song = app.song, sig = app.sigil, F = this.F, L = this.pal.line, A = this.pal.accent;
+    F.base = sig.baseAngle;
+    const beat = app.engine.beatNow();
+    const si = sectionIndexAt(song, beat), sec = song.sections[si];
+    const T = displayTransform(song, beat);
+    const pi = phraseIndexAt(song, beat), ph = song.phrases[pi];
+    const prog = penProgress(ph, beat);
+    const cur = ph.path[Math.min(ph.path.length - 1, Math.floor(prog + 1e-6))];
+    const kp = pulse(song.kicks, beat, 5), sp = pulse(song.snares, beat, 1.4);
+    const outro = song.sections[song.sections.length - 1];
+    const outroFade = si === song.sections.length - 1 ? 1 - clamp((beat - outro.start) / 16, 0, 1) : 1;
+    const lines = [];
+
+    this.drawWheel(F, sig.wheel, T, { alpha: 1, kick: kp, set: sig.letterSet, current: cur.letter });
+    if (sec.intensity >= 2) this.drawRhythm(F, song.P, beat, kp, 1);
+
+    // Ghosts: every distinct transformation already performed stays faintly inscribed (a growing mandala).
+    const seen = new Set([sec.key]);
+    for (let i = 0; i < si; i++) {
+      const s = song.sections[i]; if (seen.has(s.key)) continue; seen.add(s.key);
+      const pts = tracePoints(sig.nodes, sig.curves, s.Tdisp, F, sig.nodes.length - 1);
+      this.strokeGlow(pts, L, 0.12 * outroFade, 0.8); lines.push(pts);
+    }
+    // Template of what will be drawn (anticipation)
+    const full = tracePoints(ph.seq, ph.curves, T, F, ph.seq.length - 1);
+    this.strokeGlow(full, L, 0.06, 0.8); lines.push(full);
+    // The previous phrase burns off during the first bar of the new one (the drawing "loops")
+    if (pi > 0) {
+      const fa = 1 - (beat - ph.start) / 3;
+      if (fa > 0) { const prev = song.phrases[pi - 1]; this.strokeGlow(tracePoints(prev.seq, prev.curves, T, F, prev.seq.length - 1), L, 0.5 * fa, 1.2); }
+    }
+    // Live stroke
+    const pts = tracePoints(ph.seq, ph.curves, T, F, prog);
+    this.strokeGlow(pts, L, 0.95, 1.2 + 0.25 * sec.intensity); lines.push(pts);
+    this.drawTerminals(pts, F, 1, prog >= ph.seq.length - 1);
+    // Nodes and note flares
+    ph.path.forEach((n) => {
+      const [x, y] = nodeXY(n, T, F), age = beat - n.beat;
+      this.circle(x, y, 1.7, L, 0.45, true);
+      if (age >= 0 && age < 2) { const q = age / 2; this.circle(x, y, 3 + F.R * 0.07 * q, A, 0.7 * (1 - q), false, 1.2); }
+    });
+    // Pen head with sparks
+    const px = pts[pts.length - 2], py = pts[pts.length - 1], frac = prog - Math.floor(prog);
+    const gr = this.g.createRadialGradient(px, py, 0, px, py, 16);
+    gr.addColorStop(0, rgba(A, 0.55)); gr.addColorStop(1, rgba(A, 0));
+    this.g.fillStyle = gr; this.g.fillRect(px - 16, py - 16, 32, 32);
+    this.circle(px, py, 2.2, [255, 250, 240], 0.95, true);
+    if (frac > 0.02 && frac < 0.98 && Math.random() < 0.8)
+      this.spawn(px, py, { vx: (Math.random() - 0.5) * 30, vy: (Math.random() - 0.5) * 30 - 8, life: 0.5 + Math.random() * 0.7, size: 1 + Math.random(), col: A });
+    // Centre: bindu on the kick, ripple on the snare
+    this.circle(F.cx, F.cy, 1.8 + kp * 3, A, 0.5 + kp * 0.5, true);
+    if (sp > 0.02) this.circle(F.cx, F.cy, F.R * (0.1 + (1 - sp) * 0.95), L, 0.16 * sp, false, 1);
+    // Charge mode: breathing guide, one breath per two bars (~5–6 s, a calm rate)
+    if (app.charging) {
+      const br = 0.5 - 0.5 * Math.cos((TAU * beat) / 8);
+      this.circle(F.cx, F.cy, F.R * (1.2 + 0.09 * br), A, 0.1 + 0.15 * br, false, 1);
+    }
+    this.lastLines = lines;
+    this.info = { si, letter: cur.letter, beat };
+  }
+
+  /** Forget: the lines break into embers and rise. */
+  burn() {
+    this.burnLines = this.lastLines; this.burnStart = performance.now() / 1000;
+    for (const pts of this.lastLines) for (let i = 0; i < pts.length; i += 6)
+      this.spawn(pts[i], pts[i + 1], { vx: (Math.random() - 0.5) * 40, vy: -(10 + Math.random() * 55), life: 1.4 + Math.random() * 2.8, size: 1 + Math.random() * 1.8, col: Math.random() < 0.55 ? this.pal.accent : this.pal.line });
+  }
+  drawBurning(app, now) {
+    const e = now - (this.burnStart || now), F = this.F;
+    if (app.sigil) this.drawWheel(F, app.sigil.wheel, ID_T, { alpha: clamp(1 - e / 2.5, 0, 1) * 0.8 });
+    const a = clamp(1 - e / 1.3, 0, 1);
+    if (a > 0 && this.burnLines) for (const pts of this.burnLines) this.strokeGlow(pts, this.pal.accent, 0.7 * a, 1.2);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   §8  APPLICATION — ritual flow, HUD, controls, export
+   ----------------------------------------------------------------------------
+   State machine:  idle → reducing → playing ⇄ (charge) → burning → idle
+   ══════════════════════════════════════════════════════════════════════════ */
+const app = { mode: 'idle', sigil: null, song: null, engine: null, charging: false, lit: 0, busy: false, reduceStart: 0, rec: null };
+const renderer = new Renderer($('#stage'));
+const hud = { si: -1, letter: null, spans: [] };
+
+function applyPalette(p) {
+  renderer.pal = p;
+  const s = document.documentElement.style;
+  s.setProperty('--bg', p.bg); s.setProperty('--line', p.line.join(',')); s.setProperty('--accent', p.accent.join(','));
+}
+function toast(text, small = false, ms = 2200) {
+  const t = $('#toast'); t.textContent = text; t.className = small ? 'small show' : 'show';
+  clearTimeout(toast.t); toast.t = setTimeout(() => (t.className = small ? 'small' : ''), ms);
+}
+function flashErr(msg) { $('#err').textContent = msg; clearTimeout(flashErr.t); flashErr.t = setTimeout(() => ($('#err').textContent = ''), 4000); }
+
+/** The spoken rite: cast a desire. */
+async function cast() {
+  if (app.busy) return;
+  const text = $('#desire').value.trim();
+  if (!text) { flashErr('Speak a desire first.'); return; }
+  const { chars, reduced } = reduceDesire(text);
+  if (reduced.length < 3) { flashErr('Too little remains after reduction. Say more.'); return; }
+  app.busy = true;
+  if (!app.engine) app.engine = new Engine();   // created inside a user gesture (autoplay policy)
+  try { await app.engine.ctx.resume(); } catch (e) { /* ignore */ }
+  if (app.mode === 'playing') app.engine.stop(0.6);
+
+  const sigil = buildSigil(reduced), song = composeSong(sigil);
+  Object.assign(app, { sigil, song, lit: 0, reduceStart: performance.now() / 1000 });
+  applyPalette(sigil.palette);
+  app.engine.load(song);
+  $('#invoke').classList.add('away'); $('#desire').blur(); $('#hud').classList.remove('on');
+  app.mode = 'reducing';
+  await performReduction(chars, sigil, song);
+
+  buildHUD();
+  app.engine.start(0.15);
+  app.mode = 'playing';
+  $('#hud').classList.add('on');
+  setPauseLabel();
+  history.replaceState(null, '', '#' + reduced);
+  app.busy = false;
+}
+
+/** The striking-out, shown letter by letter, with quill ticks and chimes. */
+async function performReduction(chars, sigil, song) {
+  const box = $('#reduction'); box.innerHTML = '';
+  const line = document.createElement('div'); line.className = 'line';
+  const spans = chars.map((c) => {
+    const s = document.createElement('span'); s.className = 'ch'; s.dataset.fate = c.fate;
+    s.textContent = c.fate === 'space' ? '\u00A0' : c.ch; line.appendChild(s); return s;
+  });
+  const cap = document.createElement('div'); cap.className = 'cap';
+  box.append(line, cap); box.classList.add('show');
+  await wait(700);
+  cap.textContent = 'the vowels and the repetitions are struck away';
+  const struck = spans.filter((s) => s.dataset.fate !== 'kept');
+  const step = clamp(1500 / Math.max(1, struck.length), 14, 55);
+  for (const s of struck) {
+    s.classList.add('struck');
+    if (s.dataset.fate === 'vowel' || s.dataset.fate === 'repeat') app.engine.tick(s.dataset.fate);
+    if (s.dataset.fate !== 'space') await wait(step);
+  }
+  await wait(450);
+  cap.textContent = 'what remains is named';
+  const kept = spans.filter((s) => s.dataset.fate === 'kept');
+  for (let i = 0; i < kept.length; i++) {
+    kept[i].classList.add('lit'); app.engine.chime(song.chimes[i]); app.lit = i + 1;
+    await wait(clamp(2400 / kept.length, 120, 220));
+  }
+  await wait(700);
+  line.classList.add('fade'); cap.classList.add('fade');
+  await wait(650);
+  line.remove(); cap.textContent = ''; cap.classList.remove('fade');
+  const fin = document.createElement('div'); fin.className = 'final';
+  [...sigil.reduced].forEach((L, i) => { const s = document.createElement('span'); s.textContent = L; s.style.animationDelay = i * 70 + 'ms'; fin.appendChild(s); });
+  box.insertBefore(fin, cap);
+  await wait(1200 + sigil.reduced.length * 70);
+  box.classList.remove('show');
+  await wait(500);
+}
+
+/* ── HUD ── */
+const TIMBRE_NAMES = { glass: 'glass bell', reed: 'reed', koto: 'plucked string' };
+function buildHUD() {
+  const { sigil, song } = app;
+  const L = $('#letters'); L.innerHTML = '';
+  hud.spans = [...sigil.reduced].map((ch) => { const s = document.createElement('span'); s.textContent = ch; L.appendChild(s); return s; });
+  const prog = $('#progress'); prog.querySelectorAll('.mark').forEach((m) => m.remove());
+  song.sections.forEach((s) => { const m = document.createElement('div'); m.className = 'mark'; m.style.left = (s.start / song.total) * 100 + '%'; prog.appendChild(m); });
+  $('#meta').textContent = `${song.keyName} · ${song.bpm} bpm · ${TIMBRE_NAMES[song.leadTimbre]} · ${sigil.palette.name} · ${sigil.hex.slice(0, 8)}`;
+  hud.si = -1; hud.letter = null;
+}
+function updateHUD() {
+  if (app.mode !== 'playing' || !renderer.info) return;
+  const { si, letter, beat } = renderer.info, song = app.song;
+  if (si !== hud.si) {
+    hud.si = si; const s = song.sections[si];
+    $('#secInfo .roman').textContent = s.roman; $('#secInfo .name').textContent = s.name; $('#secInfo .desc').textContent = s.desc;
+  }
+  if (letter !== hud.letter) {
+    hud.letter = letter;
+    hud.spans.forEach((sp) => sp.classList.toggle('cur', sp.textContent === letter));
+  }
+  $('#progress .fill').style.transform = `scaleX(${beat / song.total})`;
+}
+
+/* ── Controls ── */
+function setPauseLabel() {
+  const b = document.querySelector('[data-act="pause"]');
+  if (b && app.engine) b.textContent = app.engine.ctx.state === 'running' ? 'Pause' : 'Resume';
+}
+async function togglePause() {
+  if (app.mode !== 'playing') return;
+  const c = app.engine.ctx;
+  if (c.state === 'running') await c.suspend(); else await c.resume();
+  setPauseLabel();
+}
+function toggleCharge(on = !app.charging) {
+  if (on && app.mode !== 'playing') return;
+  app.charging = on; document.body.classList.toggle('charging', on);
+  if (on) document.documentElement.requestFullscreen?.().catch(() => {});
+  else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && app.charging) toggleCharge(false); });
+
+function stopRecording() { if (app.rec && app.rec.state !== 'inactive') app.rec.stop(); }
+
+/** New: leave this sigil without ceremony (it is not banished). */
+function newDesire() {
+  if (app.mode !== 'playing') return;
+  stopRecording(); toggleCharge(false);
+  app.engine.ctx.resume(); app.engine.stop(1.2);
+  app.mode = 'idle';
+  $('#hud').classList.remove('on'); $('#invoke').classList.remove('away');
+  setTimeout(() => $('#desire').focus(), 500);
+}
+
+/** Forget: the banishing. Burn, silence, erase the words and the URL. */
+async function forget() {
+  if (app.mode !== 'playing' || app.busy) return;
+  app.busy = true; stopRecording(); toggleCharge(false);
+  await app.engine.ctx.resume(); setPauseLabel();
+  app.mode = 'burning'; $('#hud').classList.remove('on');
+  renderer.burn(); app.engine.banish(3.5); app.engine.stop(3.5);
+  await wait(3600);
+  $('#desire').value = '';
+  history.replaceState(null, '', location.pathname + location.search);
+  toast('It is forgotten.', false, 2600);
+  await wait(3200);
+  app.sigil = null; app.song = null; app.mode = 'idle'; app.busy = false;
+  $('#desireLabel').textContent = 'State your desire in the present tense, as though it were already so.';
+  $('#invoke').classList.remove('away');
+}
+
+/** Seal: a 2048² PNG of the sigil in its original orientation, as a permanent talisman. */
+function exportSeal() {
+  const { sigil } = app; if (!sigil) return;
+  const size = 2048, cv = document.createElement('canvas'); cv.width = cv.height = size;
+  const g = cv.getContext('2d'), p = sigil.palette, F = { cx: size / 2, cy: size * 0.46, R: size * 0.33, base: sigil.baseAngle };
+  g.fillStyle = p.bg; g.fillRect(0, 0, size, size);
+  const vg = g.createRadialGradient(F.cx, F.cy, 0, F.cx, F.cy, size * 0.7);
+  vg.addColorStop(0, rgba(p.accent, 0.06)); vg.addColorStop(1, 'rgba(0,0,0,0.5)'); g.fillStyle = vg; g.fillRect(0, 0, size, size);
+  // Reuse the live renderer's drawing routines on a temporary context.
+  const saved = { g: renderer.g, pal: renderer.pal };
+  renderer.g = g; renderer.pal = p; g.globalCompositeOperation = 'lighter';
+  renderer.circle(F.cx, F.cy, F.R, p.line, 0.5, false, 3);
+  renderer.circle(F.cx, F.cy, F.R * 1.045, p.line, 0.25, false, 2);
+  for (let s = 0; s < SLOTS; s++) { const a = polar(s, 1, ID_T, F), b = polar(s, 1.045, ID_T, F); renderer.strokeGlow([...a, ...b], p.line, 0.45, 2); }
+  const pts = tracePoints(sigil.nodes, sigil.curves, ID_T, F, sigil.nodes.length - 1);
+  renderer.strokeGlow(pts, p.line, 1, 6);
+  const sF = { ...F, R: F.R * 1.6 }; // bolder terminals at print scale
+  renderer.circle(pts[0], pts[1], F.R * 0.03, p.line, 0.95, false, 5);
+  renderer.drawTerminals(pts, sF, 1, true);
+  renderer.g = saved.g; renderer.pal = saved.pal;
+  g.globalCompositeOperation = 'source-over';
+  g.fillStyle = rgba(p.line, 0.7); g.textAlign = 'center';
+  g.font = `${size * 0.034}px ${SERIF}`; g.fillText([...sigil.reduced].join('  '), size / 2, size * 0.9);
+  g.fillStyle = rgba(p.line, 0.3); g.font = `italic ${size * 0.014}px ${SERIF}`;
+  g.fillText(sigil.hex.slice(0, 32), size / 2, size * 0.935);
+  cv.toBlob((b) => download(b, `sigil-${sigil.reduced}.png`));
+}
+function download(blob, name) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+/** Record: canvas video + master audio to WebM (the HUD is excluded, so the film is clean). */
+function toggleRecord() {
+  const btn = document.querySelector('[data-act="record"]');
+  if (app.rec && app.rec.state !== 'inactive') { app.rec.stop(); return; }
+  if (!window.MediaRecorder || !renderer.cv.captureStream || !app.engine.recDest) { toast('Recording is not supported in this browser', true); return; }
+  const stream = new MediaStream([...renderer.cv.captureStream(60).getVideoTracks(), ...app.engine.recDest.stream.getAudioTracks()]);
+  const type = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'].find((t) => MediaRecorder.isTypeSupported(t));
+  const rec = new MediaRecorder(stream, type ? { mimeType: type, videoBitsPerSecond: 8e6 } : {});
+  const chunks = [], name = `sigil-${app.sigil.reduced}`;
+  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  rec.onstop = () => {
+    btn.classList.remove('rec-on'); btn.textContent = 'Record';
+    download(new Blob(chunks, { type: rec.mimeType || 'video/webm' }), `${name}.${(rec.mimeType || '').includes('mp4') ? 'mp4' : 'webm'}`);
+  };
+  rec.start(1000); app.rec = rec;
+  btn.classList.add('rec-on'); btn.textContent = 'Stop rec';
+  toast('Recording. The song loops, so stop whenever you wish', true);
+}
+
+/** Share: only the consonants travel, which is the sigil and not the desire. */
+function share() {
+  const url = location.href.split('#')[0] + '#' + app.sigil.reduced;
+  const ok = () => toast('Link copied. Only the consonants travel', true);
+  if (navigator.clipboard) navigator.clipboard.writeText(url).then(ok).catch(() => prompt('Copy this link', url));
+  else prompt('Copy this link', url);
+}
+
+/* ── Wiring ── */
+$('#castBtn').addEventListener('click', cast);
+$('#desire').addEventListener('keydown', (e) => { if (e.key === 'Enter') cast(); });
+$('#controls').addEventListener('click', (e) => {
+  const act = e.target.closest('button')?.dataset.act;
+  ({ pause: togglePause, charge: () => toggleCharge(), seal: exportSeal, record: toggleRecord, share, new: newDesire, forget })[act]?.();
+});
+$('#progress').addEventListener('click', (e) => { // seek to the section under the cursor
+  if (app.mode !== 'playing') return;
+  const r = e.currentTarget.getBoundingClientRect();
+  const beat = clamp((e.clientX - r.left) / r.width, 0, 0.999) * app.song.total;
+  app.engine.seek(app.song.sections[sectionIndexAt(app.song, beat)].start);
+});
+$('#aboutBtn').addEventListener('click', () => $('#about').classList.add('open'));
+$('#aboutClose').addEventListener('click', () => $('#about').classList.remove('open'));
+$('#about').addEventListener('click', (e) => { if (e.target.id === 'about') $('#about').classList.remove('open'); });
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'Escape') { $('#about').classList.remove('open'); toggleCharge(false); }
+  else if (e.key === ' ') { e.preventDefault(); togglePause(); }
+  else if (e.key.toLowerCase() === 'c') toggleCharge();
+});
+
+/* ── Boot: accept a shared sigil from the URL fragment ── */
+(function boot() {
+  const h = decodeURIComponent(location.hash.slice(1)).toUpperCase();
+  if (/^[BCDFGHJKLMNPQRSTVWXYZ]{3,21}$/.test(h) && new Set(h).size === h.length) {
+    $('#desire').value = h;
+    $('#desireLabel').textContent = 'A sigil has been shared with you. Cast it to hear it sing.';
+  }
+  setTimeout(() => $('#desire').focus({ preventScroll: true }), 900);
+  (function loop() { renderer.draw(app); updateHUD(); requestAnimationFrame(loop); })();
+})();
+</script>
+</body>
+</html>

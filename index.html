@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SIGIL — a generative audio/visual sigil engine</title>
+<!--
+  ============================================================================
+  SIGIL ENGINE
+  ----------------------------------------------------------------------------
+  A self-contained, serverless, generative audio/visual instrument.
+
+  PIPELINE (each stage is a numbered section in the script below):
+
+    desire text
+      └─► [1] REDUCTION     strip vowels + repeated letters (classic sigil method)
+            └─► [2] HASH    SHA-256 of the reduced letters → 32 deterministic bytes
+                  ├─► [3] GEOMETRY   letters → nodes on a 21-consonant wheel;
+                  │                  hash → ring (radius) + curvature of each stroke
+                  └─► [4] COMPOSER   geometry → melody (y = pitch, x = pan,
+                        │            stroke length = note duration);
+                        │            hash → key, mode, tempo, chords, patterns, form
+                        └─► [5] AUDIO ENGINE  Web Audio synths + look-ahead scheduler
+                              └─► [6] RENDERER  canvas drawing driven by the *audio
+                                                clock*, so pen and melody never drift
+        [7] UI glue (reduction animation, HUD, export, share link)
+
+  DETERMINISM: the same desire always yields the same sigil and the same song.
+  Nothing leaves the browser. The share link contains only the reduced
+  consonants, never the original sentence.
+  ============================================================================
+-->
+<style>
+  /* ---------- Design tokens. --hue is overwritten per-sigil from the hash. ---------- */
+  :root {
+    --hue: 42;
+    --accent: hsl(var(--hue) 75% 72%);
+    --accent-dim: hsl(var(--hue) 35% 60% / .55);
+    --ink: #e9e4d8;
+    --bg: #07060a;
+    --serif: "Cormorant Garamond", "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--ink); font-family: var(--serif); overflow: hidden; }
+  canvas#stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* Every UI "screen" is a layer that cross-fades; .on makes it visible. */
+  .layer {
+    position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
+    opacity: 0; pointer-events: none; transition: opacity 1.2s ease;
+  }
+  .layer.on { opacity: 1; }
+  .layer.on .interactive { pointer-events: auto; }
+
+  /* ---------- Intro screen ---------- */
+  #intro { justify-content: center; gap: 2.2rem; padding: 2rem; text-align: center; }
+  h1 { font-weight: 300; font-size: clamp(2.4rem, 8vw, 5rem); letter-spacing: .55em; margin-right: -.55em;
+       color: var(--accent); text-shadow: 0 0 40px hsl(var(--hue) 90% 60% / .35); }
+  .sub { font-style: italic; font-size: clamp(1rem, 2.4vw, 1.25rem); opacity: .7; max-width: 34em; line-height: 1.5; }
+  #desire {
+    width: min(40rem, 86vw); background: transparent; border: none; outline: none;
+    border-bottom: 1px solid var(--accent-dim); color: var(--ink);
+    font: 300 clamp(1.2rem, 3.4vw, 1.8rem) var(--serif); text-align: center; padding: .6rem .4rem;
+    letter-spacing: .06em; transition: border-color .4s, box-shadow .4s;
+  }
+  #desire::placeholder { color: #e9e4d855; font-style: italic; }
+  #desire:focus { border-color: var(--accent); box-shadow: 0 14px 30px -22px var(--accent); }
+  #desire.shake { animation: shake .4s; }
+  @keyframes shake { 25% { transform: translateX(-6px) } 75% { transform: translateX(6px) } }
+
+  button {
+    font: 400 .85rem var(--serif); letter-spacing: .32em; text-transform: uppercase;
+    color: var(--accent); background: transparent; border: 1px solid var(--accent-dim);
+    padding: .75rem 1.5rem .75rem 1.82rem; border-radius: 999px; cursor: pointer;
+    transition: background .3s, color .3s, border-color .3s, box-shadow .3s;
+  }
+  button:hover, button:focus-visible { background: var(--accent); color: #0a0810; border-color: var(--accent);
+    box-shadow: 0 0 30px hsl(var(--hue) 90% 60% / .4); outline: none; }
+  #msg { min-height: 1.2em; font-style: italic; opacity: .75; font-size: .95rem; }
+  #shared { display: none; }
+
+  /* ---------- Reduction animation ---------- */
+  #reducing { justify-content: center; gap: 2rem; padding: 2rem; text-align: center; }
+  #reduction { font-size: clamp(1.4rem, 4.5vw, 2.8rem); font-weight: 300; letter-spacing: .12em; line-height: 1.6; max-width: 90vw; }
+  .ch { display: inline-block; max-width: 1.4em; overflow: hidden; vertical-align: bottom; white-space: pre;
+        transition: opacity .8s ease, max-width .9s ease, color .9s ease, margin .9s ease, text-shadow .9s; }
+  .ch.struck { opacity: .22; text-decoration: line-through; }
+  .ch.gone { max-width: 0; opacity: 0; }
+  .ch.kept { color: var(--accent); margin: 0 .22em; text-shadow: 0 0 24px hsl(var(--hue) 90% 60% / .7); }
+  #phase { font-style: italic; opacity: .6; letter-spacing: .1em; min-height: 1.4em; }
+
+  /* ---------- Playing HUD ---------- */
+  #hud { justify-content: space-between; padding: clamp(.8rem, 3vh, 2rem) 1rem; text-align: center; }
+  #glyphs { font-size: clamp(1rem, 2.6vw, 1.5rem); letter-spacing: .7em; margin-right: -.7em; color: var(--accent); opacity: .9; }
+  #bottom { display: flex; flex-direction: column; align-items: center; gap: .55rem; }
+  #section { font-size: clamp(1.1rem, 3vw, 1.6rem); font-style: italic; letter-spacing: .12em; transition: opacity .6s; }
+  #info { font-size: .78rem; letter-spacing: .3em; text-transform: uppercase; opacity: .5; }
+  #controls { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; align-items: center; margin-top: .3rem; }
+  #controls button { font-size: .68rem; padding: .5rem .9rem .5rem 1.2rem; }
+  #vol { width: 90px; accent-color: var(--accent); }
+  @media (prefers-reduced-motion: reduce) { .layer, .ch { transition-duration: .01s; } }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="Animated sigil"></canvas>
+
+<!-- Screen 1: the invitation -->
+<section id="intro" class="layer on">
+  <h1>SIGIL</h1>
+  <p class="sub">State a desire. Its vowels and repetitions fall away; what remains is drawn, and sung.</p>
+  <form id="form" class="interactive" autocomplete="off">
+    <input id="desire" maxlength="140" placeholder="it is my will to…" aria-label="Statement of desire" autofocus>
+    <p id="msg" role="status"></p>
+    <button type="submit">Cast</button>
+    <button type="button" id="shared"></button>
+  </form>
+</section>
+
+<!-- Screen 2: the reduction ritual -->
+<section id="reducing" class="layer" aria-live="polite">
+  <div id="reduction"></div>
+  <div id="phase"></div>
+</section>
+
+<!-- Screen 3: heads-up display while the sigil plays -->
+<section id="hud" class="layer">
+  <div id="glyphs"></div>
+  <div id="bottom">
+    <div id="section"></div>
+    <div id="info"></div>
+    <div id="controls" class="interactive">
+      <button id="btnPause" title="Space">Pause</button>
+      <input id="vol" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
+      <button id="btnPng">Save image</button>
+      <button id="btnLink">Copy link</button>
+      <button id="btnBanish" title="Forget this sigil">Banish</button>
+    </div>
+  </div>
+</section>
+
+<noscript>This piece needs JavaScript (Canvas + Web Audio).</noscript>
+
+<script>
+'use strict';
+
+/* ============================================================================
+ * [0] SMALL UTILITIES
+ * ========================================================================== */
+const TAU   = Math.PI * 2;
+const lerp  = (a, b, t) => a + (b - a) * t;
+const mtof  = m => 440 * Math.pow(2, (m - 69) / 12);          // MIDI note → Hz
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const $     = id => document.getElementById(id);
+const NOTE_NAMES = ['C','C♯','D','E♭','E','F','F♯','G','A♭','A','B♭','B'];
+const ROMAN = n => ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII'][n % 12];
+
+/* ============================================================================
+ * [1] REDUCTION — the traditional sigil method
+ * ----------------------------------------------------------------------------
+ * 1. Write the statement of intent.   2. Strike the vowels.
+ * 3. Strike every repeated letter.    4. What remains is the raw material.
+ *
+ * We also return a per-character "fate" list so the UI can animate the ritual.
+ * 'Y' is treated as a consonant, giving a 21-letter alphabet.
+ * ========================================================================== */
+const CONSONANTS = 'BCDFGHJKLMNPQRSTVWXYZ';   // 21 letters; index = slot on the wheel
+
+function reduceDesire(text) {
+  // NFD + strip combining marks so "é" counts as "e", etc.
+  const norm = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+  const seen = new Set();
+  const steps = [];
+  let reduced = '';
+  for (const ch of norm) {
+    let fate;
+    if (!CONSONANTS.includes(ch)) fate = 'AEIOU'.includes(ch) ? 'vowel' : 'other';
+    else if (seen.has(ch))        fate = 'dup';
+    else { fate = 'keep'; seen.add(ch); reduced += ch; }
+    steps.push({ ch, fate });
+  }
+  return { reduced, steps };
+}
+
+/* ============================================================================
+ * [2] HASH + DETERMINISTIC RANDOMNESS
+ * ----------------------------------------------------------------------------
+ * SHA-256 (WebCrypto) turns the reduced letters into 256 bits. Those bits seed
+ * small PRNG streams. Separate streams for geometry and music ("domain
+ * separation") mean that tweaking one subsystem never reshuffles the other.
+ * ========================================================================== */
+async function hashBytes(str) {
+  const salted = 'SIGIL/v1/' + str;            // version tag: future changes can bump it
+  if (window.crypto && crypto.subtle) {
+    try {
+      return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salted)));
+    } catch (e) { /* fall through */ }
+  }
+  // Fallback for insecure contexts where crypto.subtle is unavailable.
+  // (xmur3 — NOT cryptographic, but still deterministic and well-mixed.)
+  const out = new Uint8Array(32);
+  let h = 1779033703 ^ salted.length;
+  for (let i = 0; i < salted.length; i++) {
+    h = Math.imul(h ^ salted.charCodeAt(i), 3432918353); h = (h << 13) | (h >>> 19);
+  }
+  for (let i = 0; i < 8; i++) {
+    h = Math.imul(h ^ (h >>> 16), 2246822507); h = Math.imul(h ^ (h >>> 13), 3266489909); h ^= h >>> 16;
+    out[i*4] = h & 255; out[i*4+1] = (h >>> 8) & 255; out[i*4+2] = (h >>> 16) & 255; out[i*4+3] = (h >>> 24) & 255;
+  }
+  return out;
+}
+
+/** sfc32 PRNG seeded from 16 hash bytes starting at `offset`. Returns () => [0,1). */
+function makeRng(hash, offset) {
+  const w = i => (hash[offset+i*4] | hash[offset+i*4+1] << 8 | hash[offset+i*4+2] << 16 | hash[offset+i*4+3] << 24) | 0;
+  let a = w(0), b = w(1), c = w(2), d = w(3);
+  const next = () => {
+    const t = (a + b | 0) + d | 0; d = d + 1 | 0;
+    a = b ^ b >>> 9; b = c + (c << 3) | 0; c = (c << 21 | c >>> 11); c = c + t | 0;
+    return (t >>> 0) / 4294967296;
+  };
+  for (let i = 0; i < 12; i++) next();         // warm-up
+  return next;
+}
+const pick = (rng, arr) => arr[Math.floor(rng() * arr.length)];
+
+/* ============================================================================
+ * [3] GEOMETRY — letters become a path inside a circle
+ * ----------------------------------------------------------------------------
+ * • The 21 consonants sit at fixed angles around a wheel (like the Golden
+ *   Dawn "rose" method): the LETTER decides the ANGLE, so the desire is
+ *   literally legible in the figure.
+ * • The HASH decides which of three concentric rings each node sits on and
+ *   whether each stroke is straight or bowed.
+ * • Consecutive nodes are forced onto different rings so every stroke
+ *   travels radially — this avoids timid figures hugging one ring.
+ * • Very short desires are extended with "echo" letters chosen by the hash,
+ *   so there is always enough material for a melody.
+ * All coordinates live in the unit circle (x right, y DOWN as on canvas).
+ * ========================================================================== */
+const RINGS = [0.30, 0.58, 0.86];
+const MIN_NODES = 6;
+
+function buildSigil(reduced, hash) {
+  const rng = makeRng(hash, 0);
+  const letters = reduced.split('');
+  for (let k = 0; k < 32 && letters.length < MIN_NODES; k++) {      // echo letters
+    const c = CONSONANTS[hash[k] % 21];
+    if (!letters.includes(c)) letters.push(c);
+  }
+
+  let ring = Math.floor(rng() * 3);
+  const nodes = letters.map((ch, i) => {
+    const slot  = CONSONANTS.indexOf(ch);
+    const angle = -Math.PI / 2 + slot / 21 * TAU;                   // slot 0 (B) at 12 o'clock
+    if (i > 0) ring = (ring + 1 + Math.floor(rng() * 2)) % 3;       // always change ring
+    const r = RINGS[ring];
+    return { ch, slot, ring, x: Math.cos(angle) * r, y: Math.sin(angle) * r };
+  });
+
+  // Strokes: quadratic Béziers. A straight stroke is a Bézier whose control
+  // point is the midpoint — one code path handles both.
+  const segs = [];
+  for (let i = 0; i < nodes.length - 1; i++) {
+    const a = nodes[i], b = nodes[i+1];
+    const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1e-6;
+    const bend = rng() < 0.4 ? (rng() < 0.5 ? -1 : 1) * (0.25 + rng() * 0.3) : 0;
+    let cx = (a.x + b.x) / 2 - dy / len * bend * len;
+    let cy = (a.y + b.y) / 2 + dx / len * bend * len;
+    const m = Math.hypot(cx, cy);
+    if (m > 0.92) { cx *= 0.92 / m; cy *= 0.92 / m; }               // keep curves inside the circle
+    segs.push({ cx, cy, len });
+  }
+  return { reduced, letters, nodes, segs, hue: Math.floor(hash[31] / 256 * 360) };
+}
+
+/* ============================================================================
+ * [4] COMPOSER — the sigil becomes a song
+ * ----------------------------------------------------------------------------
+ * MELODY (from geometry — you can *see* what you hear):
+ *   node height (y)   → pitch   (higher on screen = higher note)
+ *   node x            → stereo pan
+ *   stroke length     → note duration (long strokes = long notes)
+ *   Pitches are quantised to a PENTATONIC subset of the mode. A pentatonic
+ *   melody contains no semitone clashes, so it sits well over any diatonic
+ *   chord — this is what lets arbitrary hash-driven shapes sound intentional.
+ *
+ * HARMONY / FORM (from the hash):
+ *   key, mode, tempo, two chord progressions (A/B), bass, drum and arpeggio
+ *   patterns, FM bell timbre, and a song form of named sections. Each section
+ *   lasts exactly ONE drawing of the sigil (4 or 8 bars), and develops the
+ *   motif the way composers do: layering, octave shift, added harmony voice,
+ *   and RETROGRADE (melody backwards = sigil drawn backwards).
+ *
+ * Time unit: the sixteenth note ("s16"). Melody durations are whole eighths.
+ * ========================================================================== */
+const MODES = [
+  { name: 'Aeolian',    scale: [0,2,3,5,7,8,10], minor: true  },
+  { name: 'Dorian',     scale: [0,2,3,5,7,9,10], minor: true  },
+  { name: 'Phrygian',   scale: [0,1,3,5,7,8,10], minor: true  },
+  { name: 'Ionian',     scale: [0,2,4,5,7,9,11], minor: false },
+  { name: 'Lydian',     scale: [0,2,4,6,7,9,11], minor: false },
+  { name: 'Mixolydian', scale: [0,2,4,5,7,9,10], minor: false },
+];
+// Chord progressions as 0-based scale degrees (one chord per quarter of the loop).
+const PROGS_MINOR = [[0,5,2,6],[0,3,5,4],[0,6,5,6],[0,2,3,5],[5,6,0,0],[0,4,5,3]];
+const PROGS_MAJOR = [[0,4,5,3],[0,5,3,4],[0,3,0,4],[5,3,0,4],[0,2,3,1],[3,0,4,5]];
+// One-bar patterns on a 16-step grid.
+const BASS_PATS = [   // 1 = root, 2 = fifth, 3 = octave
+  [1,0,0,0, 0,0,1,0, 1,0,0,0, 0,0,3,0],
+  [1,0,0,1, 0,0,1,0, 0,0,1,0, 0,2,0,0],
+  [1,0,1,0, 0,0,1,0, 1,0,1,0, 0,0,2,0],
+  [1,0,0,0, 0,0,0,0, 1,0,0,0, 2,0,0,0],
+];
+const KICK_PATS = [
+  [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0],
+  [1,0,0,0, 0,0,0,1, 0,0,1,0, 0,0,0,0],
+  [1,0,0,0, 0,0,0,0, 0,0,1,0, 0,0,0,0],
+  [1,0,0,1, 0,0,1,0, 0,0,1,0, 0,1,0,0],
+];
+const RIM_PATS = [
+  [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0],
+  [0,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0],
+  [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1],
+];
+const ARP_PATS = [[0,1,2,3],[0,1,2,3,2,1],[0,2,1,3],[3,2,1,0],[0,2,3,2,1,2]];
+
+function compose(sigil, hash) {
+  const rng  = makeRng(hash, 16);
+  const pc   = Math.floor(rng() * 12);                 // tonic pitch class
+  const mode = pick(rng, MODES);
+  const bpm  = 76 + Math.floor(rng() * 37);            // 76–112
+  const n    = sigil.nodes.length;
+  const bars = n > 12 ? 8 : 4;                         // long sigils get a longer phrase
+  const len16 = bars * 16;
+
+  /** diatonic degree (may exceed 6) → semitones above tonic */
+  const degToSemis = d => mode.scale[((d % 7) + 7) % 7] + 12 * Math.floor(d / 7);
+
+  /* ---- melody pitches from node height -------------------------------- */
+  const penta   = mode.minor ? [0,2,3,4,6] : [0,1,2,4,5];       // degrees of the pentatonic subset
+  const melBase = 48 + pc + (pc < 5 ? 12 : 0);                  // keep the bell in a sweet register
+  const pentaMidi = i => melBase + 12 * Math.floor(i / 5) + mode.scale[penta[i % 5]];
+  const top = RINGS[2];
+  const pitches = sigil.nodes.map(nd => {
+    const idx = Math.round((top - nd.y) / (2 * top) * 10);       // 0 (bottom) … 10 (top): two octaves
+    return { midi: pentaMidi(idx), harm: pentaMidi(idx + 2) };   // harm = a pentatonic "third" above
+  });
+
+  /* ---- note durations from stroke lengths ----------------------------- */
+  // Every note gets one eighth; the remaining eighths are shared out in
+  // proportion to stroke length (largest-remainder rounding), so the phrase
+  // fills the loop EXACTLY. The final note gets extra weight: a cadence.
+  const eighths = bars * 8;
+  const w = sigil.segs.map(s => s.len);
+  w.push(w.reduce((a, b) => a + b, 0) / w.length * 1.5);
+  const wSum = w.reduce((a, b) => a + b, 0), free = eighths - n;
+  const raw  = w.map(x => x / wSum * free);
+  const durs = raw.map(Math.floor);
+  let left = free - durs.reduce((a, b) => a + b, 0);
+  raw.map((x, i) => [x - Math.floor(x), i]).sort((p, q) => q[0] - p[0])
+     .slice(0, left).forEach(([, i]) => durs[i]++);
+  const dur16 = durs.map(d => (d + 1) * 2);
+
+  /** Build a playable sequence + step lookup from an ordering of node indices. */
+  const makeSeq = order => {
+    const seq = []; let start = 0;
+    order.forEach(i => { seq.push({ node: i, start, dur: dur16[i] }); start += dur16[i]; });
+    seq.byStep = new Array(len16);
+    seq.forEach(nt => { seq.byStep[nt.start] = nt; });
+    return seq;
+  };
+  const fwdOrder = sigil.nodes.map((_, i) => i);
+  const seqFwd   = makeSeq(fwdOrder);
+  const seqRetro = makeSeq(fwdOrder.slice().reverse());
+
+  /* ---- harmony --------------------------------------------------------- */
+  const bank = mode.minor ? PROGS_MINOR : PROGS_MAJOR;
+  const ia = Math.floor(rng() * bank.length);
+  const ib = (ia + 1 + Math.floor(rng() * (bank.length - 1))) % bank.length;   // B ≠ A
+  const progA = bank[ia], progB = bank[ib];
+  const padBase = 48 + pc, arpBase = padBase + (pc > 5 ? 0 : 12);
+  const chords = [];
+  for (let d = 0; d < 7; d++) {
+    const root = degToSemis(d);
+    let b = 36 + pc + root; while (b > 47) b -= 12;                // keep bass low
+    chords.push({
+      pad:   [0,2,4].map(k => padBase + degToSemis(d + k)),        // diatonic triad
+      arp:   [0,2,4,7].map(k => arpBase + degToSemis(d + k)),      // triad + octave
+      bass:  b,
+      fifth: degToSemis(d + 4) - root,
+    });
+  }
+
+  /* ---- rhythm section --------------------------------------------------- */
+  const bassPat = pick(rng, BASS_PATS);
+  const bassLen = bassPat.map((v, i) => {                          // steps until the next hit
+    if (!v) return 0; let k = 1; while (k < 16 && !bassPat[(i + k) % 16]) k++; return k;
+  });
+  const kickPat = pick(rng, KICK_PATS), rimPat = pick(rng, RIM_PATS);
+  const sixteenthHats = rng() < 0.5;
+  const hatPat = Array.from({ length: 16 }, (_, i) =>
+    i % 4 === 2 ? 0.9 : i % 2 === 0 ? 0.45 : (sixteenthHats && rng() < 0.7 ? 0.18 + rng() * 0.2 : 0));
+  const arpPat  = pick(rng, ARP_PATS);
+  const arpRate = bpm < 92 ? 1 : 2;                                // 16ths when slow, 8ths when fast
+
+  /* ---- song form --------------------------------------------------------
+   * Ritual-named sections; each = one full drawing of the sigil.
+   * drums: 0 none, 1 kick+hats, 2 full kit.  bright = pad filter cutoff (Hz). */
+  const S = (name, prog, o) => Object.assign(
+    { name, prog, drone: 0, pad: 0, bass: 0, arp: 0, drums: 0, octave: 0, harmony: 0, retro: 0, bright: 1100 }, o);
+  const up = melBase <= 57 ? 1 : 0;                                // only lift an octave if there's headroom
+  const sections = [
+    S('Invocation', progA, { drone: 1 }),
+    S('Gathering',  progA, { drone: 1, pad: 1 }),
+    S('Kindling',   progA, { pad: 1, bass: 1, arp: 1, drums: 1, bright: 1500 }),
+    S('Charging',   progA, { pad: 1, bass: 1, arp: 1, drums: 2, bright: 1900 }),
+    S('Gnosis',     progB, { pad: 1, bass: 1, arp: 1, drums: 2, octave: up, harmony: 1, bright: 2800 }),
+    S('Reversal',   progB, { drone: 1, pad: 1, arp: 1, retro: 1, bright: 1300 }),
+    S('Charging',   progA, { pad: 1, bass: 1, arp: 1, drums: 2, harmony: 1, bright: 2200 }),
+    S('Release',    progA, { drone: 1, pad: 1, bass: 1, bright: 900 }),
+  ];
+  if (rng() < 0.5)   // half of all sigils get an extra climax: Gnosis answered backwards
+    sections.splice(5, 0, S('Ecstasy', progB, { pad: 1, bass: 1, arp: 1, drums: 2, octave: up, harmony: 1, retro: 1, bright: 3000 }));
+
+  return {
+    pc, mode, bpm, bars, len16, s16: 60 / bpm / 4,
+    pitches, seqFwd, seqRetro, chords, sections, loopTo: 1,       // after the last section, skip the intro
+    bassPat, bassLen, kickPat, rimPat, hatPat, arpPat, arpRate,
+    fmRatio: pick(rng, [2, 3, 3.5, 1.4142, 4]),                   // bell timbre: modulator ratio
+    fmIndex: 1.2 + rng() * 2,                                     // bell timbre: brightness
+  };
+}
+
+/* ============================================================================
+ * [5] AUDIO ENGINE — Web Audio synthesis + look-ahead scheduler
+ * ----------------------------------------------------------------------------
+ * Everything is synthesised (no samples): FM bell lead, detuned-saw pad,
+ * saw+sub bass, triangle pluck arpeggio, synthesised kick/hat/rim, a tonic
+ * drone, and a convolution reverb whose impulse response is generated noise.
+ *
+ * Scheduling follows the standard "two clocks" pattern: a coarse JS timer
+ * wakes often and schedules notes slightly ahead on the sample-accurate
+ * audio clock. The renderer then reads the audio clock, so visuals are
+ * slaved to sound rather than the other way round.
+ * ========================================================================== */
+function createEngine(ctx, song) {
+  const s16 = song.s16;
+
+  /* ---- master chain & effects ---- */
+  const master = ctx.createGain(); master.gain.value = 0.8;
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -14; comp.ratio.value = 4; comp.attack.value = 0.01; comp.release.value = 0.25;
+  master.connect(comp).connect(ctx.destination);
+
+  const reverb = ctx.createConvolver();
+  { // impulse response: stereo noise with a smooth decay ≈ a large stone hall
+    const len = Math.floor(ctx.sampleRate * 3.8), buf = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (let c = 0; c < 2; c++) { const d = buf.getChannelData(c);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.2); }
+    reverb.buffer = buf;
+  }
+  const revOut = ctx.createGain(); revOut.gain.value = 0.85; reverb.connect(revOut).connect(master);
+
+  // Tempo-synced dotted-eighth delay with a darkened feedback path.
+  const delay = ctx.createDelay(2); delay.delayTime.value = s16 * 3;
+  const dTone = ctx.createBiquadFilter(); dTone.type = 'lowpass'; dTone.frequency.value = 2400;
+  const dFb = ctx.createGain(); dFb.gain.value = 0.36;
+  const dOut = ctx.createGain(); dOut.gain.value = 0.5;
+  delay.connect(dTone); dTone.connect(dFb).connect(delay); dTone.connect(dOut).connect(master); dTone.connect(reverb);
+
+  /** Instrument bus with fixed dry / reverb / delay send levels. */
+  const bus = (dry, rev, del) => {
+    const g = ctx.createGain();
+    const d = ctx.createGain(); d.gain.value = dry; g.connect(d).connect(master);
+    if (rev) { const r = ctx.createGain(); r.gain.value = rev; g.connect(r).connect(reverb); }
+    if (del) { const x = ctx.createGain(); x.gain.value = del; g.connect(x).connect(delay); }
+    return g;
+  };
+  const B = { mel: bus(0.8, 0.45, 0.3), pad: bus(0.5, 0.6, 0), bass: bus(0.9, 0.05, 0),
+              arp: bus(0.5, 0.3, 0.35), drum: bus(0.9, 0.12, 0), drone: bus(0.6, 0.5, 0) };
+
+  const noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+  { const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+
+  const osc = (type, f) => { const o = ctx.createOscillator(); o.type = type; o.frequency.value = f; return o; };
+  /** Percussive envelope: fast attack to `peak`, exponential decay over `len`. */
+  const perc = (param, t, atk, peak, len) => {
+    param.setValueAtTime(0.0001, t);
+    param.exponentialRampToValueAtTime(peak, t + atk);
+    param.exponentialRampToValueAtTime(0.0001, t + len);
+  };
+
+  /* ---- voices ---- */
+
+  /** Lead: FM bell strike (the "pen touching a node") + a soft sustained body. */
+  function bell(t, midi, dur, pan, vel) {
+    const f = mtof(midi), len = Math.max(1.6, dur * 1.3);
+    const out = ctx.createStereoPanner(); out.pan.value = pan; out.connect(B.mel);
+    const car = osc('sine', f), mod = osc('sine', f * song.fmRatio), mg = ctx.createGain();
+    const idx = song.fmIndex * Math.min(1, 520 / f);              // tame brightness up high
+    mg.gain.setValueAtTime(f * idx, t); mg.gain.exponentialRampToValueAtTime(f * 0.02, t + 0.9);
+    mod.connect(mg).connect(car.frequency);
+    const a = ctx.createGain(); perc(a.gain, t, 0.004, vel * 0.5, len); car.connect(a).connect(out);
+    const body = osc('triangle', f), bg = ctx.createGain(), atk = Math.min(0.12, dur * 0.4);
+    bg.gain.setValueAtTime(0.0001, t); bg.gain.exponentialRampToValueAtTime(vel * 0.15, t + atk);
+    bg.gain.setValueAtTime(vel * 0.15, t + Math.max(atk, dur * 0.8));
+    bg.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.5);
+    body.connect(bg).connect(out);
+    [car, mod].forEach(o => { o.start(t); o.stop(t + len + 0.1); });
+    body.start(t); body.stop(t + dur + 0.6);
+  }
+
+  /** Pad: detuned saw pairs through a slowly opening low-pass. */
+  function pad(t, midis, dur, bright) {
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.Q.value = 0.7;
+    f.frequency.setValueAtTime(420, t); f.frequency.linearRampToValueAtTime(bright, t + dur * 0.5);
+    f.frequency.linearRampToValueAtTime(500, t + dur + 1.5);
+    const g = ctx.createGain(), atk = Math.min(1, dur * 0.4);
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(0.1, t + atk);
+    g.gain.setValueAtTime(0.1, t + dur); g.gain.linearRampToValueAtTime(0.0001, t + dur + 1.6);
+    f.connect(g).connect(B.pad);
+    for (const m of midis) for (const det of [-8, 8]) {
+      const o = osc('sawtooth', mtof(m)); o.detune.value = det; o.connect(f); o.start(t); o.stop(t + dur + 1.7);
+    }
+  }
+
+  function bass(t, midi, dur) {
+    const f = mtof(midi), saw = osc('sawtooth', f), sub = osc('sine', f);
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 2;
+    lp.frequency.setValueAtTime(700, t); lp.frequency.exponentialRampToValueAtTime(160, t + Math.min(0.4, dur));
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.42, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.25, t + dur * 0.7); g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.08);
+    saw.connect(lp).connect(g); sub.connect(g); g.connect(B.bass);
+    [saw, sub].forEach(o => { o.start(t); o.stop(t + dur + 0.15); });
+  }
+
+  function pluck(t, midi, pan, vel) {
+    const o = osc('triangle', mtof(midi)), g = ctx.createGain(), p = ctx.createStereoPanner();
+    p.pan.value = pan; perc(g.gain, t, 0.003, vel, 0.35);
+    o.connect(g).connect(p).connect(B.arp); o.start(t); o.stop(t + 0.4);
+  }
+
+  function kick(t) {
+    const o = osc('sine', 130), g = ctx.createGain();
+    o.frequency.setValueAtTime(130, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.11);
+    perc(g.gain, t, 0.002, 0.85, 0.32); o.connect(g).connect(B.drum); o.start(t); o.stop(t + 0.35);
+  }
+  function noiseHit(t, type, freq, q, peak, len) {
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q;
+    const g = ctx.createGain(); perc(g.gain, t, 0.001, peak, len);
+    s.connect(f).connect(g).connect(B.drum); s.start(t, Math.random() * 0.5); s.stop(t + len + 0.05);
+  }
+  const hat = (t, v) => noiseHit(t, 'highpass', 8000, 0.7, 0.16 * v, v > 0.8 ? 0.11 : 0.045);
+  const rim = t => noiseHit(t, 'bandpass', 1700, 1, 0.32, 0.16);
+
+  /* ---- drone: tonic + fifth, always running, level set per section ---- */
+  const droneGain = ctx.createGain(); droneGain.gain.value = 0.0001; droneGain.connect(B.drone);
+  const droneOscs = [[0, 'sine', 0.5], [7, 'sine', 0.28], [12, 'triangle', 0.12]].map(([semi, type, lvl]) => {
+    const o = osc(type, mtof(36 + song.pc + semi)), g = ctx.createGain(); g.gain.value = lvl;
+    o.connect(g).connect(droneGain); o.start(); return o;
+  });
+
+  /* ---- scheduler state ---- */
+  let step = 0, secIdx = 0, nextTime = 0, timer = null, cycleCount = 0;
+  const cycles = [];   // recent loop starts on the audio clock, read by the renderer
+  const pulses = [];   // recent note onsets {t, node} for node ripples
+
+  /** Schedule everything that begins on the current sixteenth at audio time t. */
+  function scheduleStep(t) {
+    const sec = song.sections[secIdx];
+    if (step === 0) {                                            // a new drawing of the sigil begins
+      cycles.push({ t0: t, sec, count: cycleCount++ }); if (cycles.length > 4) cycles.shift();
+      droneGain.gain.setTargetAtTime(sec.drone ? 0.2 : 0.05, t, 1.5);
+    }
+    // Melody — ALWAYS plays, so the pen is never silent.
+    const note = (sec.retro ? song.seqRetro : song.seqFwd).byStep[step];
+    if (note) {
+      const p = song.pitches[note.node], x = sigilPan(note.node);
+      const vel = 0.5 + (step % 16 === 0 ? 0.2 : step % 8 === 0 ? 0.1 : 0);   // metric accent
+      bell(t, p.midi + sec.octave * 12, note.dur * s16, x, vel);
+      if (sec.harmony) bell(t, p.harm + sec.octave * 12, note.dur * s16, -x, vel * 0.4);
+      pulses.push({ t, node: note.node }); if (pulses.length > 24) pulses.shift();
+    }
+    // Harmony — one chord per quarter of the loop.
+    const chordLen = song.len16 / 4, chord = song.chords[sec.prog[Math.floor(step / chordLen)]];
+    if (sec.pad && step % chordLen === 0) pad(t, chord.pad, chordLen * s16, sec.bright);
+    const b = step % 16, bp = song.bassPat[b];
+    if (sec.bass && bp)
+      bass(t, chord.bass + (bp === 2 ? chord.fifth : bp === 3 ? 12 : 0), song.bassLen[b] * s16 * 0.9);
+    if (sec.arp && step % song.arpRate === 0) {
+      const k = step / song.arpRate;
+      pluck(t, chord.arp[song.arpPat[k % song.arpPat.length]], k % 2 ? 0.45 : -0.45, b % 4 === 0 ? 0.2 : 0.13);
+    }
+    if (sec.drums) {
+      if (song.kickPat[b]) kick(t);
+      if (song.hatPat[b]) hat(t, song.hatPat[b]);
+      if (sec.drums > 1 && song.rimPat[b]) rim(t);
+    }
+  }
+  let sigilPan = () => 0;   // injected by the app: node index → pan position
+
+  function tick() {
+    // Browsers throttle timers in background tabs to ~1 Hz, so look further ahead when hidden.
+    const ahead = document.hidden ? 2.5 : 0.18;
+    if (nextTime < ctx.currentTime - 0.3) nextTime = ctx.currentTime + 0.05;   // recover after a long stall
+    while (nextTime < ctx.currentTime + ahead) {
+      scheduleStep(nextTime);
+      nextTime += s16;
+      if (++step >= song.len16) { step = 0; if (++secIdx >= song.sections.length) secIdx = song.loopTo; }
+    }
+  }
+  const onVis = () => tick();
+  document.addEventListener('visibilitychange', onVis);
+
+  return {
+    ctx,
+    setPan(fn) { sigilPan = fn; },
+    start() { nextTime = ctx.currentTime + 0.3; tick(); timer = setInterval(tick, 25); },
+    setVolume(v) { master.gain.setTargetAtTime(v, ctx.currentTime, 0.05); },
+    /** Where are we *right now* on the audio clock? Used by the renderer. */
+    view() {
+      const ta = ctx.currentTime - (ctx.outputLatency || 0);     // compensate for output latency where known
+      let c = null; for (const x of cycles) if (x.t0 <= ta) c = x;
+      return c ? { ta, cycle: c, pos16: Math.min(song.len16 - 1e-6, (ta - c.t0) / s16), pulses } : null;
+    },
+    stop() {
+      clearInterval(timer); document.removeEventListener('visibilitychange', onVis);
+      master.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.3);
+      setTimeout(() => { droneOscs.forEach(o => { try { o.stop(); } catch (e) {} }); ctx.close(); }, 1600);
+    },
+  };
+}
+
+/* ============================================================================
+ * [6] RENDERER — canvas, slaved to the audio clock
+ * ----------------------------------------------------------------------------
+ * Drawing functions take (g, cx, cy, R) so the same code renders the live
+ * view and the high-resolution PNG export.
+ * ========================================================================== */
+const cv = $('stage'), g2 = cv.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR; g2.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+addEventListener('resize', resize); resize();
+
+const hsla = (h, s, l, a) => `hsla(${h},${s}%,${l}%,${a})`;
+
+/** The consonant wheel: outer rings, 21 letters, three guide rings, a slowly turning ornament. */
+function drawWheel(g, cx, cy, R, hue, sigil, time, pulse) {
+  g.save(); g.translate(cx, cy);
+  g.lineWidth = Math.max(1, R * 0.004);
+  g.strokeStyle = hsla(hue, 50, 70, 0.35 + pulse * 0.25);
+  g.beginPath(); g.arc(0, 0, R, 0, TAU); g.stroke();
+  g.beginPath(); g.arc(0, 0, R * 1.12, 0, TAU); g.stroke();
+  // guide rings (where nodes may sit)
+  g.setLineDash([R * 0.006, R * 0.03]); g.strokeStyle = hsla(hue, 40, 70, 0.16);
+  for (const r of RINGS) { g.beginPath(); g.arc(0, 0, R * r, 0, TAU); g.stroke(); }
+  // rotating outer ornament: gives the still figure a sense of breathing time
+  g.setLineDash([R * 0.05, R * 0.025]); g.strokeStyle = hsla(hue, 50, 70, 0.2 + pulse * 0.2);
+  g.save(); g.rotate(time * 0.03); g.beginPath(); g.arc(0, 0, R * 1.18, 0, TAU); g.stroke(); g.restore();
+  g.setLineDash([]);
+  // letters + ticks; letters present in this sigil are lit
+  g.font = `${R * 0.055}px ${getComputedStyle(document.body).fontFamily}`;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  for (let i = 0; i < 21; i++) {
+    const a = -Math.PI / 2 + i / 21 * TAU, lit = sigil && sigil.letters.includes(CONSONANTS[i]);
+    g.fillStyle = lit ? hsla(hue, 80, 80, 0.95) : hsla(hue, 25, 75, 0.28);
+    g.fillText(CONSONANTS[i], Math.cos(a) * R * 1.06, Math.sin(a) * R * 1.06);
+    g.strokeStyle = hsla(hue, 50, 70, lit ? 0.7 : 0.25);
+    g.beginPath(); g.moveTo(Math.cos(a) * R * 0.97, Math.sin(a) * R * 0.97); g.lineTo(Math.cos(a) * R, Math.sin(a) * R); g.stroke();
+  }
+  g.restore();
+}
+
+/**
+ * Build (but don't stroke) the sigil path following `seq` up to note j,
+ * fraction tt of the way along the stroke leaving that note.
+ * Returns the pen-tip position in pixels.
+ */
+function tracePath(g, cx, cy, R, sigil, seq, j, tt) {
+  const N = sigil.nodes, X = v => cx + v * R, Y = v => cy + v * R;
+  let tip = { x: X(N[seq[0].node].x), y: Y(N[seq[0].node].y) };
+  g.beginPath(); g.moveTo(tip.x, tip.y);
+  for (let k = 0; k <= j && k < seq.length - 1; k++) {
+    const a = N[seq[k].node], b = N[seq[k+1].node];
+    const s = sigil.segs[Math.min(seq[k].node, seq[k+1].node)];   // same stroke in either direction
+    const t = k < j ? 1 : tt;
+    if (t >= 1) { g.quadraticCurveTo(X(s.cx), Y(s.cy), X(b.x), Y(b.y)); tip = { x: X(b.x), y: Y(b.y) }; }
+    else {
+      // de Casteljau split: first part of a quadratic Bézier at parameter t
+      const c1x = lerp(a.x, s.cx, t), c1y = lerp(a.y, s.cy, t);
+      const c2x = lerp(s.cx, b.x, t), c2y = lerp(s.cy, b.y, t);
+      const px = lerp(c1x, c2x, t), py = lerp(c1y, c2y, t);
+      g.quadraticCurveTo(X(c1x), Y(c1y), X(px), Y(py)); tip = { x: X(px), y: Y(py) };
+    }
+  }
+  return tip;
+}
+
+/** Stroke the current path as luminous ink: wide coloured glow + thin bright core. */
+function inkStroke(g, R, hue, alpha, glow, scale) {
+  g.lineCap = 'round'; g.lineJoin = 'round';
+  g.shadowColor = hsla(hue, 95, 60, alpha); g.shadowBlur = R * 0.07 * glow * scale;
+  g.strokeStyle = hsla(hue, 90, 66, 0.55 * alpha); g.lineWidth = R * 0.02; g.stroke();
+  g.shadowBlur = 0;
+  g.strokeStyle = hsla(hue, 60, 93, alpha); g.lineWidth = R * 0.007; g.stroke();
+}
+
+/** Traditional sigil terminals: an open ring where the line begins, a crossbar where it ends. */
+function drawTerminals(g, cx, cy, R, sigil, hue, aStart, aEnd) {
+  const N = sigil.nodes, first = N[0], last = N[N.length - 1], ls = sigil.segs[sigil.segs.length - 1];
+  g.lineWidth = R * 0.008; g.lineCap = 'round';
+  if (aStart > 0) {
+    g.strokeStyle = hsla(hue, 60, 92, aStart); g.fillStyle = '#07060a';
+    g.beginPath(); g.arc(cx + first.x * R, cy + first.y * R, R * 0.03, 0, TAU); g.fill(); g.stroke();
+  }
+  if (aEnd > 0) {
+    let dx = last.x - ls.cx, dy = last.y - ls.cy; const m = Math.hypot(dx, dy) || 1; dx /= m; dy /= m;
+    const px = cx + last.x * R, py = cy + last.y * R, h = R * 0.045;
+    g.strokeStyle = hsla(hue, 60, 92, aEnd);
+    g.beginPath(); g.moveTo(px - dy * h, py + dx * h); g.lineTo(px + dy * h, py - dx * h); g.stroke();
+  }
+}
+
+/* ---- application state shared by renderer and UI ---- */
+const app = { state: 'idle', sigil: null, song: null, engine: null, hue: 42, shownCycle: -1 };
+const particles = [];          // decorative sparks from the pen tip (intentionally non-deterministic)
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+let lastMs = performance.now();
+
+function frame(ms) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (ms - lastMs) / 1000); lastMs = ms;
+  const time = ms / 1000;
+  // ease the displayed hue toward the sigil's hue (shortest way round the colour wheel)
+  const target = app.sigil ? app.sigil.hue : 42;
+  app.hue += (((target - app.hue + 540) % 360) - 180) * Math.min(1, dt * 2);
+  const hue = (app.hue + 360) % 360;
+
+  const cx = W / 2, cy = H * 0.47, R = Math.min(W * 0.40, H * 0.30);
+  const view = app.state === 'playing' && app.engine ? app.engine.view() : null;
+
+  // Beat pulse straight from the musical position: decays across each quarter note.
+  let pulse = 0;
+  if (view) pulse = Math.exp(-((view.pos16 % 4) / 4) * 3.2) * (view.cycle.sec.drums ? 1 : 0.35);
+
+  // backdrop
+  g2.fillStyle = '#07060a'; g2.fillRect(0, 0, W, H);
+  const bgR = Math.max(R * 2.4, 1);
+  const grad = g2.createRadialGradient(cx, cy, 0, cx, cy, bgR);
+  grad.addColorStop(0, hsla(hue, 60, 40, 0.10 + pulse * 0.05)); grad.addColorStop(1, hsla(hue, 60, 40, 0));
+  g2.fillStyle = grad; g2.fillRect(0, 0, W, H);
+
+  const idleFade = app.state === 'playing' ? 1 : 0.45;            // wheel is a faint watermark behind the UI
+  g2.globalAlpha = idleFade;
+  drawWheel(g2, cx, cy, R, hue, app.state === 'idle' ? null : app.sigil, time, pulse);
+  g2.globalAlpha = 1;
+
+  if (view) {
+    const { cycle, pos16, ta } = view, sigil = app.sigil, song = app.song;
+    const seq = cycle.sec.retro ? song.seqRetro : song.seqFwd, last = seq.length - 1;
+
+    // locate the sounding note j and how far (tt) we are through it
+    let j = 0; while (j < last && pos16 >= seq[j].start + seq[j].dur) j++;
+    const lin = Math.min(1, Math.max(0, (pos16 - seq[j].start) / seq[j].dur));
+    const tt = 0.5 - 0.5 * Math.cos(Math.PI * lin);              // ease in/out: the pen "lands" on each note
+
+    // ghost of the whole sigil: absent on the very first drawing (a reveal),
+    // then a memory that flares briefly each time a new drawing begins
+    if (cycle.count > 0) {
+      const ghost = 0.14 + 0.5 * Math.exp(-pos16 * song.s16 * 1.6);
+      tracePath(g2, cx, cy, R, sigil, song.seqFwd, song.seqFwd.length - 1, 1);
+      inkStroke(g2, R, hue, ghost, 0.6, DPR);
+      drawTerminals(g2, cx, cy, R, sigil, hue, ghost, ghost);
+    }
+
+    // the live stroke; it flares while the final note rings ("charged")
+    const done = j === last ? Math.sin(Math.PI * lin) : 0;
+    const tip = tracePath(g2, cx, cy, R, sigil, seq, j, tt);
+    inkStroke(g2, R, hue, 1, 1 + pulse * 0.5 + done * 1.5, DPR);
+    const visited = new Set(seq.slice(0, j + 1).map(s => s.node));
+    drawTerminals(g2, cx, cy, R, sigil, hue, visited.has(0) ? 1 : 0, visited.has(sigil.nodes.length - 1) ? 1 : 0);
+
+    // node ripples on every note onset
+    for (const p of view.pulses) {
+      const age = ta - p.t; if (age < 0 || age > 1.2) continue;
+      const nd = sigil.nodes[p.node], k = 1 - age / 1.2;
+      g2.strokeStyle = hsla(hue, 90, 80, k * k); g2.lineWidth = R * 0.006;
+      g2.beginPath(); g2.arc(cx + nd.x * R, cy + nd.y * R, R * (0.02 + age * 0.13), 0, TAU); g2.stroke();
+    }
+
+    // pen tip + sparks
+    g2.shadowColor = hsla(hue, 100, 70, 1); g2.shadowBlur = R * 0.12 * DPR;
+    g2.fillStyle = '#fff'; g2.beginPath(); g2.arc(tip.x, tip.y, R * 0.012, 0, TAU); g2.fill(); g2.shadowBlur = 0;
+    if (!reduceMotion && app.engine.ctx.state === 'running' && particles.length < 160) {
+      const a = Math.random() * TAU, v = R * (0.05 + Math.random() * 0.2);
+      particles.push({ x: tip.x, y: tip.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1 });
+    }
+
+    // HUD: announce the section when a new drawing starts
+    if (cycle.count !== app.shownCycle) {
+      app.shownCycle = cycle.count;
+      $('section').textContent = `${ROMAN(cycle.count)} · ${cycle.sec.name}`;
+    }
+  }
+
+  // sparks (kept outside `view` so they fade gracefully after a banish)
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i]; p.life -= dt * 1.4;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.96; p.vy *= 0.96;
+    g2.fillStyle = hsla(hue, 90, 80, p.life * 0.7);
+    g2.beginPath(); g2.arc(p.x, p.y, 1.2 * p.life + 0.3, 0, TAU); g2.fill();
+  }
+}
+requestAnimationFrame(frame);
+
+/** Render the completed sigil to a 2000×2000 PNG and download it. */
+function exportPng() {
+  const S = 2000, c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d'), { sigil, song } = app, R = S * 0.36, cx = S / 2, cy = S / 2;
+  g.fillStyle = '#07060a'; g.fillRect(0, 0, S, S);
+  const grad = g.createRadialGradient(cx, cy, 0, cx, cy, R * 1.6);
+  grad.addColorStop(0, hsla(sigil.hue, 60, 40, 0.16)); grad.addColorStop(1, hsla(sigil.hue, 60, 40, 0));
+  g.fillStyle = grad; g.fillRect(0, 0, S, S);
+  drawWheel(g, cx, cy, R, sigil.hue, sigil, 0, 0.3);
+  tracePath(g, cx, cy, R, sigil, song.seqFwd, song.seqFwd.length - 1, 1);
+  inkStroke(g, R, sigil.hue, 1, 1.4, 1);
+  drawTerminals(g, cx, cy, R, sigil, sigil.hue, 1, 1);
+  c.toBlob(blob => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = `sigil-${sigil.reduced}.png`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  });
+}
+
+/* ============================================================================
+ * [7] UI GLUE
+ * ========================================================================== */
+const show = id => { for (const l of ['intro', 'reducing', 'hud']) $(l).classList.toggle('on', l === id); };
+
+/** Animate the reduction so the user *watches* the desire become the sigil's letters. */
+async function playReduction(steps) {
+  const box = $('reduction'), phase = $('phase'); box.innerHTML = '';
+  const spans = steps.map(s => {
+    const e = document.createElement('span'); e.className = 'ch';
+    e.textContent = s.ch === ' ' ? '\u00a0' : s.ch; box.appendChild(e); return e;
+  });
+  const mark = (fate, cls) => steps.forEach((s, i) => { if (s.fate === fate) spans[i].classList.add(cls); });
+  const has = fate => steps.some(s => s.fate === fate);
+  phase.textContent = 'the statement'; show('reducing'); await sleep(1500);
+  if (has('vowel')) { phase.textContent = 'vowels fall away'; mark('vowel', 'struck'); await sleep(1300); }
+  if (has('dup'))   { phase.textContent = 'repetitions fall away'; mark('dup', 'struck'); await sleep(1300); }
+  phase.textContent = 'what remains';
+  ['vowel', 'dup', 'other'].forEach(f => mark(f, 'gone')); mark('keep', 'kept');
+  await sleep(2200);
+}
+
+/** The main action: desire → sigil → song → play. Must be called from a user gesture. */
+async function cast(text) {
+  if (app.state !== 'idle') return;
+  const { reduced, steps } = reduceDesire(text);
+  if (!reduced) {
+    $('msg').textContent = 'a desire needs at least one consonant';
+    $('desire').classList.remove('shake'); void $('desire').offsetWidth; $('desire').classList.add('shake');
+    return;
+  }
+  app.state = 'reducing'; $('msg').textContent = '';
+
+  // Create the AudioContext synchronously inside the click/submit handler —
+  // browsers only allow audio to start from a direct user gesture.
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC({ latencyHint: 'interactive' }); ctx.resume();
+
+  const hash = await hashBytes(reduced);
+  const sigil = buildSigil(reduced, hash), song = compose(sigil, hash);
+  app.sigil = sigil; app.song = song; app.shownCycle = -1;
+  document.documentElement.style.setProperty('--hue', sigil.hue);
+
+  // Shareable, private link: only the reduced consonants go in the URL.
+  try { history.replaceState(null, '', '#' + reduced); } catch (e) {}
+
+  await playReduction(steps);
+
+  const engine = createEngine(ctx, song);
+  engine.setPan(i => sigil.nodes[i].x * 0.8);
+  engine.setVolume(+$('vol').value);
+  app.engine = engine;
+
+  $('glyphs').textContent = sigil.reduced;
+  $('section').textContent = '';
+  $('info').textContent = `${NOTE_NAMES[song.pc]} ${song.mode.name} · ${song.bpm} bpm · ${sigil.nodes.length} nodes`;
+  $('btnPause').textContent = 'Pause';
+  show('hud'); app.state = 'playing'; engine.start();
+}
+
+/** Banish: in the tradition, a charged sigil is released and forgotten. */
+function banish() {
+  if (app.state !== 'playing') return;
+  app.engine.stop(); app.engine = null; app.sigil = null; app.song = null; app.state = 'idle';
+  document.documentElement.style.setProperty('--hue', 42);
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+  $('desire').value = ''; $('shared').style.display = 'none'; show('intro'); $('desire').focus();
+}
+
+function togglePause() {
+  if (app.state !== 'playing') return;
+  const ctx = app.engine.ctx;
+  // Suspending the context freezes the audio clock; the renderer reads that clock, so the pen freezes too.
+  if (ctx.state === 'running') { ctx.suspend(); $('btnPause').textContent = 'Resume'; }
+  else { ctx.resume(); $('btnPause').textContent = 'Pause'; }
+}
+
+$('form').addEventListener('submit', e => { e.preventDefault(); cast($('desire').value); });
+$('btnPause').addEventListener('click', togglePause);
+$('btnBanish').addEventListener('click', banish);
+$('btnPng').addEventListener('click', exportPng);
+$('vol').addEventListener('input', e => app.engine && app.engine.setVolume(+e.target.value));
+$('btnLink').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(location.href); $('btnLink').textContent = 'Copied'; }
+  catch (e) { prompt('Copy this link:', location.href); }
+  setTimeout(() => { $('btnLink').textContent = 'Copy link'; }, 1600);
+});
+addEventListener('keydown', e => {
+  if (e.code === 'Space' && app.state === 'playing' && !/^(INPUT|BUTTON)$/.test(document.activeElement.tagName)) {
+    e.preventDefault(); togglePause();
+  }
+});
+
+// Arriving via a shared link (#LETTERS): offer to awaken it. A click is still
+// required because browsers refuse to start audio without a user gesture.
+(() => {
+  const h = decodeURIComponent(location.hash.slice(1)).toUpperCase();
+  if (/^[B-DF-HJ-NP-TV-Z]{1,21}$/.test(h) && reduceDesire(h).reduced === h) {
+    const b = $('shared'); b.textContent = `Awaken shared sigil · ${h}`; b.style.display = 'inline-block';
+    b.addEventListener('click', () => cast(h));
+  }
+})();
+</script>
+</body>
+</html>

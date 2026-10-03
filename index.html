@@ -1739,5 +1739,872 @@ document.addEventListener('keydown', (e) => {
   (function loop() { renderer.draw(app); updateHUD(); requestAnimationFrame(loop); })();
 })();
 </script>
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     SIGIL EXTENSIONS  v1
+     Paste between the core </script> and </body>. Requires the core file as-is.
+
+     ARCHITECTURE
+       KERNEL   – hooks, storage, panels, chips, keys, hot-swap recomposition
+       MODULES  – ten independent features registered with K.module(name, fn)
+
+     HOW IT ATTACHES (no core edits)
+       The core's top-level functions are global, and its classes/consts are
+       visible to later scripts. The kernel wraps a few of them once and
+       turns them into named hooks that modules subscribe to:
+         Engine.load      → 'load'        (buses exist; engine, song)
+         Engine.start     → 'start'       (a cast has begun playing; sigil, song)
+         Engine.banish    → 'forget'      (sigil is being burned; sigil)
+         makePlan         → 'plan'        (mutate the 7-section plan)
+         composeSong      → 'precompose' / 'postcompose' / 'compose' (song, sigil)
+         applyPalette     → K.paletteFilters (array of p => p)
+         Renderer.drawPlaying / drawReducing → 'draw' / 'drawReducing'
+       Engine.pump and Engine.beatNow are REPLACED (section looping).
+     ═══════════════════════════════════════════════════════════════════════════ -->
+     <style id="sx-style">
+      /* Header dock + side drawers */
+      .sx-dock { display: flex; gap: 2px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+      .sx-panel {
+        position: absolute; top: 0; right: 0; bottom: 0; width: min(350px, 94vw);
+        padding: 22px 24px 28px; background: rgba(0,0,0,.78);
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+        border-left: 1px solid rgba(var(--line), .14); overflow: auto; pointer-events: auto;
+        transform: translateX(102%); visibility: hidden; transition: transform .45s ease, visibility .45s;
+      }
+      .sx-panel.open { transform: none; visibility: visible; }
+      body.charging .sx-panel { display: none; }
+      .sx-panel h2 { font-weight: normal; font-style: italic; font-size: 25px; margin: 14px 0 4px; }
+      .sx-panel h3 { font-weight: normal; font-size: 10.5px; letter-spacing: .3em; text-transform: uppercase; color: rgb(var(--accent)); margin: 20px 0 8px; }
+      .sx-note { font-size: 13px; opacity: .6; line-height: 1.55; margin: 0 0 12px; }
+      .sx-row { display: grid; grid-template-columns: 62px 1fr 44px; align-items: center; gap: 10px; margin: 8px 0;
+                font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase; }
+      .sx-row output { text-align: right; opacity: .6; letter-spacing: .04em; }
+      .sx-row button { padding: 4px 0; font-size: 10px; letter-spacing: .1em; }
+      .sx-row button.on { color: rgb(var(--accent)); border-color: rgba(var(--accent), .8); }
+      .sx-panel input[type=range] { width: 100%; accent-color: rgb(var(--accent)); height: 18px; background: transparent; }
+      .sx-panel select { background: #000; color: rgb(var(--line)); border: 1px solid rgba(var(--line), .3); font-family: inherit; font-size: 14px; padding: 5px 8px; }
+      .sx-check { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0; font-size: 14.5px; line-height: 1.4; cursor: pointer; }
+      .sx-check input { accent-color: rgb(var(--accent)); margin-top: 3px; }
+      .sx-opt { display: block; width: 100%; text-align: left; margin: 8px 0; padding: 11px 13px; text-transform: none; letter-spacing: .02em; font-size: 15px; }
+      .sx-opt small { display: block; opacity: .55; font-size: 12.5px; margin-top: 3px; font-style: italic; }
+      .sx-opt.on { border-color: rgba(var(--accent), .85); box-shadow: 0 0 18px rgba(var(--accent), .14); }
+      .sx-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+      /* Chips under the progress bar (loop state, user turn, session timer) */
+      .sx-chips { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; margin-top: 8px; min-height: 24px; }
+      .sx-chip { font-size: 9.5px; letter-spacing: .2em; padding: 4px 9px; border-color: rgba(var(--accent), .55); color: rgb(var(--accent)); }
+      /* Grimoire */
+      .sx-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+      .sx-card { position: relative; text-align: center; }
+      .sx-card > button.sx-thumb { padding: 0; border-color: rgba(var(--line), .15); line-height: 0; width: 100%; }
+      .sx-card canvas { width: 100%; height: auto; display: block; }
+      .sx-card .sx-cap { font-size: 10px; letter-spacing: .12em; opacity: .7; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .sx-card .sx-date { font-size: 10px; opacity: .4; font-style: italic; }
+      .sx-card .sx-del { position: absolute; top: 2px; right: 2px; padding: 1px 6px; font-size: 10px; border: 0; background: rgba(0,0,0,.6); letter-spacing: 0; }
+      /* Accessibility */
+      .sx-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+      body.sx-calm *, body.sx-calm *::after { animation-duration: .01s !important; animation-delay: 0s !important; transition-duration: .01s !important; }
+      body.sx-hc .hint, body.sx-hc #meta, body.sx-hc #secInfo .desc, body.sx-hc .sx-note, body.sx-hc #invoke label,
+      body.sx-hc #letters span, body.sx-hc .brand, body.sx-hc .sx-row output { opacity: 1 !important; }
+      body.sx-hc button { border-color: rgba(var(--line), .7); }
+      body.sx-big #hud, body.sx-big #invoke, body.sx-big .sx-panel, body.sx-big header#top { zoom: 1.22; }
+      @media (max-width: 780px) { .sx-dock button { padding: 7px 8px; letter-spacing: .14em; } }
+    </style>
+    
+    <script>
+    (() => {
+    'use strict';
+    
+    /** Feature switches. Set any to false to remove that feature entirely. */
+    const ENABLED = {
+      mixer: true, styles: true, nav: true, midi: true, wav: true,
+      gallery: true, fusion: true, turn: true, hours: true, access: true,
+    };
+    
+    /* ══════════════════════════════════════════════════════════════════════════
+       KERNEL
+       ══════════════════════════════════════════════════════════════════════════ */
+    const $ = (s) => document.querySelector(s);
+    /** Tiny DOM builder: el('button', {textContent:'Hi', onclick}, ...children) */
+    const el = (tag, props = {}, ...kids) => { const e = document.createElement(tag); Object.assign(e, props); e.append(...kids); return e; };
+    
+    /** Event bus. A failing listener is logged and never breaks the others. */
+    const Hooks = {
+      map: {},
+      on(name, fn) { (this.map[name] ??= []).push(fn); },
+      emit(name, ...args) { for (const fn of this.map[name] || []) { try { fn(...args); } catch (e) { console.error('[sigil-ext]', name, e); } } },
+    };
+    
+    /** localStorage wrapper (namespaced, JSON, safe in private mode). */
+    const Store = {
+      get(k, d) { try { const v = localStorage.getItem('sigil.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+      set(k, v) { try { localStorage.setItem('sigil.' + k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
+    };
+    
+    const K = {
+      tempo: 1,             // global tempo multiplier (Mixer)
+      trim: {},             // per-bus level trims from the active Style
+      paletteFilters: [],   // p => p ; later filters win
+      rawPal: PALETTES[0],
+      keys: {},             // key → handler (global shortcuts)
+      /** Register a feature; isolated so one failure cannot take down the rest. */
+      module(name, fn) { if (!ENABLED[name]) return; try { fn(); } catch (e) { console.error('[sigil-ext] module failed:', name, e); } },
+      /** Re-apply the palette pipeline to whatever palette is current. */
+      repaint() { applyPalette(K.rawPal); },
+      /** Change tempo without losing position: re-anchor the timeline around "now". */
+      retime(eng, spb) {
+        const now = eng.ctx.currentTime, abs = (now - eng.anchor) / eng.spb;
+        eng.anchor = now - abs * spb; eng.spb = spb; eng._sw = null;
+        eng.delay.delayTime.setTargetAtTime(spb * 0.75, now, 0.05);
+      },
+      /**
+       * HOT-SWAP RECOMPOSITION. Recompose the current sigil (new style, new user
+       * turn, new attunement) and splice the new score in at the scheduler's
+       * exact position. Notes already sounding finish naturally, and every
+       * future note comes from the new score, so there is no stop or gap.
+       * This works because all variants keep the same 200-beat structure.
+       */
+      recompose() {
+        if (app.mode !== 'playing' || !app.sigil || !app.engine) return;
+        const eng = app.engine, old = eng.events;
+        const last = eng.ptr > 0 ? old[Math.min(eng.ptr, old.length) - 1].beat : -1;
+        const song = composeSong(app.sigil);
+        let p = song.events.findIndex((e) => e.beat > last); if (p < 0) p = song.events.length;
+        eng.song = song; eng.events = song.events; eng.ptr = p; app.song = song;
+        K.retime(eng, song.spb / K.tempo);
+        buildHUD();
+        Hooks.emit('recompose', song);
+      },
+      announce(text) { live.textContent = ''; setTimeout(() => (live.textContent = text), 30); },
+    };
+    
+    /* ── Wrap core functions into hooks ─────────────────────────────────────── */
+    const core = {
+      load: Engine.prototype.load, start: Engine.prototype.start, banish: Engine.prototype.banish,
+      compose: window.composeSong, plan: window.makePlan, palette: window.applyPalette,
+      draw: Renderer.prototype.drawPlaying, drawRed: Renderer.prototype.drawReducing,
+    };
+    Engine.prototype.load = function (song) {
+      core.load.call(this, song);
+      this.loop = null; this._sw = null;
+      this.spb = song.spb / K.tempo;                                   // honour the tempo multiplier
+      this.delay.delayTime.setValueAtTime(this.spb * 0.75, this.ctx.currentTime);
+      Hooks.emit('load', this, song);
+    };
+    Engine.prototype.start = function (lead) { core.start.call(this, lead); if (this === app.engine) Hooks.emit('start', app.sigil, app.song); };
+    Engine.prototype.banish = function (sec) { Hooks.emit('forget', app.sigil); core.banish.call(this, sec); };
+    window.makePlan = function (rotK, shift) { const plan = core.plan(rotK, shift); Hooks.emit('plan', plan); return plan; };
+    window.composeSong = function (sigil) {
+      Hooks.emit('precompose', sigil);
+      let song;
+      try { song = core.compose(sigil); } finally { Hooks.emit('postcompose', sigil); }
+      Hooks.emit('compose', song, sigil);
+      song.events.sort((a, b) => a.beat - b.beat);                     // modules may have appended events
+      return song;
+    };
+    window.applyPalette = function (p) { K.rawPal = p; core.palette(K.paletteFilters.reduce((q, f) => f(q) || q, p)); };
+    Renderer.prototype.drawPlaying = function (a, dt) { core.draw.call(this, a, dt); Hooks.emit('draw', this, a); };
+    Renderer.prototype.drawReducing = function (a, now) {
+      // The core assumes lit ≤ nodes.length; fused sigils (module "fusion") chime more letters than that.
+      const lit = a.lit; a.lit = Math.min(lit, a.sigil.nodes.length);
+      core.drawRed.call(this, a, now);
+      a.lit = lit; Hooks.emit('drawReducing', this, a);
+    };
+    
+    /**
+     * Scheduler replacement with sample-accurate SECTION LOOPING.
+     * Identical to the core pump() except for `this.loop = {start,end}` (beats):
+     * when the next event lies past loop.end, the timeline is re-anchored so that
+     * loop.start falls exactly where loop.end would have sounded.
+     */
+    Engine.prototype.pump = function () {
+      if (!this.running || !this.buses) return;
+      const c = this.ctx, horizon = c.currentTime + (document.hidden ? 1.6 : 0.18), total = this.song.total;
+      for (let guard = 0; guard < 4000; guard++) {
+        const ev = this.events[this.ptr], L = this.loop;
+        if (L && ev && (ev.beat < L.start || ev.beat >= L.end)) {
+          // Did we get here by playing through the loop, or by a seek elsewhere?
+          const prev = this.events[this.ptr - 1];
+          if (!(prev && prev.beat >= L.start && prev.beat < L.end)) {   // a seek: move the loop to the new section
+            const s = this.song.sections.find((x) => ev.beat >= x.start && ev.beat < x.end);
+            this.loop = s ? { start: s.start, end: s.end } : null; continue;
+          }
+        }
+        if (L && ((ev && ev.beat >= L.end) || (!ev && L.end >= total))) {
+          const tEnd = this.anchor + (this.loopIndex * total + L.end) * this.spb;
+          if (tEnd > horizon) break;
+          this._sw = { at: tEnd, anchor: this.anchor };                 // visuals keep the old timeline until tEnd
+          this.anchor = tEnd - L.start * this.spb; this.loopIndex = 0;
+          this.ptr = this.events.findIndex((e) => e.beat >= L.start); if (this.ptr < 0) this.ptr = this.events.length;
+          continue;
+        }
+        if (!ev) { if (this.anchor + (this.loopIndex + 1) * total * this.spb > horizon) break; this.loopIndex++; this.ptr = 0; continue; }
+        const t = this.anchor + (this.loopIndex * total + ev.beat) * this.spb;
+        if (t > horizon) break;
+        if (t >= c.currentTime - 0.03) this.play(ev, Math.max(t, c.currentTime));
+        this.ptr++;
+      }
+    };
+    Engine.prototype.beatNow = function () {
+      if (!this.song) return 0;
+      const now = this.ctx.currentTime - (this.ctx.outputLatency || this.ctx.baseLatency || 0);
+      const a = this._sw && now < this._sw.at ? this._sw.anchor : this.anchor;
+      const b = (now - a) / this.spb;
+      return b < 0 ? 0 : b % this.song.total;
+    };
+    
+    /* ── Shared UI: drawers, dock buttons, HUD buttons, chips, shortcuts ───── */
+    const ui = $('#ui');
+    const live = el('div', { className: 'sx-sr' }); live.setAttribute('aria-live', 'polite'); ui.append(live);
+    const dock = el('div', { className: 'sx-dock' });
+    $('#top').append(dock); dock.append($('#aboutBtn'));
+    const chipBox = el('div', { className: 'sx-chips' }); $('#center').append(chipBox);
+    const panels = {};
+    
+    K.togglePanel = (id, on) => {
+      for (const [k, x] of Object.entries(panels)) {
+        const was = x.p.classList.contains('open'), open = k === id ? (on ?? !was) : false;
+        if (open && !was) { x.onOpen?.(); x.opener = document.activeElement; setTimeout(() => x.p.querySelector('button, input, select')?.focus(), 80); }
+        if (!open && was) x.opener?.focus?.();
+        x.p.classList.toggle('open', open);
+      }
+    };
+    K.closePanels = () => K.togglePanel(null);
+    /** Create a side drawer. where: 'dock' (header) or 'hud' (playback controls). */
+    K.panel = ({ id, title, note, label, where = 'dock', build, onOpen }) => {
+      const body = el('div');
+      const p = el('aside', { className: 'sx-panel' },
+        el('button', { className: 'ghost', textContent: '✕ Close', onclick: () => K.togglePanel(id, false) }),
+        el('h2', { textContent: title }), el('p', { className: 'sx-note', textContent: note || '' }), body);
+      p.setAttribute('role', 'dialog'); p.setAttribute('aria-label', title);
+      ui.append(p); panels[id] = { p, body, onOpen };
+      build(body);
+      K.button(where, label, title, () => K.togglePanel(id));
+      return body;
+    };
+    K.button = (where, label, title, fn) => {
+      const b = el('button', { textContent: label, title, onclick: fn });
+      if (where === 'dock') { b.className = 'ghost'; dock.prepend(b); }
+      else $('#controls').insertBefore(b, document.querySelector('[data-act="new"]'));
+      return b;
+    };
+    /** Show/update/remove a small status chip under the progress bar. */
+    const chips = {};
+    K.chip = (id, text, onClick, title = '') => {
+      if (!text) { chips[id]?.remove(); delete chips[id]; return; }
+      if (!chips[id]) { chips[id] = el('button', { className: 'sx-chip' }); chipBox.append(chips[id]); }
+      Object.assign(chips[id], { textContent: text, onclick: onClick, title });
+    };
+    K.slider = (label, min, max, step, val, fmt, fn) => {
+      const out = el('output', { textContent: fmt(val) });
+      const inp = el('input', { type: 'range', min, max, step, value: val, oninput: () => { out.textContent = fmt(+inp.value); fn(+inp.value); } });
+      inp.setAttribute('aria-label', label);
+      const row = el('div', { className: 'sx-row' }, el('span', { textContent: label }), inp, out);
+      row.input = inp; row.out = out; return row;
+    };
+    K.check = (label, val, fn) => {
+      const c = el('input', { type: 'checkbox', checked: val, onchange: () => fn(c.checked) });
+      return el('label', { className: 'sx-check' }, c, el('span', { textContent: label }));
+    };
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { K.closePanels(); return; }
+      if (e.ctrlKey || e.metaKey || e.altKey || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+      const fn = K.keys[e.key.toLowerCase()]; if (fn) { e.preventDefault(); fn(e); }
+    });
+    
+    /* ══════════════════════════════════════════════════════════════════════════
+       MODULE 1 — MIXER  (levels, mutes, master, tempo)
+       Each instrument already has its own bus; this only scales bus gains.
+       Settings persist across sessions and also apply to WAV renders.
+       ══════════════════════════════════════════════════════════════════════════ */
+    const BUSES = ['lead', 'harm', 'bell', 'pad', 'bass', 'arp', 'drums', 'drone'];
+    const mix = Store.get('mix', { master: 1, tempo: 1, lv: {}, mute: {} });
+    /** Apply style trims × user levels × mutes. `instant` is used for offline renders. */
+    K.applyMix = (eng = app.engine, instant = false) => {
+      if (!eng) return;
+      const now = eng.ctx.currentTime, set = (p, v) => (instant ? (p.value = v) : p.setTargetAtTime(v, now, 0.03));
+      const on = ENABLED.mixer;
+      set(eng.out.gain, 0.85 * (on ? mix.master : 1));
+      if (eng.buses) for (const k of BUSES) {
+        const n = eng.buses[k]; if (!n) continue;
+        n._base ??= n.gain.value;                                       // remember the core's designed level
+        set(n.gain, n._base * (K.trim[k] ?? 1) * (on ? (mix.lv[k] ?? 1) * (mix.mute[k] ? 0 : 1) : 1));
+      }
+    };
+    Hooks.on('load', (eng) => K.applyMix(eng, eng !== app.engine));
+    
+    K.module('mixer', () => {
+      K.tempo = mix.tempo;
+      const save = () => Store.set('mix', mix);
+      const pct = (v) => Math.round(v * 100) + '%';
+      const bpmText = (v) => (app.song ? Math.round(app.song.bpm * v) + ' bpm' : pct(v));
+      let rows = {}, tempoRow, masterRow;
+      K.panel({
+        id: 'mixer', title: 'Mixer', label: 'Mixer', where: 'hud',
+        note: 'Balance the voices. Mute the drums for a meditative version. Settings are remembered and also apply to WAV exports.',
+        build(body) {
+          masterRow = K.slider('Master', 0, 1.2, 0.01, mix.master, pct, (v) => { mix.master = v; K.applyMix(); save(); });
+          tempoRow = K.slider('Tempo', 0.6, 1.4, 0.01, mix.tempo, bpmText, (v) => {
+            mix.tempo = K.tempo = v; save();
+            if (app.mode === 'playing') K.retime(app.engine, app.song.spb / v);
+          });
+          body.append(masterRow, tempoRow, el('h3', { textContent: 'Voices' }));
+          for (const k of BUSES) {
+            const r = K.slider(k, 0, 1.5, 0.01, mix.lv[k] ?? 1, pct, (v) => { mix.lv[k] = v; K.applyMix(); save(); });
+            const m = el('button', { textContent: 'Mute', title: 'Mute ' + k });
+            const sync = () => { m.classList.toggle('on', !!mix.mute[k]); m.setAttribute('aria-pressed', !!mix.mute[k]); };
+            m.onclick = () => { mix.mute[k] = !mix.mute[k]; sync(); K.applyMix(); save(); };
+            sync(); r.replaceChild(m, r.out); r.mute = sync; rows[k] = r; body.append(r);
+          }
+          body.append(el('div', { className: 'sx-btns' }, el('button', { textContent: 'Reset all', onclick: () => {
+            Object.assign(mix, { master: 1, tempo: 1, lv: {}, mute: {} }); K.tempo = 1; save(); K.applyMix();
+            if (app.mode === 'playing') K.retime(app.engine, app.song.spb);
+            masterRow.input.value = 1; masterRow.out.textContent = pct(1); tempoRow.input.value = 1; tempoRow.out.textContent = bpmText(1);
+            for (const k of BUSES) { rows[k].input.value = 1; rows[k].mute(); }
+          } })));
+        },
+        onOpen() { tempoRow.out.textContent = bpmText(mix.tempo); },
+      });
+    });
+    
+    /* ══════════════════════════════════════════════════════════════════════════
+       MODULE 2 — STYLES  (same sigil, different arrangement)
+       A style = { plan(sections) mutator, bpm range, optional lead timbre, bus trims }.
+       The melody, harmony and form are untouched, so styles hot-swap mid-song.
+       To add a style, append an object to STYLES.
+       ══════════════════════════════════════════════════════════════════════════ */
+    K.module('styles', () => {
+      const inner = (s) => s.id !== 'intro' && s.id !== 'outro';
+      const STYLES = [
+        { id: 'ritual', name: 'Ritual', about: 'The original arrangement, as composed.', bpm: [74, 98], plan() {} },
+        { id: 'ambient', name: 'Ambient', about: 'No drums. Long tones, drones and bells. For stillness.', bpm: [56, 70],
+          trim: { pad: 1.25, drone: 1.3, arp: 0.7 },
+          plan(p) { p.forEach((s) => { s.intensity = 0; s.halfTime = false; s.drone = true; if (s.arp) s.arp = 'light'; }); } },
+        { id: 'pulse', name: 'Pulse', about: 'Faster, with a driving beat, arpeggios and plucked lead. For raising energy.', bpm: [104, 124], timbre: 'koto',
+          trim: { drums: 1.1, pad: 0.85 },
+          plan(p) { p.filter(inner).forEach((s) => { s.intensity = Math.max(2, s.intensity); s.halfTime = false; s.arp = s.intensity >= 3 ? 'full' : s.arp || 'light'; }); } },
+        { id: 'lullaby', name: 'Lullaby', about: 'Slow and soft, with glass bells and the barest heartbeat. For sleep-work.', bpm: [60, 72], timbre: 'glass',
+          trim: { drums: 0.5, bass: 0.8, lead: 0.9 },
+          plan(p) { p.forEach((s) => { s.intensity = Math.min(1, s.intensity); s.halfTime = false; if (s.arp) s.arp = 'light'; }); } },
+      ];
+      let cur = STYLES.find((s) => s.id === Store.get('style', 'ritual')) || STYLES[0];
+      K.trim = cur.trim || {};
+      Hooks.on('plan', (plan) => cur.plan(plan));
+      Hooks.on('compose', (song) => {
+        // Map the hash-chosen tempo (74–98) proportionally into the style's range: each sigil keeps its relative pace.
+        song.bpm = Math.round(cur.bpm[0] + ((song.bpm - 74) / 24) * (cur.bpm[1] - cur.bpm[0]));
+        song.spb = 60 / song.bpm;
+        if (cur.timbre && cur.timbre !== song.leadTimbre) {
+          const alt = cur.timbre === 'glass' ? 'reed' : 'glass', map = { [song.leadTimbre]: cur.timbre, [song.altTimbre]: alt };
+          for (const e of song.events) if (e.type === 'lead') e.timbre = map[e.timbre] || e.timbre;
+          song.leadTimbre = cur.timbre; song.altTimbre = alt;
+        }
+        song.styleName = cur.name;
+      });
+      const btns = {};
+      const pick = (s) => {
+        cur = s; Store.set('style', s.id); K.trim = s.trim || {};
+        Object.entries(btns).forEach(([id, b]) => { b.classList.toggle('on', id === s.id); b.setAttribute('aria-pressed', id === s.id); });
+        K.applyMix(); K.recompose(); K.announce('Style: ' + s.name);
+      };
+      K.panel({
+        id: 'styles', title: 'Style', label: 'Style', where: 'hud',
+        note: 'One sigil, four arrangements. The melody never changes, only how it is played. Switching is seamless, even mid-song.',
+        build(body) {
+          for (const s of STYLES) {
+            btns[s.id] = el('button', { className: 'sx-opt' + (s === cur ? ' on' : ''), onclick: () => pick(s) }, s.name, el('small', { textContent: s.about }));
+            body.append(btns[s.id]);
+          }
+        },
+      });
+    });
+    
+    /* ══════════════════════════════════════════════════════════════════════════
+       MODULE 3 — SECTION NAVIGATION & LOOP
+       1–7 jump to a section · ← → previous/next · L loop the current section.
+       ══════════════════════════════════════════════════════════════════════════ */
+    K.module('nav', () => {
+      const playing = () => app.mode === 'playing' && app.engine && app.song;
+      const curIdx = () => renderer.info?.si ?? 0;
+      const chip = () => K.chip('loop', playing() && app.engine.loop ? '↻ Looping section' : null, () => setLoop(false), 'Click or press L to stop looping');
+      function setLoop(on) {
+        if (!playing()) return;
+        const s = app.song.sections[curIdx()];
+        app.engine.loop = on ? { start: s.start, end: s.end } : null;
+        chip(); K.announce(on ? 'Looping ' + s.name : 'Loop off');
+      }
+      function jump(i) {
+        if (!playing()) return;
+        const S = app.song.sections, s = S[Math.max(0, Math.min(S.length - 1, i))], e = app.engine;
+        e.seek(s.start); e._sw = null;
+        if (e.loop) e.loop = { start: s.start, end: s.end };
+      }
+      for (let i = 1; i <= 7; i++) K.keys[String(i)] = () => jump(i - 1);
+      K.keys.arrowleft = () => jump(curIdx() - 1);
+      K.keys.arrowright = () => jump(curIdx() + 1);
+      K.keys.l = () => setLoop(!app.engine?.loop);
+      K.button('hud', 'Loop', 'L — loop the current section (1–7 and ← → jump between sections)', () => setLoop(!app.engine?.loop));
+      Hooks.on('load', chip); Hooks.on('forget', () => K.chip('loop', null));
+    });
+    
+    /* ══════════════════════════════════════════════════════════════════════════
+       MODULE 4 — MIDI EXPORT  (Standard MIDI File, format 1, 480 PPQ)
+       One track per instrument, GM programs, drums on channel 10, tempo and
+       section markers. Reflects the current style, tempo and user turn.
+       ══════════════════════════════════════════════════════════════════════════ */
+    K.module('midi', () => {
+      const PPQ = 480, tk = (b) => Math.round(b * PPQ);
+      const vlq = (n) => { const b = [n & 0x7f]; while ((n >>= 7)) b.unshift((n & 0x7f) | 0x80); return b; };
+      const str = (s) => [...s].map((c) => c.charCodeAt(0) & 0x7f);
+      const u32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+      const meta = (type, bytes) => [0xff, type, ...vlq(bytes.length), ...bytes];
+      /** items: [tick, order, ...bytes]; returns a complete MTrk chunk. */
+      const chunk = (items) => {
+        items.sort((a, b) => a[0] - b[0] || a[1] - b[1]);               // note-offs (order 0) before note-ons (1)
+        const d = []; let t = 0;
+        for (const it of items) { d.push(...vlq(it[0] - t), ...it.slice(2)); t = it[0]; }
+        d.push(0, 0xff, 0x2f, 0);
+        return [...str('MTrk'), ...u32(d.length), ...d];
+      };
+      const PROG = { glass: 8, reed: 71, koto: 107 };                    // Celesta, Clarinet, Koto
+      const DRUM = { kick: 36, snare: 38, shaker: 70, crash: 49 };
+      function build(song) {
+        const bpm = song.bpm * K.tempo;
+        const T = { lead: [0, PROG[song.leadTimbre]], harm: [1, 52], bell: [2, 14], pad: [3, 89], bass: [4, 33], arp: [5, 46], drone: [6, 91], drums: [9, 0] };
+        const ev = {}; for (const k in T) ev[k] = [];
+        const note = (tr, beat, dur, midi, vel) => {
+          const ch = T[tr][0], n = Math.max(0, Math.min(127, Math.round(midi))), v = Math.max(1, Math.min(127, Math.round(vel * 110)));
+          const a = tk(beat); ev[tr].push([a, 1, 0x90 | ch, n, v], [Math.max(a + 1, tk(beat + dur)), 0, 0x80 | ch, n, 0]);
+        };
+        for (const e of song.events) {
+          if (e.type === 'pad') e.midis.forEach((m) => note('pad', e.beat, e.dur, m, e.vel * 0.7));
+          else if (e.type === 'hat') note('drums', e.beat, 0.1, e.open ? 46 : 42, e.vel);
+          else if (DRUM[e.type]) note('drums', e.beat, 0.1, DRUM[e.type], e.vel);
+          else if (ev[e.type]) note(e.type, e.beat, e.dur, e.midi, e.vel);
+        }
+        const us = Math.round(6e7 / bpm);
+        const conductor = [[0, 0, ...meta(0x03, str('SIGIL ' + app.sigil.reduced))], [0, 0, ...meta(0x51, [(us >> 16) & 255, (us >> 8) & 255, us & 255])],
+          [0, 0, ...meta(0x58, [4, 2, 24, 8])], ...song.sections.map((s) => [tk(s.start), 0, ...meta(0x06, str(s.roman + ' ' + s.name))])];
+        const tracks = [chunk(conductor)];
+        for (const k in T) if (ev[k].length) tracks.push(chunk([[0, 0, ...meta(0x03, str(k))], [0, 0, 0xc0 | T[k][0], T[k][1]], ...ev[k]]));
+        return new Uint8Array([...str('MThd'), ...u32(6), 0, 1, 0, tracks.length, PPQ >> 8, PPQ & 255, ...tracks.flat()]);
+      }
+      K.button('hud', 'MIDI', 'Download the score as a multi-track MIDI file', () => {
+        if (!app.song) return;
+        download(new Blob([build(app.song)], { type: 'audio/midi' }), `sigil-${app.sigil.reduced}.mid`);
+        toast('MIDI saved, one track per voice', true);
+      });
+    });
+    
+    /* ══════════════════════════════════════════════════════════════════════════
+       MODULE 5 — WAV EXPORT  (faster-than-real-time, lossless)
+       Builds a second Engine on an OfflineAudioContext, schedules one full pass
+       of the song, renders, peak-normalises and encodes 16-bit stereo.
+       The live performance keeps playing throughout.
+       ══════════════════════════════════════════════════════════════════════════ */
+    K.module('wav', () => {
+      const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      function encode(buf) {
+        const n = buf.length, ch = buf.numberOfChannels, dv = new DataView(new ArrayBuffer(44 + n * ch * 2));
+        const w = (o, s) => [...s].forEach((c, i) => dv.setUint8(o + i, c.charCodeAt(0)));
+        w(0, 'RIFF'); dv.setUint32(4, 36 + n * ch * 2, true); w(8, 'WAVEfmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+        dv.setUint16(22, ch, true); dv.setUint32(24, buf.sampleRate, true); dv.setUint32(28, buf.sampleRate * ch * 2, true);
+        dv.setUint16(32, ch * 2, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, n * ch * 2, true);
+        const data = []; let peak = 0;
+        for (let c = 0; c < ch; c++) { data[c] = buf.getChannelData(c); for (let i = 0; i < n; i++) { const a = Math.abs(data[c][i]); if (a > peak) peak = a; } }
+        const g = peak > 0 ? 0.97 / peak : 1;                            // normalise to −0.26 dBFS
+        for (let i = 0, o = 44; i < n; i++) for (let c = 0; c < ch; c++, o += 2) dv.setInt16(o, Math.round(data[c][i] * g * 32767), true);
+        return new Blob([dv], { type: 'audio/wav' });
+      }
+      let busy = false;
+      const btn = K.button('hud', 'WAV', 'Render the full song to a lossless WAV file', async () => {
+        if (busy || !app.song) return;
+        if (!OAC) { toast('Offline rendering is not supported in this browser', true); return; }
+        busy = true; btn.textContent = 'Rendering…'; toast('Rendering the full song. This takes a few seconds', true, 4000);
+        try {
+          const song = app.song, name = app.sigil.reduced, spb = song.spb / K.tempo, sr = 44100;
+          const off = new OAC(2, Math.ceil((song.total * spb + 6) * sr), sr);
+          // The core Engine constructor calls `new AudioContext()`. For this one
+          // synchronous call we hand it a constructor that returns our offline context.
+          const saved = window.AudioContext; let eng;
+          try { window.AudioContext = function () { return off; }; eng = new Engine(); } finally { window.AudioContext = saved; }
+          eng.load(song);                                                // → 'load' hook applies tempo + mixer instantly
+          const evs = song.events;
+          for (let i = 0; i < evs.length; i++) {
+            eng.play(evs[i], 0.05 + evs[i].beat * spb);
+            if (i % 400 === 399) await new Promise((r) => setTimeout(r));  // keep the UI responsive
+          }
+          download(encode(await off.startRendering()), `sigil-${name}.wav`);
+          toast('WAV saved', true);
+        } catch (e) { console.error(e); toast('Render failed. See console', true); }
+        busy = false; btn.textContent = 'WAV';
+      });
+    });
+    
+    /* ══════════════════════════════════════════════════════════════════════════
+       MODULE 6 — GRIMOIRE  (private gallery)
+       Stores ONLY the reduced consonants + a timestamp in localStorage, never
+       the desire. "Forget" also removes the sigil here. Optional auto-burn.
+       ══════════════════════════════════════════════════════════════════════════ */
+    K.module('gallery', () => {
+      const cfg = Store.get('gallery.cfg', { keep: true, days: 0 });
+      let items = Store.get('gallery', []), grid, isOpen = () => panels.gallery?.p.classList.contains('open');
+      const save = () => Store.set('gallery', items);
+      const purge = () => { if (cfg.days > 0) { const cut = Date.now() - cfg.days * 864e5, n = items.length; items = items.filter((i) => i.t >= cut); if (items.length !== n) save(); } };
+      purge();
+      Hooks.on('start', (sigil) => {
+        if (!cfg.keep || !sigil) return;
+        items = [{ r: sigil.reduced, t: Date.now() }, ...items.filter((i) => i.r !== sigil.reduced)].slice(0, 60); save();
+        if (isOpen()) render();
+      });
+      Hooks.on('forget', (sigil) => { if (sigil) { items = items.filter((i) => i.r !== sigil.reduced); save(); } });
+    
+      /** Small static rendering of a sigil (plain strokes, one tiny canvas each). */
+      function thumb(r) {
+        const S = 96, d = Math.min(window.devicePixelRatio || 1, 2), cv = el('canvas', { width: S * d, height: S * d }), g = cv.getContext('2d');
+        g.scale(d, d);
+        const sig = buildSigil(r), p = sig.palette, F = { cx: S / 2, cy: S / 2, R: S * 0.43, base: sig.baseAngle };
+        g.fillStyle = p.bg; g.fillRect(0, 0, S, S);
+        g.lineWidth = 1; g.strokeStyle = rgba(p.line, 0.35); g.beginPath(); g.arc(F.cx, F.cy, F.R, 0, TAU); g.stroke();
+        const line = (nodes, curves, col) => {
+          const pts = tracePoints(nodes, curves, ID_T, F, nodes.length - 1);
+          g.strokeStyle = col; g.lineWidth = 1.2; g.lineJoin = 'round';
+          g.beginPath(); g.moveTo(pts[0], pts[1]); for (let i = 2; i < pts.length; i += 2) g.lineTo(pts[i], pts[i + 1]); g.stroke();
+          g.beginPath(); g.arc(pts[0], pts[1], 2.4, 0, TAU); g.stroke();
+        };
+        line(sig.nodes, sig.curves, rgba(p.line, 0.95));
+        (sig.companions || []).forEach((c) => line(c.nodes, c.curves, rgba(p.accent, 0.9)));
+        return cv;
+      }
+      function render() {
+        purge(); grid.innerHTML = '';
+        if (!items.length) { grid.append(el('p', { className: 'sx-note', textContent: 'No sigils yet. Cast one and it will be kept here.' })); return; }
+        for (const it of items) {
+          let cv; try { cv = thumb(it.r); } catch { continue; }          // skip corrupted entries
+          const open = el('button', { className: 'sx-thumb', title: 'Cast ' + it.r, onclick: () => { K.closePanels(); $('#desire').value = it.r; cast(); } }, cv);
+          open.setAttribute('aria-label', 'Cast sigil ' + [...it.r].join(' '));
+          const del = el('button', { className: 'sx-del', textContent: '✕', title: 'Remove from grimoire', onclick: () => { items = items.filter((x) => x !== it); save(); render(); } });
+          grid.append(el('div', { className: 'sx-card' }, open, del, el('div', { className: 'sx-cap', textContent: it.r }),
+            el('div', { className: 'sx-date', textContent: new Date(it.t).toLocaleDateString() })));
+        }
+      }
+      K.panel({
+        id: 'gallery', title: 'Grimoire', label: 'Grimoire',
+        note: 'Your past sigils, kept only on this device. Only the consonants are stored, never the words of the desire.',
+        build(body) {
+          grid = el('div', { className: 'sx-grid' });
+          const days = el('select', { onchange: () => { cfg.days = +days.value; Store.set('gallery.cfg', cfg); render(); } },
+            ...[[0, 'Keep forever'], [1, 'Burn after 1 day'], [7, 'Burn after 7 days'], [30, 'Burn after 30 days']].map(([v, t]) => el('option', { value: v, textContent: t, selected: cfg.days === v })));
+          days.setAttribute('aria-label', 'Automatic burning');
+          body.append(grid, el('h3', { textContent: 'Keeping' }),
+            K.check('Keep each sigil I cast', cfg.keep, (v) => { cfg.keep = v; Store.set('gallery.cfg', cfg); }), days,
+            el('div', { className: 'sx-btns' }, el('button', { textContent: 'Burn all', onclick: () => { if (confirm('Remove every sigil from the grimoire?')) { items = []; save(); render(); } } })));
+        },
+        onOpen: render,
+      });
+    });
+    
+    /* ══════════════════════════════════════════════════════════════════════════
+       MODULE 7 — FUSION  (two or three desires in counterpoint)
+       Write desires separated by "+". Each is reduced separately; all share one
+       wheel hashed from the combined string. The first is the melody; the others
+       become companion voices with their own drawn lines.
+       Counterpoint rule: on strong beats, a companion note that clashes with the
+       bar's chord is nudged one scale step onto a chord tone.
+       ══════════════════════════════════════════════════════════════════════════ */
+    K.module('fusion', () => {
+      const reduce0 = window.reduceDesire, build0 = window.buildSigil;
+      window.reduceDesire = function (text) {
+        if (!text.includes('+')) return reduce0(text);
+        const parts = text.split('+').map((s) => reduce0(s)).filter((p) => p.reduced.length >= 3).slice(0, 3);
+        if (parts.length < 2) return reduce0(text.replace(/\+/g, ' '));  // not enough valid parts: treat as one desire
+        const chars = []; parts.forEach((p, i) => { if (i) chars.push({ ch: '+', fate: 'mark' }); chars.push(...p.chars); });
+        return { chars, reduced: parts.map((p) => p.reduced).join('+') };
+      };
+      window.buildSigil = function (reduced) {
+        const sig = build0(reduced);                                     // wheel + palette hashed from the COMBINED string
+        if (!reduced.includes('+')) return sig;
+        const lut = {}; sig.nodes.forEach((n) => (lut[n.letter] = n));
+        const g = stream(sig.hash, 'fusion');
+        const voice = (letters) => {
+          const nodes = [...letters].map((L) => ({ ...lut[L] }));
+          return { nodes, curves: nodes.slice(1).map(() => (g.chance(0.42) ? g.range(0.28, 0.62) * (g.chance(0.5) ? 1 : -1) : 0)) };
+        };
+        const [first, ...rest] = reduced.split('+').map(voice);
+        sig.nodes = first.nodes; sig.curves = first.curves; sig.companions = rest;
+        sig.letterSet = new Set(reduced.replace(/\+/g, ''));
+        return sig;
+      };
+      Hooks.on('compose', (song, sigil) => {
+        if (!sigil.companions) return;
+        song.companions = sigil.companions.map((c, ci) => {
+          const phrases = song.phrases.map((ph) => {
+            const sec = song.sections[ph.si], cp = buildPhrase(c, sec.T, 0);
+            cp.path.forEach((n) => (n.beat += ph.start));
+            for (const n of cp.notes) {
+              let deg = n.deg;
+              if (n.start % 2 === 0) {                                   // strong beat: resolve onto the chord
+                const rel = mod(deg - ph.chords[Math.min(3, Math.floor(n.start / 4))], 7);
+                if (rel === 6) deg++; else if (rel % 2) deg--;
+              }
+              const midi = degToMidi(deg, song.leadBase, song.scale) - (ci === 0 ? 12 : 0), beat = ph.start + n.start;
+              if (sec.voice === 'bell') song.events.push({ beat, type: 'bell', midi: midi + 12, dur: n.dur, vel: 0.4 });
+              else if (ci === 0) song.events.push({ beat, type: 'lead', timbre: song.altTimbre, midi, dur: n.dur * 0.9, vel: 0.5, from: null });
+              else song.events.push({ beat, type: 'harm', midi, dur: n.dur * 0.95, vel: 0.7 });
+            }
+            return cp;
+          });
+          const idn = buildPhrase(c, { k: 0, m: 1, reverse: false }, 0).notes;  // chimes for the reduction rite
+          c.nodes.forEach((_, i) => song.chimes.push(degToMidi(idn[i].deg, song.leadBase, song.scale)));
+          return { phrases };
+        });
+      });
+      const tint = (r, ci) => (ci ? r.pal.line.map((v, i) => Math.round((v + r.pal.accent[i]) / 2)) : r.pal.accent);
+      Hooks.on('draw', (r, a) => {
+        const cs = a.song.companions; if (!cs || !r.info) return;
+        const beat = r.info.beat, T = displayTransform(a.song, beat), pi = phraseIndexAt(a.song, beat);
+        cs.forEach((c, ci) => {
+          const ph = c.phrases[pi], pts = tracePoints(ph.seq, ph.curves, T, r.F, penProgress(ph, beat));
+          r.strokeGlow(pts, tint(r, ci), 0.8, 1.1);
+          r.circle(pts[pts.length - 2], pts[pts.length - 1], 2, [255, 250, 240], 0.9, true);
+        });
+      });
+      Hooks.on('drawReducing', (r, a) => {
+        let rest = a.lit - a.sigil.nodes.length;
+        (a.sigil.companions || []).forEach((c, ci) => {
+          const n = Math.max(0, Math.min(rest, c.nodes.length)); rest -= c.nodes.length;
+          if (n >= 1) r.strokeGlow(tracePoints(c.nodes, c.curves, ID_T, r.F, n - 1), tint(r, ci), 0.5, 1.1);
+        });
+      });
+      // UI: discoverability + shared fused links (#BCD+FGH)
+      const hint = document.querySelector('#invoke .hint');
+      hint.append(el('br'), 'Join two or three desires with + to fuse them into one seal.');
+      const h = decodeURIComponent(location.hash.slice(1)).toUpperCase();
+      if (/^[B-DF-HJ-NP-TV-Z]{3,21}(\+[B-DF-HJ-NP-TV-Z]{3,21}){1,2}$/.test(h)) {
+        $('#desire').value = h; $('#desireLabel').textContent = 'A fused sigil has been shared with you. Cast it to hear it sing.';
+      }
+    });
+    
+    /* ══════════════════════════════════════════════════════════════════════════
+       MODULE 8 — TURN  (play the wheel by hand)
+       Drag the rim to rotate the seal (transposes what follows). Double-click
+       inside to mirror it (inverts what follows).
+       Keys: [ ] rotate one slot · M mirror · 0 reset.
+       The user transform U is composed after each section's own transform:
+         slot″ = U.m·(m·slot + k) + U.k
+       On release the song is hot-swapped (K.recompose), so the change is heard
+       from the very next note.
+       ══════════════════════════════════════════════════════════════════════════ */
+    K.module('turn', () => {
+      const U = { k: 0, m: 1 }; let lastSigil = null, drag = null;
+      Hooks.on('precompose', (sigil) => { if (sigil !== lastSigil) { lastSigil = sigil; U.k = 0; U.m = 1; chip(); } });
+      Hooks.on('plan', (plan) => { if (U.k || U.m < 0) plan.forEach((s) => { s.T = { k: mod(U.m * s.T.k + U.k, SLOTS), m: U.m * s.T.m, reverse: s.T.reverse }; }); });
+      const dt0 = window.displayTransform;
+      window.displayTransform = (song, beat) => { const T = dt0(song, beat); if (drag) T.phi += drag.phi; return T; };  // live preview while dragging
+      function chip() {
+        const on = U.k || U.m < 0, k = U.k > 10 ? U.k - SLOTS : U.k;
+        K.chip('turn', on ? `Turned ${k > 0 ? '+' : ''}${k}${U.m < 0 ? ' · mirrored' : ''} ✕` : null, reset, 'Your transformation. Click or press 0 to reset');
+      }
+      function commit(msg) { chip(); K.recompose(); K.announce(msg); }
+      const ok = () => app.mode === 'playing' && !app.charging;
+      const rotate = (dk) => { if (ok() && dk) { U.k = mod(U.k + dk, SLOTS); commit(`Rotated ${dk} slots. The melody is transposed`); } };
+      const mirror = () => { if (ok()) { U.m = -U.m; U.k = mod(-U.k, SLOTS); commit('Mirrored. The melody is inverted'); } };
+      function reset() { if (ok()) { U.k = 0; U.m = 1; commit('Sigil restored'); } }
+      K.keys['['] = () => rotate(-1); K.keys[']'] = () => rotate(1); K.keys.m = mirror; K.keys['0'] = reset;
+    
+      const cv = $('#stage'); cv.style.touchAction = 'none';
+      const polarAt = (e) => { const F = renderer.F, dx = e.clientX - F.cx, dy = e.clientY - F.cy; return { d: Math.hypot(dx, dy) / F.R, a: Math.atan2(dy, dx) }; };
+      cv.addEventListener('pointerdown', (e) => {
+        if (!ok()) return; const p = polarAt(e); if (p.d < 0.92 || p.d > 1.38) return;   // only the rim grabs
+        drag = { last: p.a, phi: 0 }; cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing';
+      });
+      cv.addEventListener('pointermove', (e) => {
+        const p = polarAt(e);
+        if (!drag) { cv.style.cursor = ok() && p.d >= 0.92 && p.d <= 1.38 ? 'grab' : ''; return; }
+        drag.phi += mod(p.a - drag.last + Math.PI, TAU) - Math.PI; drag.last = p.a;      // accumulate, unwrapped
+      });
+      const end = () => { if (!drag) return; const dk = Math.round(drag.phi / (TAU / SLOTS)); drag = null; cv.style.cursor = ''; rotate(dk); };
+      cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+      cv.addEventListener('dblclick', (e) => { if (polarAt(e).d < 0.9) mirror(); });
+      Hooks.on('forget', () => K.chip('turn', null));
+    });
+    
+    /* ══════════════════════════════════════════════════════════════════════════
+       MODULE 9 — HOURS  (planetary attunement + timed charging sessions)
+       All astronomy is computed locally. Without location, planetary hours use
+       06:00/18:00 as sunrise/sunset; with location, the standard sunrise equation.
+       Attunement (optional): the ruling planet of the hour chooses the mode and
+       palette. The planet is fixed per sigil at casting, so a song never changes
+       key mid-performance.
+       Sessions: Charge mode with a countdown arc, three closing bells, and an
+       optional automatic Forget.
+       ══════════════════════════════════════════════════════════════════════════ */
+    K.module('hours', () => {
+      const P = {
+        Saturn:  { g: '♄', mode: 'Phrygian',       n: 3, v: 'endings, boundaries, discipline', pal: { name: 'Saturn',  bg: '#07070a', line: [205, 205, 222], accent: [132, 116, 204] } },
+        Jupiter: { g: '♃', mode: 'Lydian',         n: 4, v: 'growth, fortune, generosity',     pal: { name: 'Jupiter', bg: '#06080f', line: [214, 222, 255], accent: [104, 148, 255] } },
+        Mars:    { g: '♂', mode: 'Harmonic minor', n: 5, v: 'courage, will, severance',        pal: { name: 'Mars',    bg: '#0c0605', line: [255, 222, 206], accent: [236, 60, 44] } },
+        Sun:     { g: '☉', mode: 'Ionian',         n: 6, v: 'vitality, success, clarity',      pal: { name: 'Sun',     bg: '#0b0805', line: [255, 228, 152], accent: [255, 170, 58] } },
+        Venus:   { g: '♀', mode: 'Mixolydian',     n: 7, v: 'love, beauty, art',               pal: { name: 'Venus',   bg: '#060c09', line: [202, 240, 212], accent: [255, 142, 172] } },
+        Mercury: { g: '☿', mode: 'Dorian',         n: 8, v: 'words, trade, travel',            pal: { name: 'Mercury', bg: '#09090b', line: [228, 228, 238], accent: [168, 238, 120] } },
+        Moon:    { g: '☽', mode: 'Aeolian',        n: 9, v: 'dreams, intuition, tides',        pal: { name: 'Moon',    bg: '#07080d', line: [226, 230, 246], accent: [168, 180, 255] } },
+      };
+      const CHALDEAN = ['Saturn', 'Jupiter', 'Mars', 'Sun', 'Venus', 'Mercury', 'Moon'];
+      const DAY = ['Sun', 'Moon', 'Mars', 'Mercury', 'Jupiter', 'Venus', 'Saturn'];   // rulers of Sunday … Saturday
+      const cfg = Store.get('hours', { attune: false, auto: false });
+    
+      /** Sunrise & sunset for a local calendar date (sunrise equation; falls back to 06:00/18:00). */
+      function sun(date, geo) {
+        const y = date.getFullYear(), m = date.getMonth(), d = date.getDate();
+        const fb = { rise: new Date(y, m, d, 6), set: new Date(y, m, d, 18) };
+        if (!geo) return fb;
+        const rad = Math.PI / 180, Jd = new Date(y, m, d, 12).getTime() / 864e5 + 2440587.5;
+        const n = Math.round(Jd - 2451545 + geo.lon / 360), Js = n - geo.lon / 360;
+        const M = mod(357.5291 + 0.98560028 * Js, 360);
+        const C = 1.9148 * Math.sin(M * rad) + 0.02 * Math.sin(2 * M * rad) + 0.0003 * Math.sin(3 * M * rad);
+        const lam = mod(M + C + 180 + 102.9372, 360);
+        const Jt = 2451545 + Js + 0.0053 * Math.sin(M * rad) - 0.0069 * Math.sin(2 * lam * rad);
+        const dec = Math.asin(Math.sin(lam * rad) * Math.sin(23.4397 * rad));
+        const cw = (Math.sin(-0.833 * rad) - Math.sin(geo.lat * rad) * Math.sin(dec)) / (Math.cos(geo.lat * rad) * Math.cos(dec));
+        if (Math.abs(cw) > 1) return fb;                                 // polar day/night
+        const w = Math.acos(cw) / rad / 360, toDate = (J) => new Date((J - 2440587.5) * 864e5);
+        return { rise: toDate(Jt - w), set: toDate(Jt + w) };
+      }
+      /** Current planetary day and hour. The planetary day begins at sunrise; day and night each divide into 12 hours. */
+      function sky() {
+        const t = new Date(), geo = Store.get('geo', null), s = sun(t, geo); let h, dayDate = t;
+        if (t < s.rise) { const yd = new Date(t.getTime() - 864e5), ys = sun(yd, geo); h = 12 + Math.floor((t - ys.set) / ((s.rise - ys.set) / 12)); dayDate = yd; }
+        else if (t < s.set) h = Math.floor((t - s.rise) / ((s.set - s.rise) / 12));
+        else { const tm = sun(new Date(t.getTime() + 864e5), geo); h = 12 + Math.floor((t - s.set) / ((tm.rise - s.set) / 12)); }
+        h = Math.max(0, Math.min(23, h));
+        const day = DAY[dayDate.getDay()], hour = CHALDEAN[(CHALDEAN.indexOf(day) + h) % 7];
+        const age = mod((t.getTime() - Date.UTC(2000, 0, 6, 18, 14)) / 864e5, 29.530588853);
+        const moon = ['New Moon', 'Waxing Crescent', 'First Quarter', 'Waxing Gibbous', 'Full Moon', 'Waning Gibbous', 'Last Quarter', 'Waning Crescent'][Math.floor((age / 29.530588853) * 8 + 0.5) % 8];
+        return { day, hour, h, moon, waxing: age < 14.765, geo: !!geo };
+      }
+    
+      // Attunement: force the mode via the core's weight table (one-hot during composition only), and filter the palette.
+      let savedW = null;
+      Hooks.on('precompose', (sigil) => {
+        if (!cfg.attune) return;
+        sigil._planet ??= sky().hour;
+        savedW = MODE_WEIGHTS.slice(); MODE_WEIGHTS.fill(0); MODE_WEIGHTS[MODE_NAMES.indexOf(P[sigil._planet].mode)] = 1;
+      });
+      Hooks.on('postcompose', () => { if (savedW) { savedW.forEach((w, i) => (MODE_WEIGHTS[i] = w)); savedW = null; } });
+      K.paletteFilters.push((p) => (cfg.attune && app.sigil?._planet ? P[app.sigil._planet].pal : p));
+    
+      // Timed charging session
+      let ses = null, timer = null;
+      const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+      function stopSession() { clearInterval(timer); timer = null; ses = null; }
+      function begin(min) {
+        if (app.mode !== 'playing') { toast('Cast a sigil first', true); return; }
+        K.closePanels(); toggleCharge(true);
+        ses = { left: min * 60, total: min * 60, last: performance.now(), done: false };
+        clearInterval(timer);
+        timer = setInterval(() => {
+          const t = performance.now(), dt = (t - ses.last) / 1000; ses.last = t;
+          if (!app.charging || app.mode !== 'playing') { stopSession(); return; }      // Esc / Forget cancels
+          if (ses.done) return;
+          if (app.engine.ctx.state === 'running') ses.left -= dt;                      // pausing pauses the timer
+          if (ses.left <= 0) {
+            ses.done = true; ses.left = 0;
+            const e = app.engine, t0 = e.ctx.currentTime;
+            if (e.buses) for (let i = 0; i < 3; i++) e.bell(app.song.leadBase + 12, t0 + 0.1 + i * 1.8, 0.8, e.buses.bell);
+            setTimeout(() => {
+              const still = app.charging; stopSession(); if (!still) return;
+              toggleCharge(false);
+              if (cfg.auto) forget(); else toast('The charge is complete.');
+            }, 6500);
+          }
+        }, 250);
+      }
+      Hooks.on('draw', (r) => {                                          // countdown arc outside the breathing ring
+        if (!ses) return; const g = r.g, F = r.F;
+        g.beginPath(); g.arc(F.cx, F.cy, F.R * 1.36, -Math.PI / 2, -Math.PI / 2 + TAU * (ses.left / ses.total));
+        g.strokeStyle = rgba(r.pal.accent, 0.4); g.lineWidth = 1.5; g.stroke();
+      });
+    
+      let info, mins;
+      function refresh() {
+        const s = sky(), p = P[s.hour];
+        info.innerHTML = '';
+        info.append(
+          el('p', { style: 'font-size:30px;margin:6px 0 2px', textContent: `${p.g}  Hour of ${s.hour}` }),
+          el('p', { className: 'sx-note', textContent: `Day of ${s.day} ${P[s.day].g} · ${s.moon}. This hour favours ${p.v}. The ${s.waxing ? 'waxing moon favours drawing things toward you' : 'waning moon favours letting things go'}.` }),
+          el('p', { className: 'sx-note', textContent: s.geo ? 'Hours computed from your true sunrise and sunset.' : 'Hours approximated from a 6:00 sunrise and 18:00 sunset.' }));
+        mins.value = p.n; mins.options[0].textContent = `${p.n} min, the number of ${s.hour}`; mins.options[0].value = p.n;
+      }
+      K.panel({
+        id: 'hours', title: 'Hours', label: 'Hours',
+        note: 'Planetary hours and timed charging. Everything is computed on this device.',
+        build(body) {
+          info = el('div');
+          mins = el('select', {}, el('option'), ...[3, 5, 10, 15, 20].map((m) => el('option', { value: m, textContent: m + ' minutes' })));
+          mins.setAttribute('aria-label', 'Session length');
+          const geoBtn = el('button', { textContent: Store.get('geo', null) ? 'Forget my location' : 'Use my location', onclick: () => {
+            if (Store.get('geo', null)) { Store.set('geo', null); geoBtn.textContent = 'Use my location'; refresh(); return; }
+            navigator.geolocation?.getCurrentPosition((pos) => {
+              Store.set('geo', { lat: +pos.coords.latitude.toFixed(1), lon: +pos.coords.longitude.toFixed(1) });   // coarse, stored locally only
+              geoBtn.textContent = 'Forget my location'; refresh();
+            }, () => toast('Location unavailable, using approximate hours', true));
+          } });
+          body.append(info, el('div', { className: 'sx-btns' }, geoBtn),
+            el('h3', { textContent: 'Attunement' }),
+            K.check('Let the hour of casting choose the mode and colours', cfg.attune, (v) => {
+              cfg.attune = v; Store.set('hours', cfg);
+              if (app.sigil) delete app.sigil._planet;
+              K.recompose(); K.repaint();
+            }),
+            el('h3', { textContent: 'Charging session' }), mins,
+            K.check('Forget the sigil automatically when the session ends', cfg.auto, (v) => { cfg.auto = v; Store.set('hours', cfg); }),
+            el('div', { className: 'sx-btns' }, el('button', { textContent: 'Begin session', onclick: () => begin(+mins.value) })));
+        },
+        onOpen: refresh,
+      });
+    });
+    
+    /* ══════════════════════════════════════════════════════════════════════════
+       MODULE 10 — ACCESS  (reduced motion, high contrast, larger text, announcements)
+       Registered last so its high-contrast palette overrides all other palettes.
+       ══════════════════════════════════════════════════════════════════════════ */
+    K.module('access', () => {
+      const cfg = Store.get('access', { calm: matchMedia('(prefers-reduced-motion: reduce)').matches, hc: false, big: false });
+      const HC = { name: 'High contrast', bg: '#000000', line: [255, 255, 255], accent: [255, 212, 0] };
+      K.paletteFilters.push((p) => (cfg.hc ? HC : p));
+      const pulse0 = window.pulse; window.pulse = (arr, beat, rate) => (cfg.calm ? 0 : pulse0(arr, beat, rate));   // no beat-flashing
+      let motes = null;
+      function apply() {
+        document.body.classList.toggle('sx-calm', cfg.calm); document.body.classList.toggle('sx-hc', cfg.hc); document.body.classList.toggle('sx-big', cfg.big);
+        if (cfg.calm) { if (!motes) { motes = renderer.motes; renderer.motes = []; } renderer.spawn = () => {}; renderer.parts.length = 0; }
+        else { if (motes) { renderer.motes = motes; motes = null; } delete renderer.spawn; }
+        Store.set('access', cfg); K.repaint();
+      }
+      apply();
+      // Screen-reader narration of the performance (polite live region; low-rate poll, not per frame)
+      let lastSi = -1;
+      setInterval(() => {
+        if (app.mode !== 'playing' || !renderer.info) { lastSi = -1; return; }
+        if (renderer.info.si !== lastSi) { lastSi = renderer.info.si; const s = app.song.sections[lastSi]; K.announce(`Section ${lastSi + 1} of ${app.song.sections.length}. ${s.name}: ${s.desc}`); }
+      }, 400);
+      Hooks.on('start', (sigil, song) => {
+        $('#stage').setAttribute('aria-label', `Animated sigil of the letters ${[...sigil.reduced].join(' ')}`);
+        K.announce(`Sigil cast from ${[...sigil.reduced].join(' ')}. ${song.keyName.replace('♯', ' sharp').replace('♭', ' flat')}, ${song.bpm} beats per minute.`);
+      });
+      K.panel({
+        id: 'access', title: 'Access', label: 'Access',
+        note: 'Comfort and accessibility settings. They are remembered on this device.',
+        build(body) {
+          body.append(
+            K.check('Reduce motion: no particles, beat flashes or interface animation', cfg.calm, (v) => { cfg.calm = v; apply(); }),
+            K.check('High contrast: white on black with a yellow accent', cfg.hc, (v) => { cfg.hc = v; apply(); }),
+            K.check('Larger text and controls', cfg.big, (v) => { cfg.big = v; apply(); }),
+            el('h3', { textContent: 'Keyboard' }),
+            el('p', { className: 'sx-note', style: 'white-space:pre-line', textContent:
+              'Space  pause / resume\nC  charge (fullscreen)\n1–7  jump to section\n← →  previous / next section\nL  loop current section\n[ ]  rotate the sigil\nM  mirror the sigil\n0  restore the sigil\nEsc  close panels / leave charge' }));
+        },
+      });
+    });
+    
+    })();
+    </script>
 </body>
 </html>

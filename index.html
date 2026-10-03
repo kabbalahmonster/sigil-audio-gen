@@ -298,6 +298,47 @@ const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${clamp(a, 0, 1).toFixed(3)
 const te = new TextEncoder();
 const SERIF = '"Cormorant Garamond","EB Garamond","Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif';
 
+
+/* ── §0.1 HOOKS ────────────────────────────────────────────────────────────
+   A tiny event + filter bus. This is the ONLY coupling point between the core
+   and the feature modules.
+     Hooks.on(name, fn, priority=0)  → returns an unsubscribe function
+     Hooks.emit(name, ...args)        notify every listener
+     Hooks.filter(name, value, ...a)  pipe a value through listeners; a listener
+                                      returns a replacement, or undefined to keep
+                                      (it may also mutate objects in place)
+   Listeners run in ascending priority. Errors are caught per listener, so one
+   faulty module can never stop the performance. */
+   const Hooks = {
+  _m: new Map(),
+  on(name, fn, priority = 0) {
+    const list = (this._m.get(name) || []).concat({ fn, priority });
+    list.sort((a, b) => a.priority - b.priority);
+    this._m.set(name, list);
+    return () => this.off(name, fn);
+  },
+  off(name, fn) { const l = this._m.get(name); if (l) this._m.set(name, l.filter((x) => x.fn !== fn)); },
+  emit(name, ...args) {
+    for (const { fn } of this._m.get(name) || []) {
+      try { fn(...args); } catch (e) { console.error(`[hook:${name}]`, e); }
+    }
+  },
+  filter(name, value, ...args) {
+    for (const { fn } of this._m.get(name) || []) {
+      try { const r = fn(value, ...args); if (r !== undefined) value = r; } catch (e) { console.error(`[filter:${name}]`, e); }
+    }
+    return value;
+  },
+};
+
+/* ── §0.2 PREFS ────────────────────────────────────────────────────────────
+   Namespaced JSON localStorage. It never throws (private browsing modes and
+   full quotas simply fall back to defaults). */
+const Prefs = {
+  get(k, d) { try { const v = localStorage.getItem('sigil.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('sigil.' + k, JSON.stringify(v)); } catch { /* quota / privacy */ } },
+};
+
 /* ══════════════════════════════════════════════════════════════════════════
    §1  CRYPTOGRAPHY
    ----------------------------------------------------------------------------
@@ -476,6 +517,17 @@ function buildSigil(reduced) {
   const wheel = g.shuffle(CONSONANTS);                 // wheel[slot] = letter
   const slotOf = {}; wheel.forEach((L, i) => (slotOf[L] = i));
   const ringOf = {}; CONSONANTS.forEach((L) => (ringOf[L] = g.int(0, 2)));
+  // Collision repair: Y must not share a ring with a slot-adjacent letter.
+  // Without this, its label and node can visually overlap the neighbour's.
+  // The draw order above is unchanged, so determinism holds for every
+  // sigil that had no collision. Only a colliding Y is moved, to the lowest
+  // ring index not used by either neighbour (one always exists: there are
+  // 3 rings and at most 2 neighbours).
+  {
+    const ys = slotOf['Y'];
+    const nb = [wheel[mod(ys - 1, SLOTS)], wheel[mod(ys + 1, SLOTS)]].map((L) => ringOf[L]);
+    if (nb.includes(ringOf['Y'])) ringOf['Y'] = [0, 1, 2].find((r) => !nb.includes(r));
+  }
   const baseAngle = g.float() * TAU;                   // orientation of the whole seal
   const nodes = [...reduced].map((L) => ({ letter: L, slot: slotOf[L], ring: ringOf[L] }));
   // Curve factor per stroke: 0 = straight chord, ±k = bulge toward/away from centre
@@ -740,6 +792,35 @@ function padVoicing(c, scale, base, opt) {
   return [root, ...ms].sort((a, b) => a - b);
 }
 
+
+
+/* ── Shared pitch helpers ──────────────────────────────────────────────────
+   They are factored out so the Live Lens (M9) can recompute pitches from the
+   metadata stored on each event, using exactly the composer's own rules. */
+
+/** Diatonic triads that are plainly major or minor (no diminished or augmented). */
+function validChords(scale) {
+  const out = [];
+  for (let c = 0; c < 7; c++) {
+    const third = mod(scale[(c + 2) % 7] - scale[c], 12), fifth = mod(scale[(c + 4) % 7] - scale[c], 12);
+    if (fifth === 7 && (third === 3 || third === 4)) out.push(c);
+  }
+  return out;
+}
+/** Bass pitch for chord c in a role: 'root' | 'fifth' | 'oct' (root + octave). */
+function bassPitch(c, role, bassBase, scale) {
+  const root = fold(degToMidi(c, bassBase, scale), bassBase - 2, bassBase + 10);
+  if (role === 'fifth') return fold(degToMidi(c + 4, bassBase, scale), bassBase - 2, bassBase + 12);
+  return role === 'oct' ? root + 12 : root;
+}
+/** The five arpeggio tones (triad spread over two octaves) for chord c. */
+function arpTones(c, scale, leadBase) {
+  let tones = [c, c + 2, c + 4, c + 7, c + 9].map((d) => degToMidi(d, leadBase, scale));
+  if (tones[0] > leadBase + 9) tones = tones.map((m) => m - 12);
+  return tones;
+}
+
+
 /* ── Per-bar emitters for rhythm section and accompaniment ─────────────── */
 
 function drumBar(ev, t0, sec, P, fill, R) {
@@ -769,19 +850,23 @@ function drumBar(ev, t0, sec, P, fill, R) {
   }
 }
 
-function bassBar(ev, t0, root, fifth, sec, P, R) {
+/* Same musical behaviour and the same order of random draws as before. Events
+   now also carry `chord` and `role`, so the pitch can be re-derived later. */
+   function bassBar(ev, t0, c, sec, P, R, bassBase, scale) {
   if (sec.halfTime || sec.intensity <= 1) { // long, patient roots
-    ev.push({ beat: t0, type: 'bass', midi: root, dur: 2.6, vel: 0.8 });
-    ev.push({ beat: t0 + 3, type: 'bass', midi: R.chance(0.5) ? fifth : root, dur: 0.8, vel: 0.6 });
+    ev.push({ beat: t0, type: 'bass', midi: bassPitch(c, 'root', bassBase, scale), dur: 2.6, vel: 0.8, chord: c, role: 'root' });
+    const role = R.chance(0.5) ? 'fifth' : 'root';
+    ev.push({ beat: t0 + 3, type: 'bass', midi: bassPitch(c, role, bassBase, scale), dur: 0.8, vel: 0.6, chord: c, role });
     return;
   }
   const hits = []; for (let s = 0; s < 16; s++) if (P.bass[s]) hits.push(s);
   hits.forEach((s, i) => {
     const nxt = i < hits.length - 1 ? hits[i + 1] : 16;
-    let m = root;
-    if (sec.intensity >= 3 && i === hits.length - 1 && hits.length > 2) m = fifth;
-    if (sec.intensity >= 3 && i === 1 && R.chance(0.35)) m = root + 12;
-    ev.push({ beat: t0 + s * 0.25 + (s % 2 ? P.swing * 0.25 : 0), type: 'bass', midi: m, dur: Math.min((nxt - s) * 0.25 * 0.85, 2), vel: i === 0 ? 0.9 : 0.7 });
+    let role = 'root';
+    if (sec.intensity >= 3 && i === hits.length - 1 && hits.length > 2) role = 'fifth';
+    if (sec.intensity >= 3 && i === 1 && R.chance(0.35)) role = 'oct';
+    ev.push({ beat: t0 + s * 0.25 + (s % 2 ? P.swing * 0.25 : 0), type: 'bass', midi: bassPitch(c, role, bassBase, scale),
+      dur: Math.min((nxt - s) * 0.25 * 0.85, 2), vel: i === 0 ? 0.9 : 0.7, chord: c, role });
   });
 }
 
@@ -790,14 +875,14 @@ const ARP_PATTERNS = {
   pendulum: [0, 2, 1, 3, 2, 4, 3, 1], broken: [0, 2, 4, 1, 3, 2, 4, 3],
 };
 function arpBar(ev, t0, c, sec, P, scale, leadBase, barIdx) {
-  let tones = [c, c + 2, c + 4, c + 7, c + 9].map((d) => degToMidi(d, leadBase, scale));
-  if (tones[0] > leadBase + 9) tones = tones.map((m) => m - 12);
+  const tones = arpTones(c, scale, leadBase);
   const pat = ARP_PATTERNS[P.arp], rate = sec.arp === 'full' ? 0.25 : 0.5, steps = 4 / rate;
   const vel = sec.arp === 'full' ? 0.8 : 0.55;
   for (let i = 0; i < steps; i++) {
     const idx = pat[(i + barIdx * steps) % pat.length];
     ev.push({ beat: t0 + i * rate + (rate === 0.25 && i % 2 ? P.swing * 0.25 : 0), type: 'arp',
-      midi: tones[idx], dur: rate * 0.9, vel: vel * (i % 4 === 0 ? 1 : 0.78), pan: ((i % 4) / 3 - 0.5) * 0.8 });
+      midi: tones[idx], dur: rate * 0.9, vel: vel * (i % 4 === 0 ? 1 : 0.78), pan: ((i % 4) / 3 - 0.5) * 0.8,
+      chord: c, idx });
   }
 }
 
@@ -806,18 +891,29 @@ function arpBar(ev, t0, c, sec, P, scale, leadBase, barIdx) {
  * event list (beats, not seconds). Playback then only needs a lookahead
  * scheduler, and the renderer can read the same data for perfect sync.
  */
-function composeSong(sigil) {
+/**
+ * composeSong: the full score (instrumented version).
+ * Changes from the original, none of which alter default output:
+ *   • Parameters are gathered into `cfg` and passed through the 'compose'
+ *     filter (Moods, Hours & Moon). The plan goes through the 'plan' filter.
+ *   • Optional `sigil.partners` (Fusion, M8): extra melodic voices traced
+ *     on the same wheel. They help choose the harmony but never override
+ *     the primary melody.
+ *   • Pitched events carry metadata (deg/off/reg/add/cap, chord/role/idx),
+ *     so any consumer can recompute pitch under a transform (Live Lens, M9).
+ *   • The returned song exposes cfg, voicing, bassBase and validChords.
+ * ORDER OF RANDOM DRAWS IS FROZEN. Changing it changes every existing song.
+ * Filters must never draw from R; they should use their own stream(...).
+ */
+ function composeSong(sigil) {
   const R = stream(sigil.hash, 'music');
+  // 1 ─ Base parameters (same draws, same order as v1)
   const tonicPc = R.int(0, 11);
   const modeName = R.weighted(MODE_NAMES, MODE_WEIGHTS);
-  const scale = MODES[modeName];
-  const bpm = R.int(74, 98);            // contemplative, but with pulse
+  const bpm = R.int(74, 98);
   const leadTimbre = R.pick(['glass', 'reed', 'koto']);
-  const altTimbre = leadTimbre === 'glass' ? 'reed' : 'glass';
-  const shift = R.pick([2, 3, 4]);      // chorus transposition (3rd, 4th, 5th)
-  const rotK = shift + 7 * R.int(1, 2); // same pitch shift, but a big, visible rotation
-  const leadBase = 57 + mod(tonicPc - 9, 12); // tonic in A3…G#4
-  const bassBase = leadBase - 24;
+  const shift = R.pick([2, 3, 4]);
+  const rotK = shift + 7 * R.int(1, 2);
   const P = {
     kick: euclid(R.pick([3, 4, 5]), 16, 0),
     hat: euclid(R.pick([5, 7, 9, 11]), 16, R.int(0, 15)),
@@ -828,10 +924,46 @@ function composeSong(sigil) {
   };
   const voicing = { seventh: R.chance(0.65), ninth: R.chance(0.4) };
   const bias = Array.from({ length: 7 }, () => R.range(-0.25, 0.25));
-  const plan = makePlan(rotK, shift);
+
+  // 2 ─ Module adjustments. `levels` = per-bus gain multipliers applied at load.
+  const cfg = Hooks.filter('compose',
+    { tonicPc, modeName, bpm, leadTimbre, shift, rotK, P, voicing, bias, levels: null, partnerTimbres: null, tags: [] }, sigil);
+  const scale = MODES[cfg.modeName] || MODES.Aeolian;
+  const altTimbre = cfg.leadTimbre === 'glass' ? 'reed' : 'glass';
+  const leadBase = 57 + mod(cfg.tonicPc - 9, 12);
+  const bassBase = leadBase - 24;
+  const plan = Hooks.filter('plan', makePlan(cfg.rotK, cfg.shift), cfg, sigil);
+  const partners = sigil.partners || [];
+  // Partner 1 sings an octave below, partner 2 in the lead register with a contrasting timbre.
+  const partnerVoice = partners.map((_, i) => ({
+    timbre: (cfg.partnerTimbres && cfg.partnerTimbres[i]) || (i === 0 ? altTimbre : 'koto'),
+    reg: i === 0 ? leadBase - 12 : leadBase, gain: 0.62, part: i + 1,
+  }));
 
   const events = [], phrases = [];
   let beat = 0;
+
+  /** Emit one melodic line (main or partner) for the current phrase. */
+  function emitLine(notes, sec, o) {
+    let prevMidi = null, prevDeg = null;
+    for (const n of notes) {
+      const midi = degToMidi(n.deg, o.reg, scale), t = beat + n.start;
+      const len = n.passing ? n.dur * 0.92 : n.glide ? n.dur * 1.04 : n.dur * 0.86;
+      const vel = ((n.passing ? 0.5 : 0.78) + (mod(n.start, 4) === 0 ? 0.14 : 0) + R.range(-0.05, 0.05)) * o.gain;
+      const meta = { deg: n.deg, reg: o.reg, part: o.part || 0 };
+      if (sec.voice === 'lead' || sec.voice === 'alt')
+        events.push({ beat: t, type: 'lead', timbre: o.timbre, midi, dur: len, vel, from: n.glide ? prevMidi : null,
+          fromDeg: n.glide ? prevDeg : null, ...meta, off: 0, add: 0 });
+      if (sec.voice === 'bell' && !n.passing)
+        events.push({ beat: t, type: 'bell', midi: midi + 12 > 90 ? midi : midi + 12, dur: n.dur, vel: vel * 0.75, ...meta, off: 0, add: 12, cap: 90 });
+      if (o.main && sec.octave && !n.passing)
+        events.push({ beat: t, type: 'bell', midi: midi + 12, dur: n.dur, vel: vel * 0.3, ...meta, off: 0, add: 12 });
+      if (o.main && sec.harm && !n.passing)
+        events.push({ beat: t, type: 'harm', midi: degToMidi(n.deg - 2, o.reg, scale), dur: n.dur * 0.95, vel: vel * 0.8, ...meta, off: -2, add: 0 });
+      prevMidi = midi; prevDeg = n.deg;
+    }
+  }
+
   plan.forEach((sec, si) => {
     const next = plan[si + 1];
     sec.start = beat;
@@ -840,39 +972,29 @@ function composeSong(sigil) {
     if (sec.intensity >= 3) events.push({ beat, type: 'crash', vel: 0.7 });
     for (let p = 0; p < sec.phrases; p++) {
       const ph = buildPhrase(sigil, sec.T, sec.density);
+      const pps = partners.map((pt) => buildPhrase(pt, sec.T, sec.density));
       const lastPhrase = p === sec.phrases - 1;
-      const chords = harmonize(ph.notes, scale, bias, lastPhrase ? 'full' : 'half');
+      // Partner notes weigh into the harmony at "passing tone" strength.
+      const hNotes = pps.length ? ph.notes.concat(...pps.map((x) => x.notes.map((n) => ({ ...n, passing: true })))) : ph.notes;
+      const chords = harmonize(hNotes, scale, cfg.bias, lastPhrase ? 'full' : 'half');
       if (sec.final) chords[3] = 0;
-      ph.start = beat; ph.end = beat + 16; ph.chords = chords; ph.si = si;
+      ph.start = beat; ph.end = beat + 16; ph.chords = chords; ph.si = si; ph.partners = pps;
       ph.path.forEach((n) => (n.beat += beat));
+      pps.forEach((x) => x.path.forEach((n) => (n.beat += beat)));
 
-      // Melody and its shadows
-      let prevMidi = null;
-      for (const n of ph.notes) {
-        const midi = degToMidi(n.deg, leadBase, scale), t = beat + n.start;
-        const len = n.passing ? n.dur * 0.92 : n.glide ? n.dur * 1.04 : n.dur * 0.86;
-        const vel = (n.passing ? 0.5 : 0.78) + (mod(n.start, 4) === 0 ? 0.14 : 0) + R.range(-0.05, 0.05);
-        if (sec.voice === 'lead' || sec.voice === 'alt')
-          events.push({ beat: t, type: 'lead', timbre: sec.voice === 'alt' ? altTimbre : leadTimbre, midi, dur: len, vel, from: n.glide ? prevMidi : null });
-        if (sec.voice === 'bell' && !n.passing)
-          events.push({ beat: t, type: 'bell', midi: midi + 12 > 90 ? midi : midi + 12, dur: n.dur, vel: vel * 0.75 });
-        if (sec.octave && !n.passing) events.push({ beat: t, type: 'bell', midi: midi + 12, dur: n.dur, vel: vel * 0.3 });
-        if (sec.harm && !n.passing) events.push({ beat: t, type: 'harm', midi: degToMidi(n.deg - 2, leadBase, scale), dur: n.dur * 0.95, vel: vel * 0.8 });
-        prevMidi = midi;
-      }
-      // Harmony, bass, arpeggio, drums, bar by bar
+      emitLine(ph.notes, sec, { reg: leadBase, timbre: sec.voice === 'alt' ? altTimbre : cfg.leadTimbre, gain: 1, main: true });
+      pps.forEach((x, i) => emitLine(x.notes, sec, partnerVoice[i]));
+
       chords.forEach((c, b) => {
         const t0 = beat + b * 4;
         const isLastBar = lastPhrase && b === 3;
         const padDur = sec.final && isLastBar ? 4 + (sec.tail || 0) + 0.5 : 4.25;
-        events.push({ beat: t0, type: 'pad', midis: padVoicing(c, scale, leadBase, voicing), dur: padDur, vel: sec.pad, bright: sec.intensity });
-        const root = fold(degToMidi(c, bassBase, scale), bassBase - 2, bassBase + 10);
-        const fifth = fold(degToMidi(c + 4, bassBase, scale), bassBase - 2, bassBase + 12);
-        if (sec.bass) bassBar(events, t0, root, fifth, sec, P, R);
-        if (sec.arp) arpBar(events, t0, c, sec, P, scale, leadBase, b);
-        drumBar(events, t0, sec, P, isLastBar && next && next.intensity >= 3 && sec.intensity >= 1, R);
+        events.push({ beat: t0, type: 'pad', midis: padVoicing(c, scale, leadBase, cfg.voicing), dur: padDur, vel: sec.pad, bright: sec.intensity, chord: c });
+        if (sec.bass) bassBar(events, t0, c, sec, cfg.P, R, bassBase, scale);
+        if (sec.arp) arpBar(events, t0, c, sec, cfg.P, scale, leadBase, b);
+        drumBar(events, t0, sec, cfg.P, isLastBar && next && next.intensity >= 3 && sec.intensity >= 1, R);
       });
-      if (sec.final) events.push({ beat: beat + 16, type: 'bell', midi: leadBase + 12, dur: 8, vel: 0.7 }); // the last stroke
+      if (sec.final) events.push({ beat: beat + 16, type: 'bell', midi: leadBase + 12, dur: 8, vel: 0.7, deg: 0, off: 0, reg: leadBase, add: 12, part: 0 });
       phrases.push(ph);
       beat += 16;
     }
@@ -884,12 +1006,14 @@ function composeSong(sigil) {
   events.sort((a, b) => a.beat - b.beat);
   const chimeNotes = buildPhrase(sigil, { k: 0, m: 1, reverse: false }, 0).notes;
   return {
-    bpm, spb: 60 / bpm, tonicPc, modeName, scale, leadTimbre, altTimbre, rotK, shift, leadBase, P,
+    cfg, bpm: cfg.bpm, spb: 60 / cfg.bpm, tonicPc: cfg.tonicPc, modeName: cfg.modeName, scale,
+    leadTimbre: cfg.leadTimbre, altTimbre, rotK: cfg.rotK, shift: cfg.shift, leadBase, bassBase,
+    P: cfg.P, voicing: cfg.voicing, levels: cfg.levels, validChords: validChords(scale),
     sections: plan, phrases, events, total: beat,
     kicks: events.filter((e) => e.type === 'kick').map((e) => e.beat),
     snares: events.filter((e) => e.type === 'snare' && e.vel > 0.5).map((e) => e.beat),
     chimes: sigil.nodes.map((_, i) => degToMidi(chimeNotes[i].deg, leadBase, scale) + 12),
-    keyName: `${NOTE_NAMES[tonicPc]} ${modeName}`,
+    keyName: `${NOTE_NAMES[cfg.tonicPc]} ${cfg.modeName}`,
   };
 }
 
@@ -938,9 +1062,10 @@ function displayTransform(song, beat) {
    touching the shared effects. There are no clicks and no orphaned drones.
    ══════════════════════════════════════════════════════════════════════════ */
 class Engine {
-  constructor() {
+  /* @param {BaseAudioContext} [ctx] optional, e.g. an OfflineAudioContext for WAV rendering */
+  constructor(ctx) {
     const AC = window.AudioContext || window.webkitAudioContext;
-    const c = (this.ctx = new AC({ latencyHint: 'interactive' }));
+    const c = (this.ctx = ctx || new AC({ latencyHint: 'interactive' }));
     this.out = this.gain(0.85);
     this.comp = c.createDynamicsCompressor();
     Object.assign(this.comp, {});
@@ -954,12 +1079,12 @@ class Engine {
     if (this.recDest) this.out.connect(this.recDest);
     // Reverb: generated impulse response (no samples to download)
     this.reverb = c.createConvolver(); this.reverb.buffer = this.makeIR(4.2, 2.6);
-    const rr = this.gain(0.85); this.reverb.connect(rr); rr.connect(this.mix);
+    const rr = this.gain(0.85); this.reverb.connect(rr); rr.connect(this.mix);this.revReturn = rr;
     // Delay with filtered feedback (a darker echo each repeat)
     this.delayIn = this.gain(1);
     this.delay = c.createDelay(3); this.delay.delayTime.value = 0.5;
     const fbf = c.createBiquadFilter(); fbf.type = 'lowpass'; fbf.frequency.value = 2600;
-    const fb = this.gain(0.36), dr = this.gain(0.55), d2r = this.gain(0.25);
+    const fb = this.gain(0.36), dr = this.gain(0.55), d2r = this.gain(0.25);this.delayReturn = dr;
     this.delayIn.connect(this.delay); this.delay.connect(fbf); fbf.connect(fb); fb.connect(this.delay);
     fbf.connect(dr); dr.connect(this.mix); dr.connect(d2r); d2r.connect(this.reverb);
     // Shared white noise (drums, breath, fire)
@@ -1025,13 +1150,19 @@ class Engine {
   load(song) {
     this.song = song; this.spb = song.spb; this.events = song.events;
     this.buses = this.makeBuses();
+    // Song-level balance (set by Moods): multiply each bus's default level.
+    if (song.levels) for (const [k, v] of Object.entries(song.levels)) if (this.buses[k]) this.buses[k].gain.value *= v;
     this.delay.delayTime.setValueAtTime(song.spb * 0.75, this.ctx.currentTime); // dotted-eighth echo
+    Hooks.emit('buses', this.buses, this); // the Mixer applies user levels here
   }
   start(lead = 0.12) {
+    this.reanchorAt = 0;
     this.anchor = this.ctx.currentTime + lead; this.loopIndex = 0; this.ptr = 0; this.running = true;
     clearInterval(this.timer); this.timer = setInterval(() => this.pump(), 25); this.pump();
   }
   stop(fade = 0.8) {
+
+    this.reanchorAt = 0;
     this.running = false; clearInterval(this.timer);
     const b = this.buses; if (!b) return; this.buses = null;
     const now = this.ctx.currentTime;
@@ -1415,7 +1546,9 @@ class Renderer {
     F.base = sig.baseAngle;
     const beat = app.engine.beatNow();
     const si = sectionIndexAt(song, beat), sec = song.sections[si];
-    const T = displayTransform(song, beat);
+    // Every transform passes through 'viewT', so modules (the Live Lens) can compose their own rotation or mirror on top.
+    const view = (T, ghost) => Hooks.filter('viewT', T, { beat, song, ghost });
+    const T = view(displayTransform(song, beat), false);
     const pi = phraseIndexAt(song, beat), ph = song.phrases[pi];
     const prog = penProgress(ph, beat);
     const cur = ph.path[Math.min(ph.path.length - 1, Math.floor(prog + 1e-6))];
@@ -1427,32 +1560,27 @@ class Renderer {
     this.drawWheel(F, sig.wheel, T, { alpha: 1, kick: kp, set: sig.letterSet, current: cur.letter });
     if (sec.intensity >= 2) this.drawRhythm(F, song.P, beat, kp, 1);
 
-    // Ghosts: every distinct transformation already performed stays faintly inscribed (a growing mandala).
+    // Ghosts of every distinct transformation already performed
     const seen = new Set([sec.key]);
     for (let i = 0; i < si; i++) {
       const s = song.sections[i]; if (seen.has(s.key)) continue; seen.add(s.key);
-      const pts = tracePoints(sig.nodes, sig.curves, s.Tdisp, F, sig.nodes.length - 1);
+      const pts = tracePoints(sig.nodes, sig.curves, view(s.Tdisp, true), F, sig.nodes.length - 1);
       this.strokeGlow(pts, L, 0.12 * outroFade, 0.8); lines.push(pts);
     }
-    // Template of what will be drawn (anticipation)
     const full = tracePoints(ph.seq, ph.curves, T, F, ph.seq.length - 1);
     this.strokeGlow(full, L, 0.06, 0.8); lines.push(full);
-    // The previous phrase burns off during the first bar of the new one (the drawing "loops")
     if (pi > 0) {
       const fa = 1 - (beat - ph.start) / 3;
       if (fa > 0) { const prev = song.phrases[pi - 1]; this.strokeGlow(tracePoints(prev.seq, prev.curves, T, F, prev.seq.length - 1), L, 0.5 * fa, 1.2); }
     }
-    // Live stroke
     const pts = tracePoints(ph.seq, ph.curves, T, F, prog);
     this.strokeGlow(pts, L, 0.95, 1.2 + 0.25 * sec.intensity); lines.push(pts);
     this.drawTerminals(pts, F, 1, prog >= ph.seq.length - 1);
-    // Nodes and note flares
     ph.path.forEach((n) => {
       const [x, y] = nodeXY(n, T, F), age = beat - n.beat;
       this.circle(x, y, 1.7, L, 0.45, true);
       if (age >= 0 && age < 2) { const q = age / 2; this.circle(x, y, 3 + F.R * 0.07 * q, A, 0.7 * (1 - q), false, 1.2); }
     });
-    // Pen head with sparks
     const px = pts[pts.length - 2], py = pts[pts.length - 1], frac = prog - Math.floor(prog);
     const gr = this.g.createRadialGradient(px, py, 0, px, py, 16);
     gr.addColorStop(0, rgba(A, 0.55)); gr.addColorStop(1, rgba(A, 0));
@@ -1460,10 +1588,12 @@ class Renderer {
     this.circle(px, py, 2.2, [255, 250, 240], 0.95, true);
     if (frac > 0.02 && frac < 0.98 && Math.random() < 0.8)
       this.spawn(px, py, { vx: (Math.random() - 0.5) * 30, vy: (Math.random() - 0.5) * 30 - 8, life: 0.5 + Math.random() * 0.7, size: 1 + Math.random(), col: A });
-    // Centre: bindu on the kick, ripple on the snare
     this.circle(F.cx, F.cy, 1.8 + kp * 3, A, 0.5 + kp * 0.5, true);
     if (sp > 0.02) this.circle(F.cx, F.cy, F.R * (0.1 + (1 - sp) * 0.95), L, 0.16 * sp, false, 1);
-    // Charge mode: breathing guide, one breath per two bars (~5–6 s, a calm rate)
+
+    // Extension point: modules draw on top (fusion voices, session ring…). They may push into `lines` so Forget burns their strokes too.
+    Hooks.emit('drawPlaying', { r: this, g: this.g, F, T, beat, song, sig, ph, pi, sec, si, kp, sp, lines, app });
+
     if (app.charging) {
       const br = 0.5 - 0.5 * Math.cos((TAU * beat) / 8);
       this.circle(F.cx, F.cy, F.R * (1.2 + 0.09 * br), A, 0.1 + 0.15 * br, false, 1);
@@ -1495,48 +1625,77 @@ const app = { mode: 'idle', sigil: null, song: null, engine: null, charging: fal
 const renderer = new Renderer($('#stage'));
 const hud = { si: -1, letter: null, spans: [] };
 
+/** Apply a palette. The 'palette' filter lets High Contrast (M5) and Hours & Moon (M10) override it.
+    The unfiltered palette is remembered, so UI.refreshPalette() can re-run the filters later. */
 function applyPalette(p) {
+  app.basePalette = p;
+  p = Hooks.filter('palette', p, app.sigil);
   renderer.pal = p;
   const s = document.documentElement.style;
   s.setProperty('--bg', p.bg); s.setProperty('--line', p.line.join(',')); s.setProperty('--accent', p.accent.join(','));
 }
+/** HUD meta line, built as an array so modules can edit individual parts through the 'meta' filter. */
+function renderMeta() {
+  const { sigil, song } = app; if (!song || !sigil) return;
+  const parts = [song.keyName, `${song.bpm} bpm`, TIMBRE_NAMES[song.leadTimbre], renderer.pal.name, sigil.hex.slice(0, 8)];
+  $('#meta').textContent = Hooks.filter('meta', parts, app).join(' · ');
+}
+/** The URL fragment for the current sigil. Fusion and Moods extend it (e.g. #KRST+MNL~ambient). */
+function shareKey() { return app.sigil ? Hooks.filter('shareKey', app.sigil.reduced, app.sigil) : ''; }
 function toast(text, small = false, ms = 2200) {
   const t = $('#toast'); t.textContent = text; t.className = small ? 'small show' : 'show';
   clearTimeout(toast.t); toast.t = setTimeout(() => (t.className = small ? 'small' : ''), ms);
 }
 function flashErr(msg) { $('#err').textContent = msg; clearTimeout(flashErr.t); flashErr.t = setTimeout(() => ($('#err').textContent = ''), 4000); }
 
-/** The spoken rite: cast a desire. */
-async function cast() {
+/**
+ * Cast a desire.
+ * @param {object} [opts]
+ *   text      string  desire text (defaults to the input field)
+ *   partners  string[] extra desires or consonant strings (Fusion)
+ *   preset    string  mood id (Moods)
+ *   quick     bool    short reduction animation (Grimoire replays)
+ */
+ async function cast(opts = {}) {
   if (app.busy) return;
-  const text = $('#desire').value.trim();
+  if (!opts || opts instanceof Event) opts = {};
+  const text = String(opts.text ?? $('#desire').value).trim();
   if (!text) { flashErr('Speak a desire first.'); return; }
   const { chars, reduced } = reduceDesire(text);
   if (reduced.length < 3) { flashErr('Too little remains after reduction. Say more.'); return; }
+  const ctx = { text, reduced, opts };
+  Hooks.emit('beforeCast', ctx);
+  const sigil = Hooks.filter('buildSigil', null, ctx) || buildSigil(reduced);
+  if (sigil.error) { flashErr(sigil.error); return; }
   app.busy = true;
-  if (!app.engine) app.engine = new Engine();   // created inside a user gesture (autoplay policy)
-  try { await app.engine.ctx.resume(); } catch (e) { /* ignore */ }
-  if (app.mode === 'playing') app.engine.stop(0.6);
-
-  const sigil = buildSigil(reduced), song = composeSong(sigil);
-  Object.assign(app, { sigil, song, lit: 0, reduceStart: performance.now() / 1000 });
-  applyPalette(sigil.palette);
-  app.engine.load(song);
-  $('#invoke').classList.add('away'); $('#desire').blur(); $('#hud').classList.remove('on');
-  app.mode = 'reducing';
-  await performReduction(chars, sigil, song);
-
-  buildHUD();
-  app.engine.start(0.15);
-  app.mode = 'playing';
-  $('#hud').classList.add('on');
-  setPauseLabel();
-  history.replaceState(null, '', '#' + reduced);
-  app.busy = false;
+  try {
+    if (!app.engine) app.engine = new Engine(); // created inside a user gesture (autoplay policy)
+    try { await app.engine.ctx.resume(); } catch (e) { /* ignore */ }
+    if (app.mode === 'playing') { app.engine.stop(0.6); Hooks.emit('stop', 'recast'); }
+    const song = composeSong(sigil);
+    Object.assign(app, { sigil, song, lit: 0, reduceStart: performance.now() / 1000 });
+    applyPalette(sigil.palette);
+    app.engine.load(song);
+    $('#invoke').classList.add('away'); $('#desire').blur(); $('#hud').classList.remove('on');
+    app.mode = 'reducing';
+    await performReduction(chars, sigil, song, !!opts.quick);
+    buildHUD();
+    app.engine.start(0.15);
+    app.mode = 'playing';
+    $('#hud').classList.add('on');
+    setPauseLabel();
+    history.replaceState(null, '', '#' + shareKey());
+    Hooks.emit('cast', sigil, song, opts);
+    Hooks.emit('song', sigil, song, { cast: true });
+  } catch (e) {
+    console.error('[cast]', e); flashErr('Something went wrong while casting. Please try again.');
+  } finally {
+    app.busy = false;
+  }
 }
 
 /** The striking-out, shown letter by letter, with quill ticks and chimes. */
-async function performReduction(chars, sigil, song) {
+async function performReduction(chars, sigil, song, quick = false) {
   const box = $('#reduction'); box.innerHTML = '';
   const line = document.createElement('div'); line.className = 'line';
   const spans = chars.map((c) => {
@@ -1545,6 +1704,11 @@ async function performReduction(chars, sigil, song) {
   });
   const cap = document.createElement('div'); cap.className = 'cap';
   box.append(line, cap); box.classList.add('show');
+  const kept = spans.filter((s) => s.dataset.fate === 'kept');
+  if (quick) { // replays: already reduced, so just name the letters
+    for (let i = 0; i < kept.length; i++) { kept[i].classList.add('lit'); app.engine.chime(song.chimes[i]); app.lit = i + 1; await wait(90); }
+    await wait(450); box.classList.remove('show'); await wait(400); return;
+  }
   await wait(700);
   cap.textContent = 'the vowels and the repetitions are struck away';
   const struck = spans.filter((s) => s.dataset.fate !== 'kept');
@@ -1556,7 +1720,6 @@ async function performReduction(chars, sigil, song) {
   }
   await wait(450);
   cap.textContent = 'what remains is named';
-  const kept = spans.filter((s) => s.dataset.fate === 'kept');
   for (let i = 0; i < kept.length; i++) {
     kept[i].classList.add('lit'); app.engine.chime(song.chimes[i]); app.lit = i + 1;
     await wait(clamp(2400 / kept.length, 120, 220));
@@ -1581,7 +1744,7 @@ function buildHUD() {
   hud.spans = [...sigil.reduced].map((ch) => { const s = document.createElement('span'); s.textContent = ch; L.appendChild(s); return s; });
   const prog = $('#progress'); prog.querySelectorAll('.mark').forEach((m) => m.remove());
   song.sections.forEach((s) => { const m = document.createElement('div'); m.className = 'mark'; m.style.left = (s.start / song.total) * 100 + '%'; prog.appendChild(m); });
-  $('#meta').textContent = `${song.keyName} · ${song.bpm} bpm · ${TIMBRE_NAMES[song.leadTimbre]} · ${sigil.palette.name} · ${sigil.hex.slice(0, 8)}`;
+  renderMeta();
   hud.si = -1; hud.letter = null;
 }
 function updateHUD() {
@@ -1590,6 +1753,7 @@ function updateHUD() {
   if (si !== hud.si) {
     hud.si = si; const s = song.sections[si];
     $('#secInfo .roman').textContent = s.roman; $('#secInfo .name').textContent = s.name; $('#secInfo .desc').textContent = s.desc;
+    Hooks.emit('section', s, si, song);
   }
   if (letter !== hud.letter) {
     hud.letter = letter;
@@ -1622,6 +1786,7 @@ function stopRecording() { if (app.rec && app.rec.state !== 'inactive') app.rec.
 /** New: leave this sigil without ceremony (it is not banished). */
 function newDesire() {
   if (app.mode !== 'playing') return;
+  Hooks.emit('stop', 'new');
   stopRecording(); toggleCharge(false);
   app.engine.ctx.resume(); app.engine.stop(1.2);
   app.mode = 'idle';
@@ -1633,6 +1798,7 @@ function newDesire() {
 async function forget() {
   if (app.mode !== 'playing' || app.busy) return;
   app.busy = true; stopRecording(); toggleCharge(false);
+  Hooks.emit('forget', app.sigil); Hooks.emit('stop', 'forget');
   await app.engine.ctx.resume(); setPauseLabel();
   app.mode = 'burning'; $('#hud').classList.remove('on');
   renderer.burn(); app.engine.banish(3.5); app.engine.stop(3.5);
@@ -1699,14 +1865,14 @@ function toggleRecord() {
 
 /** Share: only the consonants travel, which is the sigil and not the desire. */
 function share() {
-  const url = location.href.split('#')[0] + '#' + app.sigil.reduced;
+  const url = location.href.split('#')[0] + '#' + shareKey();
   const ok = () => toast('Link copied. Only the consonants travel', true);
   if (navigator.clipboard) navigator.clipboard.writeText(url).then(ok).catch(() => prompt('Copy this link', url));
   else prompt('Copy this link', url);
 }
 
 /* ── Wiring ── */
-$('#castBtn').addEventListener('click', cast);
+$('#castBtn').addEventListener('click', () => cast());
 $('#desire').addEventListener('keydown', (e) => { if (e.key === 'Enter') cast(); });
 $('#controls').addEventListener('click', (e) => {
   const act = e.target.closest('button')?.dataset.act;
@@ -1739,5 +1905,1489 @@ document.addEventListener('keydown', (e) => {
   (function loop() { renderer.draw(app); updateHUD(); requestAnimationFrame(loop); })();
 })();
 </script>
+<script>
+    /* ══════════════════════════════════════════════════════════════════════════
+       M0 · UI KIT: shared infrastructure for all feature modules
+       ----------------------------------------------------------------------------
+       UI.h(tag, attrs, ...kids)        tiny DOM builder (on* attrs become listeners)
+       UI.css(text)                     inject a module's stylesheet
+       UI.section({id,title,order,build})  register a collapsible Tools panel
+       UI.open(id?) / UI.close()        open the Tools drawer (optionally at a panel)
+       UI.slider / check / select / button / note   consistent form controls
+       UI.key(keys,label,run,{group})   keyboard shortcut registry (+ "?" help sheet)
+       UI.announce(text)                polite screen-reader announcement
+       UI.parseKey / formatKey          link format:  #KRSTV+MNLP~ambient
+       UI.recompose()                   rebuild the current song in place
+       UI.refreshPalette()              re-run palette filters
+       UI.whenReady(fn)                 run after ALL module scripts have loaded
+       UI.fmt(seconds) / UI.fileKey()   formatting helpers
+       ══════════════════════════════════════════════════════════════════════════ */
+    const UI = (() => {
+      'use strict';
+    
+      /* ── DOM builder ── */
+      const h = (tag, attrs, ...kids) => {
+        const el = document.createElement(tag);
+        for (const [k, v] of Object.entries(attrs || {})) {
+          if (v == null || v === false) continue;
+          if (k === 'class') el.className = v;
+          else if (k === 'style') el.style.cssText = v;
+          else if (k === 'text') el.textContent = v;
+          else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
+          else if (k === 'value' || k === 'checked' || k === 'disabled') el[k] = v;
+          else el.setAttribute(k, v === true ? '' : String(v));
+        }
+        for (const c of kids.flat(Infinity)) if (c != null && c !== false) el.append(c instanceof Node ? c : String(c));
+        return el;
+      };
+      const css = (text) => document.head.append(h('style', {}, text));
+    
+      css(`
+      .top-right{display:flex;gap:4px;align-items:center}
+      #about{z-index:10}
+      #drawer{position:absolute;top:0;right:0;bottom:0;width:min(370px,94vw);display:flex;flex-direction:column;
+        background:rgba(6,5,5,.8);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+        border-left:1px solid rgba(var(--line),.14);transform:translateX(104%);
+        transition:transform .55s cubic-bezier(.2,.8,.2,1);pointer-events:auto;z-index:5;outline:none}
+      #drawer.open{transform:none}
+      body.charging #drawer{transform:translateX(104%)}
+      #drawer>header{display:flex;justify-content:space-between;align-items:center;padding:16px 16px 8px 22px;font-size:11px;letter-spacing:.45em;text-transform:uppercase}
+      #drawerBody{flex:1;overflow-y:auto;padding:0 22px 48px;overscroll-behavior:contain;scrollbar-width:thin}
+      details.tool{border-top:1px solid rgba(var(--line),.1);padding:6px 0}
+      details.tool>summary{cursor:pointer;list-style:none;font-style:italic;font-size:19px;padding:7px 0;display:flex;justify-content:space-between;align-items:center;outline:none}
+      details.tool>summary:focus-visible{color:rgb(var(--accent))}
+      details.tool>summary::-webkit-details-marker{display:none}
+      details.tool>summary::after{content:'+';font-style:normal;font-size:16px;opacity:.45;transition:transform .3s}
+      details.tool[open]>summary::after{transform:rotate(45deg)}
+      .tool-body{padding:2px 0 10px;font-size:14px}
+      .tool-note{font-size:12.5px;opacity:.52;font-style:italic;margin:4px 0 10px;line-height:1.55}
+      .ctl{display:grid;grid-template-columns:84px 1fr 56px;align-items:center;gap:10px;margin:7px 0;font-size:13px}
+      .ctl>label{opacity:.72}
+      .ctl output{font-size:12px;opacity:.62;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+      input.sg[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:18px;background:transparent;cursor:pointer;margin:0}
+      input.sg[type=range]::-webkit-slider-runnable-track{height:1px;background:rgba(var(--line),.3)}
+      input.sg[type=range]::-moz-range-track{height:1px;background:rgba(var(--line),.3)}
+      input.sg[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;border-radius:50%;background:rgb(var(--line));margin-top:-5px;box-shadow:0 0 10px rgba(var(--accent),.45)}
+      input.sg[type=range]::-moz-range-thumb{width:11px;height:11px;border:0;border-radius:50%;background:rgb(var(--line))}
+      input.sg[type=range]:focus-visible{outline:1px dotted rgba(var(--accent),.7)}
+      select.sg{background:transparent;color:rgb(var(--line));border:1px solid rgba(var(--line),.22);font-family:inherit;font-size:13px;padding:5px 6px;width:100%}
+      select.sg option{background:#111;color:#eee}
+      .sgrow{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+      button.sm{padding:6px 10px;font-size:9.5px;letter-spacing:.2em}
+      button.on,button[aria-pressed="true"]{color:rgb(var(--accent));border-color:rgba(var(--accent),.7)}
+      button:disabled{opacity:.35;cursor:default;box-shadow:none}
+      .sgtoggle{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:13.5px;cursor:pointer}
+      .sgtoggle input{accent-color:rgb(var(--accent));width:14px;height:14px;margin:0}
+      .sgbar{height:2px;background:rgba(var(--line),.12);margin:10px 0;overflow:hidden;position:relative}
+      .sgbar>i{position:absolute;left:0;top:0;bottom:0;background:rgb(var(--accent));width:0;transition:width .3s}
+      .sgbar.busy>i{width:30%;animation:sgslide 1.2s linear infinite}
+      @keyframes sgslide{from{left:-30%}to{left:100%}}
+      #help{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.62);z-index:11;
+        opacity:0;visibility:hidden;transition:opacity .4s,visibility 0s .4s;pointer-events:auto}
+      #help.open{opacity:1;visibility:visible;transition:opacity .4s}
+      #help .panel{width:min(560px,90vw);max-height:80vh;overflow:auto;padding:28px 32px;border:1px solid rgba(var(--line),.18);background:rgba(0,0,0,.6)}
+      #help h3{font-weight:normal;letter-spacing:.3em;text-transform:uppercase;font-size:11px;color:rgb(var(--accent));margin:18px 0 6px}
+      #help table{width:100%;border-collapse:collapse;font-size:14px}
+      #help td{padding:4px 0;border-bottom:1px solid rgba(var(--line),.07)}
+      #help td:first-child{width:40%}
+      kbd{font-family:inherit;border:1px solid rgba(var(--line),.3);padding:1px 7px;font-size:12px;border-radius:2px}
+      .sr-only{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+      `);
+    
+      /* ── Drawer ── */
+      const top = document.querySelector('header#top');
+      const toolsBtn = h('button', { class: 'ghost', id: 'toolsBtn', 'aria-expanded': 'false', 'aria-controls': 'drawer', title: 'Tools (T)' }, 'Tools');
+      top.append(h('div', { class: 'top-right' }, toolsBtn, document.querySelector('#aboutBtn')));
+      const body = h('div', { id: 'drawerBody' });
+      const closeBtn = h('button', { class: 'ghost sm', 'aria-label': 'Close tools' }, 'Close');
+      const drawer = h('aside', { id: 'drawer', 'aria-label': 'Tools', tabindex: '-1' }, h('header', {}, h('span', {}, 'Tools'), closeBtn), body);
+      drawer.inert = true; // keeps the closed drawer out of the tab order and away from screen readers
+      document.querySelector('#ui').append(drawer);
+    
+      const isOpen = () => drawer.classList.contains('open');
+      function open(id) {
+        drawer.classList.add('open'); drawer.inert = false; toolsBtn.setAttribute('aria-expanded', 'true');
+        const d = id && document.getElementById('tool-' + id);
+        if (d) { d.open = true; setTimeout(() => d.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 60); }
+        drawer.focus({ preventScroll: true });
+      }
+      function close() {
+        const hadFocus = drawer.contains(document.activeElement);
+        drawer.classList.remove('open'); drawer.inert = true; toolsBtn.setAttribute('aria-expanded', 'false');
+        if (hadFocus) toolsBtn.focus();
+      }
+      toolsBtn.addEventListener('click', () => (isOpen() ? close() : open()));
+      closeBtn.addEventListener('click', close);
+    
+      /** Register a collapsible panel. `order` sorts panels; open state is remembered per panel. */
+      function section({ id, title, order = 50, open: openDefault = false, build }) {
+        const content = h('div', { class: 'tool-body' });
+        const det = h('details', { class: 'tool', id: 'tool-' + id, 'data-order': order }, h('summary', {}, title), content);
+        det.open = Prefs.get('tool.' + id, openDefault);
+        det.addEventListener('toggle', () => Prefs.set('tool.' + id, det.open));
+        const next = [...body.children].find((c) => +c.dataset.order > order);
+        body.insertBefore(det, next || null);
+        try { build(content, det); } catch (e) { console.error('[UI.section]', id, e); content.append(note('This tool failed to load; see the console.')); }
+        return det;
+      }
+    
+      /* ── Controls ── */
+      function slider({ label, min, max, step = 1, value, format = String, onInput, title }) {
+        const out = h('output', {}, format(value));
+        const inp = h('input', { type: 'range', class: 'sg', min, max, step, value, 'aria-label': label, title });
+        inp.addEventListener('input', () => { out.textContent = format(+inp.value); onInput(+inp.value, row); });
+        const row = h('div', { class: 'ctl' }, h('label', {}, label), inp, out);
+        row.set = (v) => { inp.value = v; out.textContent = format(+v); };
+        row.input = inp;
+        return row;
+      }
+      function check({ label, checked, onChange, title }) {
+        const inp = h('input', { type: 'checkbox', checked: !!checked });
+        inp.addEventListener('change', () => onChange(inp.checked));
+        const el = h('label', { class: 'sgtoggle', title }, inp, h('span', {}, label));
+        el.input = inp; return el;
+      }
+      function select({ label, options, value, onChange, title }) {
+        const sel = h('select', { class: 'sg', 'aria-label': label, title }, options.map(([v, t]) => h('option', { value: v }, t)));
+        sel.value = String(value); sel.addEventListener('change', () => onChange(sel.value));
+        const row = h('div', { class: 'ctl' }, h('label', {}, label), sel, h('span'));
+        row.input = sel; return row;
+      }
+      const button = (text, onClick, attrs = {}) => h('button', { class: 'sm', type: 'button', ...attrs, onclick: onClick }, text);
+      const note = (text) => h('p', { class: 'tool-note' }, text);
+    
+      /* ── Keyboard registry. Shortcuts are ignored while typing in form fields. ── */
+      const keymap = [];
+      function key(keys, label, run, { group = 'General', display } = {}) {
+        const list = [].concat(keys);
+        keymap.push({ keys: list, label, run, group, display: display || list.join(' / ') });
+      }
+      document.addEventListener('keydown', (e) => {
+        const t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+        if (e.metaKey || e.ctrlKey || e.altKey || (e.repeat && !/^Arrow/.test(e.key))) return;
+        const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+        const hit = keymap.find((x) => x.run && x.keys.includes(k));
+        if (hit) { e.preventDefault(); hit.run(e); }
+      });
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { close(); help.classList.remove('open'); } });
+    
+      // Core shortcuts (handled by the main script) are listed here for the help sheet only.
+      key(' ', 'Pause / resume', null, { group: 'Performance', display: 'Space' });
+      key('c', 'Charge mode (fullscreen gnosis)', null, { group: 'Performance', display: 'C' });
+      key('Escape', 'Leave charge · close panels', null, { display: 'Esc' });
+      key('t', 'Open / close Tools', () => (isOpen() ? close() : open()), { display: 'T' });
+      key('?', 'Show this help', () => toggleHelp(), { display: '?' });
+    
+      const help = h('div', { id: 'help', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Keyboard shortcuts', onclick: (e) => { if (e.target.id === 'help') toggleHelp(false); } });
+      document.querySelector('#ui').append(help);
+      function toggleHelp(force) {
+        const on = force ?? !help.classList.contains('open');
+        if (on) {
+          const groups = {};
+          for (const k of keymap) (groups[k.group] = groups[k.group] || []).push(k);
+          help.innerHTML = '';
+          help.append(h('div', { class: 'panel' }, h('h2', { style: 'font-weight:normal;font-style:italic;margin:0' }, 'Shortcuts'),
+            Object.entries(groups).map(([g, list]) => [h('h3', {}, g),
+              h('table', {}, list.map((k) => h('tr', {}, h('td', {}, h('kbd', {}, k.display)), h('td', {}, k.label))))]),
+            h('button', { class: 'sm', style: 'margin-top:18px', onclick: () => toggleHelp(false) }, 'Close')));
+        }
+        help.classList.toggle('open', on);
+      }
+    
+      /* ── Screen-reader live region ── */
+      const live = h('div', { class: 'sr-only', 'aria-live': 'polite', role: 'status' });
+      document.body.append(live);
+      function announce(text) { live.textContent = ''; setTimeout(() => (live.textContent = text), 60); }
+    
+      /* ── Link format: members joined by '+', optional '~mood'. Only consonants are ever encoded. ── */
+      const MEMBER = /^[BCDFGHJKLMNPQRSTVWXYZ]{3,21}$/;
+      const validMember = (s) => MEMBER.test(s) && new Set(s).size === s.length;
+      function parseKey(str) {
+        let raw = String(str || '').replace(/^#/, '');
+        try { raw = decodeURIComponent(raw); } catch { return null; }
+        const [bodyPart, preset] = raw.split('~');
+        const members = (bodyPart || '').toUpperCase().split('+').filter(Boolean);
+        if (!members.length || members.length > 3 || !members.every(validMember)) return null;
+        return { members, preset: preset ? preset.toLowerCase() : null };
+      }
+      const formatKey = ({ members, preset }) => members.join('+') + (preset && preset !== 'ritual' ? '~' + preset : '');
+    
+      /** Rebuild the current song in place (after a mood or attunement change), resuming at the current section. */
+      function recompose() {
+        if (app.mode !== 'playing' || !app.sigil || app.busy) return;
+        const si = renderer.info ? renderer.info.si : 0;
+        const song = composeSong(app.sigil);
+        app.engine.stop(0.9);
+        app.song = song;
+        app.engine.load(song);
+        app.engine.start(0.1);
+        app.engine.seek(song.sections[Math.min(si, song.sections.length - 1)].start);
+        applyPalette(app.sigil.palette);
+        buildHUD();
+        history.replaceState(null, '', '#' + shareKey());
+        Hooks.emit('song', app.sigil, song, { recompose: true });
+      }
+      const refreshPalette = () => { applyPalette(app.basePalette || PALETTES[0]); renderMeta(); };
+    
+      const ready = [];
+      const whenReady = (fn) => ready.push(fn);
+      document.addEventListener('DOMContentLoaded', () => ready.forEach((f) => { try { f(); } catch (e) { console.error('[whenReady]', e); } }));
+    
+      const fmt = (s) => { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+      const fileKey = () => (app.sigil ? (app.sigil.fusionKey || app.sigil.reduced).replace(/\+/g, '_') : 'sigil');
+    
+      // Extended links (#A+B~mood): prefill the invocation and let modules react.
+      whenReady(() => {
+        const link = parseKey(location.hash);
+        if (!link) return;
+        document.querySelector('#desire').value = link.members[0];
+        document.querySelector('#desireLabel').textContent = link.members.length > 1
+          ? 'A joined sigil has been shared with you. Cast it to hear the voices together.'
+          : 'A sigil has been shared with you. Cast it to hear it sing.';
+        Hooks.emit('link', link);
+      });
+    
+      return { h, css, section, open, close, slider, check, select, button, note, key, announce,
+               parseKey, formatKey, validMember, recompose, refreshPalette, whenReady, fmt, fileKey };
+    })();
+    </script>
+    <script>
+        /* ══════════════════════════════════════════════════════════════════════════
+           M1 · SCORE · MIDI: Standard MIDI File export + chord chart
+           Format 1, 480 PPQ. Track 0 holds tempo, time and key signature, section
+           markers and chord text. Then one track per instrument.
+           Channels: lead 1, choir 2, bells 3, pad 4, bass 5, arp 6, drone 7,
+                     voice 2 → 8, voice 3 → 9, drums → 10 (GM percussion)
+           ══════════════════════════════════════════════════════════════════════════ */
+        const MidiExport = (() => {
+          'use strict';
+          const { h } = UI;
+          const PPQ = 480;
+          // General MIDI programs (0-based): Celesta, Oboe, Koto, Tubular Bells, Choir Aahs, Warm Pad, Synth Bass 1, Vibraphone, Sweep Pad
+          const GM = { glass: 8, reed: 68, koto: 107, bell: 14, choir: 52, pad: 89, bass: 38, arp: 11, drone: 95 };
+          const DRUM = { kick: 36, snare: 38, hat: 42, open: 46, shaker: 70, crash: 49 };
+          const TRACKS = [['lead', 'Lead', 0], ['harm', 'Choir', 1], ['bell', 'Bells', 2], ['pad', 'Pad', 3], ['bass', 'Bass', 4],
+            ['arp', 'Arpeggio', 5], ['drone', 'Drone', 6], ['v2', 'Voice 2', 7], ['v3', 'Voice 3', 8], ['drums', 'Drums', 9]];
+          const MODE_OFFSET = { Ionian: 0, Dorian: 2, Phrygian: 4, Lydian: 5, Mixolydian: 7, Aeolian: 9, 'Harmonic minor': 9 };
+          const SHARPS = { 0: 0, 7: 1, 2: 2, 9: 3, 4: 4, 11: 5, 6: 6, 1: -5, 8: -4, 3: -3, 10: -2, 5: -1 };
+          const ROMAN = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii'];
+          const ascii = (s) => s.replace(/♯/g, '#').replace(/♭/g, 'b').replace(/[^\x20-\x7e]/g, '');
+          const lensOn = (want) => want && typeof LiveLens !== 'undefined' && LiveLens.active();
+        
+          /** Chord symbol and roman numeral for scale-degree chord c. */
+          function chordName(song, c) {
+            const s = song.scale, pc = mod(song.tonicPc + s[c], 12), minor = mod(s[(c + 2) % 7] - s[c], 12) === 3;
+            return { sym: NOTE_NAMES[pc] + (minor ? 'm' : ''), roman: minor ? ROMAN[c] : ROMAN[c].toUpperCase() };
+          }
+          /** MIDI key signature: sharps/flats of the parent major scale; minor flag for Aeolian/harmonic minor. */
+          function keySig(song) {
+            const minor = song.modeName === 'Aeolian' || song.modeName === 'Harmonic minor';
+            return [SHARPS[mod(song.tonicPc - MODE_OFFSET[song.modeName], 12)] & 0xff, minor ? 1 : 0];
+          }
+        
+          /* ── byte helpers ── */
+          function vlq(n) { const out = [n & 0x7f]; while ((n >>>= 7)) out.unshift((n & 0x7f) | 0x80); return out; }
+          const u32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+          const text = (s) => Array.from(te.encode(ascii(s)));
+          const meta = (t, type, bytes) => ({ t, pri: 0, d: [0xff, type, ...vlq(bytes.length), ...bytes] });
+          /** Serialize events: sorted by tick, then meta → note-off → program → note-on. */
+          function serialize(evs) {
+            evs.sort((a, b) => a.t - b.t || a.pri - b.pri);
+            const out = []; let last = 0;
+            for (const e of evs) { for (const b of vlq(e.t - last)) out.push(b); for (const b of e.d) out.push(b); last = e.t; }
+            out.push(0x00, 0xff, 0x2f, 0x00);
+            return [0x4d, 0x54, 0x72, 0x6b, ...u32(out.length)].concat(out);
+          }
+        
+          /** Build the MIDI bytes. */
+          function build(song, sigil, { loops = 1, bpm = song.bpm, lens = false } = {}) {
+            const tick = (b) => Math.max(0, Math.round(b * PPQ));
+            const tracks = Object.fromEntries(TRACKS.map(([id, name, ch]) => [id, { name, ch, notes: [], extra: [] }]));
+            const useLens = lensOn(lens);
+            const mapEv = useLens ? (e) => LiveLens.map(e, song) : (e) => e;
+            const vel = (x) => clamp(Math.round(x * 100), 1, 127);
+            const note = (trk, midi, b, dur, v, prog) => {
+              if (midi < 0 || midi > 127) return;
+              const s = tick(b); tracks[trk].notes.push({ s, e: Math.max(s + 1, tick(b + dur)), midi, vel: v, prog });
+            };
+            const vTrack = (p) => (p === 1 ? 'v2' : 'v3');
+            const cond = [];
+            for (let L = 0; L < loops; L++) {
+              const o = L * song.total;
+              for (const raw of song.events) {
+                const ev = mapEv(raw), b = o + ev.beat;
+                switch (ev.type) {
+                  case 'lead': note(ev.part ? vTrack(ev.part) : 'lead', ev.midi, b, ev.dur, vel(ev.vel), GM[ev.timbre]); break;
+                  case 'bell': note(ev.part ? vTrack(ev.part) : 'bell', ev.midi, b, Math.max(ev.dur, 1), vel(ev.vel), GM.bell); break;
+                  case 'harm': note('harm', ev.midi, b, ev.dur, vel(ev.vel), GM.choir); break;
+                  case 'pad': for (const m of ev.midis) note('pad', m, b, ev.dur, vel(ev.vel * 0.7), GM.pad); break;
+                  case 'bass': note('bass', ev.midi, b, ev.dur, vel(ev.vel), GM.bass); break;
+                  case 'arp': note('arp', ev.midi, b, ev.dur, vel(ev.vel * 0.8), GM.arp); break;
+                  case 'drone': note('drone', ev.midi, b, ev.dur, 60, GM.drone); note('drone', ev.midi + 7, b, ev.dur, 50, GM.drone); break;
+                  case 'kick': case 'snare': case 'shaker': case 'crash': note('drums', DRUM[ev.type], b, 0.25, vel(ev.vel * 1.1), null); break;
+                  case 'hat': note('drums', ev.open ? DRUM.open : DRUM.hat, b, 0.25, vel(ev.vel), null); break;
+                }
+              }
+              for (const sec of song.sections) cond.push(meta(tick(o + sec.start), 0x06, text(`${sec.roman}. ${sec.name}`)));
+              for (const ph of song.phrases) {
+                ph.chords.forEach((c, i) => {
+                  const n = chordName(song, useLens ? LiveLens.mapChord(c, song) : c);
+                  cond.push(meta(tick(o + ph.start + i * 4), 0x01, text(`${n.sym} (${n.roman})`)));
+                });
+                for (const nd of ph.path) tracks.lead.extra.push(meta(tick(o + nd.beat), 0x05, text(nd.letter))); // lyrics = the letters
+              }
+            }
+            const us = Math.round(60e6 / bpm);
+            cond.push(meta(0, 0x03, text(`SIGIL ${sigil.fusionKey || sigil.reduced}`)),
+              meta(0, 0x51, [(us >> 16) & 255, (us >> 8) & 255, us & 255]),
+              meta(0, 0x58, [4, 2, 24, 8]), meta(0, 0x59, keySig(song)),
+              meta(0, 0x01, text(`${song.keyName} - ${Math.round(bpm)} bpm - made with SIGIL`)));
+        
+            const chunks = [serialize(cond)];
+            for (const [id] of TRACKS) {
+              const t = tracks[id]; if (!t.notes.length) continue;
+              const evs = [meta(0, 0x03, text(t.name)), ...t.extra];
+              // Overlap repair: identical onsets merge; a retrigger ends the earlier note at the new onset.
+              t.notes.sort((a, b) => a.s - b.s);
+              const open = new Map();
+              for (const n of t.notes) {
+                const prev = open.get(n.midi);
+                if (prev && prev.s === n.s) { prev.vel = Math.max(prev.vel, n.vel); prev.e = Math.max(prev.e, n.e); n.skip = true; continue; }
+                if (prev && prev.e > n.s) prev.e = n.s;
+                open.set(n.midi, n);
+              }
+              let prog = -1;
+              for (const n of t.notes) {
+                if (n.skip) continue;
+                if (t.ch !== 9 && n.prog != null && n.prog !== prog) { evs.push({ t: n.s, pri: 2, d: [0xc0 | t.ch, n.prog] }); prog = n.prog; }
+                evs.push({ t: n.s, pri: 3, d: [0x90 | t.ch, n.midi, n.vel] });
+                evs.push({ t: n.e, pri: 1, d: [0x80 | t.ch, n.midi, 0] });
+              }
+              chunks.push(serialize(evs));
+            }
+            const header = [0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, 1, 0, chunks.length, (PPQ >> 8) & 255, PPQ & 255];
+            return new Uint8Array(header.concat(...chunks));
+          }
+        
+          /** Plain-text lead sheet: one line of four bars per phrase. */
+          function chordChart(song, sigil, lens) {
+            const useLens = lensOn(lens);
+            const bpm = Math.round(app.engine && app.engine.song === song ? 60 / app.engine.spb : song.bpm);
+            const out = [`SIGIL ${sigil.fusionKey || sigil.reduced} — ${song.keyName} — ${bpm} bpm`, ''];
+            song.sections.forEach((sec, si) => {
+              out.push(`${sec.roman}. ${sec.name} — ${sec.desc}`);
+              for (const ph of song.phrases.filter((p) => p.si === si))
+                out.push('| ' + ph.chords.map((c) => { const n = chordName(song, useLens ? LiveLens.mapChord(c, song) : c); return `${n.sym} (${n.roman})`.padEnd(11); }).join('| ') + '|');
+              out.push('');
+            });
+            return out.join('\n');
+          }
+        
+          /* ── Panel ── */
+          const state = { loops: 1, tempo: true, lens: true };
+          let dlBtn, copyBtn;
+          UI.section({ id: 'midi', title: 'Score · MIDI', order: 40, build(el) {
+            dlBtn = UI.button('Download .mid', exportMidi, { disabled: true });
+            copyBtn = UI.button('Copy chord chart', copyChart, { disabled: true });
+            el.append(
+              UI.note('A multitrack General MIDI score for your DAW: every instrument on its own track, section markers, chord names, and the sigil’s letters as lyrics.'),
+              UI.select({ label: 'Length', value: 1, options: [['1', 'One pass'], ['2', 'Two passes'], ['4', 'Four passes']], onChange: (v) => (state.loops = +v) }),
+              UI.check({ label: 'Use the current tempo', checked: true, onChange: (v) => (state.tempo = v) }),
+              UI.check({ label: 'Apply the live lens', checked: true, onChange: (v) => (state.lens = v) }),
+              h('div', { class: 'sgrow' }, dlBtn, copyBtn));
+          } });
+          const enable = (on) => { if (dlBtn) { dlBtn.disabled = !on; copyBtn.disabled = !on; } };
+          Hooks.on('song', () => enable(true));
+          Hooks.on('forget', () => enable(false));
+        
+          function exportMidi() {
+            const { song, sigil } = app; if (!song) return;
+            const bpm = state.tempo && app.engine && app.engine.song === song ? 60 / app.engine.spb : song.bpm;
+            const bytes = build(song, sigil, { loops: state.loops, bpm, lens: state.lens });
+            download(new Blob([bytes], { type: 'audio/midi' }), `sigil-${UI.fileKey()}.mid`);
+            UI.announce('MIDI file saved.');
+          }
+          function copyChart() {
+            const t = chordChart(app.song, app.sigil, state.lens);
+            const ok = () => toast('Chord chart copied', true);
+            if (navigator.clipboard) navigator.clipboard.writeText(t).then(ok).catch(() => prompt('Copy the chart', t)); else prompt('Copy the chart', t);
+          }
+          return { build, chordChart, chordName };
+        })();
+        </script>
+        <script>
+            /* ══════════════════════════════════════════════════════════════════════════
+               M2 · MIXER & TEMPO
+               Effective bus gain = default × song level × user level × mute × solo.
+               Tempo changes rescale the transport around the current moment:
+                 t' = now + (t − now) · (newSpb / oldSpb)   for anchor, prevAnchor, reanchorAt
+               so the musical position stays continuous.
+               ══════════════════════════════════════════════════════════════════════════ */
+            const Mixer = (() => {
+              'use strict';
+              const { h } = UI;
+              const BUSES = [['lead', 'Lead'], ['harm', 'Choir'], ['bell', 'Bells'], ['pad', 'Pad'], ['bass', 'Bass'], ['arp', 'Arpeggio'], ['drums', 'Drums'], ['drone', 'Drone']];
+              const defaults = () => ({ master: 1, space: 1, tempo: 1, level: Object.fromEntries(BUSES.map(([k]) => [k, 1])), mute: {}, solo: {} });
+              const saved = Prefs.get('mixer', {});
+              const S = { ...defaults(), ...saved, level: { ...defaults().level, ...(saved.level || {}) }, mute: saved.mute || {}, solo: saved.solo || {} };
+              let saveT; const save = () => { clearTimeout(saveT); saveT = setTimeout(() => Prefs.set('mixer', S), 300); };
+            
+              /* ── Engine extension: tempo change that preserves musical position ── */
+              if (!Engine.prototype.setTempo) Engine.prototype.setTempo = function (bpm) {
+                if (!this.song || !(bpm > 0)) return;
+                const now = this.ctx.currentTime, r = (60 / bpm) / this.spb;
+                const scale = (t) => now + (t - now) * r;
+                this.anchor = scale(this.anchor);
+                if (this.reanchorAt) { this.prevAnchor = scale(this.prevAnchor); this.reanchorAt = scale(this.reanchorAt); }
+                this.spb = 60 / bpm;
+                this.delay.delayTime.setTargetAtTime(this.spb * 0.75, now, 0.15);
+              };
+            
+              /** Push current settings to an engine's buses and returns. */
+              function apply(eng = app.engine, instant = false) {
+                if (!eng || !eng.buses) return;
+                const now = eng.ctx.currentTime, anySolo = BUSES.some(([k]) => S.solo[k]);
+                const set = (param, v, tc = 0.05) => (instant ? param.setValueAtTime(v, now) : param.setTargetAtTime(v, now, tc));
+                for (const [k] of BUSES) {
+                  const b = eng.buses[k]; if (!b || b._base == null) continue;
+                  set(b.gain, b._base * S.level[k] * (S.mute[k] ? 0 : 1) * (anySolo && !S.solo[k] ? 0 : 1));
+                }
+                set(eng.out.gain, 0.85 * S.master);
+                if (eng.revReturn) set(eng.revReturn.gain, 0.85 * S.space, 0.08);
+              }
+              // Fresh buses (every song, and offline renders): remember each default, then apply.
+              Hooks.on('buses', (buses, eng) => { for (const k of Object.keys(buses)) buses[k]._base = buses[k].gain.value; apply(eng, true); });
+              Hooks.on('song', (sig, song) => { if (S.tempo !== 1) app.engine.setTempo(song.bpm * S.tempo); renderMeta(); });
+              Hooks.on('meta', (parts) => {
+                if (!app.song || S.tempo === 1) return;
+                const i = parts.findIndex((p) => /bpm$/.test(p));
+                if (i >= 0) parts[i] = `${Math.round(app.song.bpm * S.tempo)} bpm (${Math.round(S.tempo * 100)}%)`;
+              });
+            
+              const SCENES = [
+                ['Full', () => { S.level = defaults().level; S.mute = {}; S.solo = {}; }],
+                ['Meditation', () => { S.solo = {}; S.mute = { drums: true }; S.level = { ...defaults().level, bass: 0.6, arp: 0.5, pad: 1.2, drone: 1.3 }; }],
+                ['Voices', () => { S.mute = {}; S.solo = { lead: true, harm: true, bell: true }; }],
+                ['Rhythm', () => { S.mute = {}; S.solo = { drums: true, bass: true }; }],
+              ];
+            
+              let rows = {}, master, space, tempo, tempoRaf;
+              const pct = (v) => `${Math.round(v * 100)}%`;
+              function setTempoNow() {
+                cancelAnimationFrame(tempoRaf);
+                tempoRaf = requestAnimationFrame(() => { if (app.engine && app.engine.song && app.song) { app.engine.setTempo(app.song.bpm * S.tempo); renderMeta(); } });
+              }
+              function sync() {
+                master.set(S.master); space.set(S.space); tempo.set(S.tempo);
+                for (const [k] of BUSES) {
+                  rows[k].slider.set(S.level[k]);
+                  rows[k].m.setAttribute('aria-pressed', String(!!S.mute[k]));
+                  rows[k].s.setAttribute('aria-pressed', String(!!S.solo[k]));
+                }
+              }
+              UI.section({ id: 'mixer', title: 'Mixer & Tempo', order: 25, build(el) {
+                UI.css(`.mx-strip{display:grid;grid-template-columns:64px 1fr 30px 30px;align-items:center;gap:8px;margin:4px 0;font-size:13px}
+                  .mx-strip>span{opacity:.72}.mx-strip button{padding:4px 0;font-size:10px;letter-spacing:.05em}`);
+                master = UI.slider({ label: 'Volume', min: 0, max: 1.5, step: 0.01, value: S.master, format: pct, onInput: (v) => { S.master = v; apply(); save(); } });
+                space = UI.slider({ label: 'Space', min: 0, max: 2, step: 0.01, value: S.space, format: pct, onInput: (v) => { S.space = v; apply(); save(); } });
+                tempo = UI.slider({ label: 'Tempo', min: 0.5, max: 1.5, step: 0.01, value: S.tempo,
+                  format: (v) => (app.song ? `${Math.round(app.song.bpm * v)} bpm` : pct(v)),
+                  onInput: (v, row) => { if (Math.abs(v - 1) < 0.025) { v = 1; row.set(1); } S.tempo = v; setTempoNow(); save(); } });
+                el.append(master, space, tempo, h('div', { class: 'sgrow' }, SCENES.map(([name, fn]) =>
+                  UI.button(name, () => { fn(); sync(); apply(); save(); UI.announce(`${name} mix`); }, { title: `${name} scene` }))));
+                for (const [k, label] of BUSES) {
+                  const slider = UI.slider({ label, min: 0, max: 1.5, step: 0.01, value: S.level[k], format: pct, onInput: (v) => { S.level[k] = v; apply(); save(); } });
+                  const input = slider.input;
+                  const m = UI.button('M', () => { S.mute[k] = !S.mute[k]; sync(); apply(); save(); }, { title: `Mute ${label}`, 'aria-pressed': 'false', 'aria-label': `Mute ${label}` });
+                  const s = UI.button('S', () => { S.solo[k] = !S.solo[k]; sync(); apply(); save(); }, { title: `Solo ${label}`, 'aria-pressed': 'false', 'aria-label': `Solo ${label}` });
+                  const strip = h('div', { class: 'mx-strip' }, h('span', {}, label), input, m, s);
+                  rows[k] = { slider, m, s };
+                  el.append(strip);
+                }
+                el.append(h('div', { class: 'sgrow' }, UI.button('Reset all', () => { Object.assign(S, defaults()); sync(); apply(); setTempoNow(); save(); })));
+                sync();
+              } });
+              Hooks.on('song', () => tempo && tempo.set(S.tempo)); // refresh the BPM readout for the new song
+              return { apply, state: S };
+            })();
+            </script>
+            <script>
+                /* ══════════════════════════════════════════════════════════════════════════
+                   M3 · GRIMOIRE: local gallery of cast sigils (consonants only)
+                   Storage: localStorage 'sigil.grimoire' = { v:1, keep, burnDays, entries[] }
+                     entry = { key:'KRST+MNL', mood, created, played, plays, burnAt|null }
+                   ══════════════════════════════════════════════════════════════════════════ */
+                const Grimoire = (() => {
+                  'use strict';
+                  const { h } = UI;
+                  const LIMIT = 60, DAY = 864e5;
+                  let db = Prefs.get('grimoire', null);
+                  if (!db || db.v !== 1 || !Array.isArray(db.entries)) db = { v: 1, keep: true, burnDays: 0, entries: [] };
+                  db.entries = db.entries.filter((e) => e && UI.parseKey(e.key));
+                  const save = () => Prefs.set('grimoire', db);
+                  let grid, empty, currentKey = null;
+                  const keyOf = (sig) => sig.fusionKey || sig.reduced;
+                
+                  function purge() {
+                    const now = Date.now(), before = db.entries.length;
+                    db.entries = db.entries.filter((e) => !e.burnAt || e.burnAt > now);
+                    if (db.entries.length !== before) save();
+                    return before - db.entries.length;
+                  }
+                  function upsert(key, mood) {
+                    const now = Date.now();
+                    let e = db.entries.find((x) => x.key === key);
+                    if (!e) { e = { key, created: now, plays: 0, burnAt: db.burnDays > 0 ? now + db.burnDays * DAY : null }; db.entries.push(e); }
+                    e.mood = mood || 'ritual'; e.played = now; e.plays++;
+                    db.entries.sort((a, b) => b.played - a.played);
+                    if (db.entries.length > LIMIT) db.entries.length = LIMIT;
+                    save(); render();
+                  }
+                  function remove(key) { db.entries = db.entries.filter((e) => e.key !== key); save(); render(); }
+                
+                  /** Small static seal: circle, path(s), start circle. Built from the key alone. */
+                  function drawThumb(cv, key) {
+                    const members = key.split('+');
+                    const sig = members.length > 1 && typeof Fusion !== 'undefined' ? Fusion.build(members) : buildSigil(members[0]);
+                    const s = cv.width, g = cv.getContext('2d'), p = sig.palette;
+                    g.fillStyle = p.bg; g.fillRect(0, 0, s, s);
+                    const F = { cx: s / 2, cy: s / 2, R: s * 0.4, base: sig.baseAngle };
+                    g.strokeStyle = rgba(p.line, 0.32); g.lineWidth = Math.max(1, s / 140); g.beginPath(); g.arc(F.cx, F.cy, F.R, 0, TAU); g.stroke();
+                    const line = (nodes, curves, col) => {
+                      const pts = tracePoints(nodes, curves, ID_T, F, nodes.length - 1);
+                      g.strokeStyle = rgba(col, 0.95); g.lineWidth = Math.max(1, s / 70); g.lineJoin = g.lineCap = 'round';
+                      g.beginPath(); g.moveTo(pts[0], pts[1]); for (let i = 2; i < pts.length; i += 2) g.lineTo(pts[i], pts[i + 1]); g.stroke();
+                      g.beginPath(); g.arc(pts[0], pts[1], s * 0.025, 0, TAU); g.stroke();
+                    };
+                    line(sig.nodes, sig.curves, p.line);
+                    (sig.partners || []).forEach((pt, i) => line(pt.nodes, pt.curves, i ? p.line.map((v, j) => (v + p.accent[j]) >> 1) : p.accent));
+                  }
+                  function ago(t) {
+                    const d = (Date.now() - t) / 1000;
+                    if (d < 90) return 'just now'; if (d < 3600) return `${Math.round(d / 60)} min ago`;
+                    if (d < 86400) return `${Math.round(d / 3600)} h ago`; return `${Math.round(d / 86400)} d ago`;
+                  }
+                  function replay(e) {
+                    const link = UI.parseKey(e.key); if (!link || app.busy) return;
+                    cast({ text: link.members[0], partners: link.members.slice(1), preset: e.mood || 'ritual', quick: true });
+                  }
+                  function render() {
+                    if (!grid) return;
+                    grid.innerHTML = '';
+                    empty.hidden = db.entries.length > 0;
+                    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+                    for (const e of db.entries) {
+                      const cv = h('canvas', { width: Math.round(96 * dpr), height: Math.round(96 * dpr), 'aria-hidden': 'true' });
+                      try { drawThumb(cv, e.key); } catch (err) { console.warn('[grimoire thumb]', err); }
+                      const sub = `${e.mood && e.mood !== 'ritual' ? e.mood + ' · ' : ''}${ago(e.played)}${e.burnAt ? ' · fades' : ''}`;
+                      grid.append(h('div', { class: 'g-card' + (e.key === currentKey ? ' current' : '') },
+                        h('button', { class: 'g-play', title: `${e.key} — played ${e.plays}×`, 'aria-label': `Play sigil ${e.key.split('').join(' ')}, ${sub}`, onclick: () => replay(e) },
+                          cv, h('span', { class: 'g-key' }, e.key), h('span', { class: 'g-sub' }, sub)),
+                        h('button', { class: 'g-burn ghost sm', title: 'Burn from the grimoire', 'aria-label': `Burn ${e.key}`, onclick: () => { remove(e.key); UI.announce('Burned.'); } }, '×')));
+                    }
+                  }
+                
+                  UI.section({ id: 'grimoire', title: 'Grimoire', order: 5, open: true, build(el) {
+                    UI.css(`.g-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:8px 0}
+                      .g-card{position:relative}
+                      .g-play{display:flex;flex-direction:column;align-items:center;gap:3px;width:100%;padding:6px 4px 8px;border-color:rgba(var(--line),.1);text-transform:none;letter-spacing:.1em}
+                      .g-play canvas{width:100%;height:auto;aspect-ratio:1;display:block}
+                      .g-key{font-size:11px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+                      .g-sub{font-size:9.5px;opacity:.5;font-style:italic;letter-spacing:.03em}
+                      .g-card.current .g-play{border-color:rgba(var(--accent),.65)}
+                      .g-burn{position:absolute;top:3px;right:3px;padding:1px 7px;font-size:13px;opacity:0;transition:opacity .2s}
+                      .g-card:hover .g-burn,.g-burn:focus-visible{opacity:.85}
+                      @media (hover:none){.g-burn{opacity:.6}}`);
+                    grid = h('div', { class: 'g-grid' });
+                    empty = UI.note('Your grimoire is empty. Each sigil you cast is kept here as consonants only, never as words.');
+                    const file = h('input', { type: 'file', accept: 'application/json,.json', style: 'display:none', onchange: () => importFile(file) });
+                    el.append(empty, grid,
+                      UI.check({ label: 'Keep new sigils in the grimoire', checked: db.keep, onChange: (v) => { db.keep = v; save(); } }),
+                      UI.select({ label: 'Let new sigils fade', value: String(db.burnDays), options: [['0', 'Never'], ['1', 'After a day'], ['7', 'After a week'], ['29.53', 'After a lunar month'], ['365', 'After a year']],
+                        onChange: (v) => { db.burnDays = +v; save(); } }),
+                      h('div', { class: 'sgrow' },
+                        UI.button('Export', () => download(new Blob([JSON.stringify(db, null, 1)], { type: 'application/json' }), 'grimoire.json')),
+                        UI.button('Import', () => file.click()),
+                        UI.button('Burn all', () => { if (confirm('Burn every sigil in the grimoire? This cannot be undone.')) { db.entries = []; save(); render(); } })),
+                      file);
+                    render();
+                  } });
+                
+                  async function importFile(input) {
+                    const f = input.files[0]; input.value = ''; if (!f) return;
+                    try {
+                      const data = JSON.parse(await f.text()), list = Array.isArray(data) ? data : data.entries;
+                      let n = 0;
+                      for (const e of list || []) {
+                        if (!e || !UI.parseKey(e.key) || db.entries.some((x) => x.key === e.key)) continue;
+                        db.entries.push({ key: e.key, mood: e.mood || 'ritual', created: +e.created || Date.now(), played: +e.played || Date.now(), plays: +e.plays || 0, burnAt: +e.burnAt || null });
+                        n++;
+                      }
+                      db.entries.sort((a, b) => b.played - a.played); db.entries.length = Math.min(db.entries.length, LIMIT);
+                      save(); render(); toast(`${n} sigil${n === 1 ? '' : 's'} added to the grimoire`, true);
+                    } catch { toast('That file is not a grimoire', true); }
+                  }
+                
+                  Hooks.on('cast', (sig, song) => { currentKey = keyOf(sig); if (db.keep) upsert(currentKey, song.cfg.mood); else render(); });
+                  Hooks.on('song', (sig, song, info) => { if (info && info.recompose && db.keep) { const e = db.entries.find((x) => x.key === keyOf(sig)); if (e) { e.mood = song.cfg.mood || 'ritual'; save(); render(); } } });
+                  Hooks.on('forget', (sig) => { if (sig) remove(keyOf(sig)); });   // forgetting means forgetting
+                  Hooks.on('stop', () => { currentKey = null; render(); });
+                  UI.key('g', 'Open the grimoire', () => UI.open('grimoire'), { group: 'Library', display: 'G' });
+                  UI.whenReady(() => { const n = purge(); render(); if (n) setTimeout(() => toast(`${n} sigil${n === 1 ? ' has' : 's have'} faded from your grimoire.`, true, 4000), 1500); });
+                  return { upsert, remove, list: () => db.entries.slice() };
+                })();
+                </script>
+                <script>
+                    /* ══════════════════════════════════════════════════════════════════════════
+                       M4 · FORM & LOOP: section navigation and seamless section looping
+                       Engine fields added: region {start,end,si} | null, prevAnchor, reanchorAt.
+                       The loop is gapless: the re-anchor time equals the region end time exactly.
+                       ══════════════════════════════════════════════════════════════════════════ */
+                    const Form = (() => {
+                      'use strict';
+                      const { h } = UI;
+                      /** Binary search: index of the first event with beat ≥ b. */
+                      function firstAt(events, b) { let lo = 0, hi = events.length; while (lo < hi) { const m = (lo + hi) >> 1; if (events[m].beat < b) lo = m + 1; else hi = m; } return lo; }
+                    
+                      /* ── Transport overrides ── */
+                      const _start = Engine.prototype.start;
+                      Engine.prototype.start = function (lead) { this.region = null; return _start.call(this, lead); };
+                      const _seek = Engine.prototype.seek;
+                      Engine.prototype.seek = function (beat) {
+                        if (this.region && (beat < this.region.start || beat >= this.region.end)) { this.region = null; sync(); }
+                        _seek.call(this, beat); this.reanchorAt = 0;
+                      };
+                      Engine.prototype.pump = function () {
+                        if (!this.running || !this.buses) return;
+                        const c = this.ctx, horizon = c.currentTime + (document.hidden ? 1.6 : 0.18);
+                        const total = this.song.total, totalSec = total * this.spb;
+                        for (let guard = 0; guard < 4000; guard++) {
+                          const reg = this.region, ev = this.events[this.ptr];
+                          if (reg && (!ev || ev.beat >= reg.end)) { // reached the loop end: rewind seamlessly
+                            const tEnd = this.anchor + (this.loopIndex * total + reg.end) * this.spb;
+                            if (tEnd > horizon) break;
+                            this.prevAnchor = this.anchor; this.reanchorAt = tEnd;
+                            this.anchor += (reg.end - reg.start) * this.spb;
+                            this.ptr = firstAt(this.events, reg.start);
+                            continue;
+                          }
+                          if (!ev) { // natural end of song → loop the whole song (original behaviour)
+                            if (this.anchor + (this.loopIndex + 1) * totalSec > horizon) break;
+                            this.loopIndex++; this.ptr = 0; continue;
+                          }
+                          const t = this.anchor + (this.loopIndex * total + ev.beat) * this.spb;
+                          if (t > horizon) break;
+                          if (t >= c.currentTime - 0.03) this.play(ev, Math.max(t, c.currentTime));
+                          this.ptr++;
+                        }
+                      };
+                      Engine.prototype.beatNow = function () {
+                        if (!this.song) return 0;
+                        const now = this.ctx.currentTime - (this.ctx.outputLatency || this.ctx.baseLatency || 0);
+                        const a = this.reanchorAt && now < this.reanchorAt ? this.prevAnchor : this.anchor; // visuals jump exactly when the audio does
+                        const b = (now - a) / this.spb;
+                        return b < 0 ? 0 : b % this.song.total;
+                      };
+                    
+                      /* ── Navigation ── */
+                      const playing = () => app.mode === 'playing' && app.song && app.engine;
+                      const cur = () => (renderer.info ? renderer.info.si : 0);
+                      function go(si) {
+                        if (!playing()) return;
+                        const S = app.song.sections; si = clamp(si, 0, S.length - 1);
+                        app.engine.seek(S[si].start);
+                        UI.announce(`${S[si].roman}. ${S[si].name}`);
+                      }
+                      function prev() { const si = cur(), b = renderer.info ? renderer.info.beat : 0; go(b - app.song.sections[si].start > 2 ? si : si - 1); }
+                      function loop(si = cur()) {
+                        if (!playing()) return;
+                        const e = app.engine, s = app.song.sections[si];
+                        if (e.region && e.region.si === si) { e.region = null; UI.announce('Loop off'); }
+                        else {
+                          const b = e.beatNow();
+                          if (b < s.start || b >= s.end) e.seek(s.start); // seek first (it clears foreign regions)
+                          e.region = { start: s.start, end: s.end, si };
+                          UI.announce(`Looping ${s.name}`);
+                        }
+                        sync();
+                      }
+                    
+                      /* ── UI: panel, progress band, HUD badge ── */
+                      UI.css(`.f-row{display:grid;grid-template-columns:34px 1fr auto auto;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(var(--line),.06)}
+                        .f-row.cur .f-name{color:rgb(var(--accent))}
+                        .f-roman{font-size:11px;letter-spacing:.2em;opacity:.6}.f-name{font-style:italic;font-size:15px}
+                        .f-len{font-size:11px;opacity:.45;margin-left:6px;font-style:normal}
+                        #progress .loopband{position:absolute;top:3px;height:9px;background:rgba(var(--accent),.16);border-left:1px solid rgba(var(--accent),.7);border-right:1px solid rgba(var(--accent),.7);pointer-events:none;display:none}
+                        #loopBadge{margin-left:.8em;letter-spacing:.1em}`);
+                      const band = h('div', { class: 'loopband' });
+                      document.querySelector('#progress').append(band);
+                      const badge = h('span', { id: 'loopBadge', hidden: true, title: 'Looping this section (L)' }, '⟲');
+                      document.querySelector('#secInfo .roman').after(badge);
+                      let list;
+                      function build() {
+                        if (!list) return;
+                        list.innerHTML = '';
+                        if (!app.song) { list.append(UI.note('Cast a sigil to see its form.')); return; }
+                        app.song.sections.forEach((s, i) => {
+                          list.append(h('div', { class: 'f-row', 'data-si': i },
+                            h('span', { class: 'f-roman' }, s.roman),
+                            h('span', { class: 'f-name', title: s.desc }, s.name, h('span', { class: 'f-len' }, `${(s.end - s.start) / 4} bars`)),
+                            UI.button('▶', () => go(i), { title: `Jump to ${s.name} (${i + 1})`, 'aria-label': `Jump to ${s.name}` }),
+                            UI.button('⟲', () => loop(i), { title: `Loop ${s.name}`, 'aria-label': `Loop ${s.name}`, 'aria-pressed': 'false', 'data-loop': i })));
+                        });
+                        sync();
+                      }
+                      function sync() {
+                        const reg = app.engine && app.engine.region, song = app.song;
+                        badge.hidden = !reg;
+                        band.style.display = reg && song ? 'block' : 'none';
+                        if (reg && song) { band.style.left = (reg.start / song.total) * 100 + '%'; band.style.width = ((reg.end - reg.start) / song.total) * 100 + '%'; }
+                        if (list) list.querySelectorAll('[data-loop]').forEach((b) => b.setAttribute('aria-pressed', String(!!reg && reg.si === +b.dataset.loop)));
+                      }
+                      UI.section({ id: 'form', title: 'Form & Loop', order: 20, build(el) {
+                        list = h('div');
+                        el.append(UI.note('Jump between sections, or loop one for extended charging. Keys: 1–9 jump · [ ] previous/next · L loop · Shift-click the progress bar.'), list);
+                        build();
+                      } });
+                      Hooks.on('song', () => { if (app.engine) app.engine.region = null; build(); });
+                      Hooks.on('stop', () => { if (app.engine) app.engine.region = null; sync(); });
+                      Hooks.on('section', (s, si) => { if (list) list.querySelectorAll('.f-row').forEach((r) => r.classList.toggle('cur', +r.dataset.si === si)); });
+                      document.querySelector('#progress').addEventListener('click', (e) => { // Shift-click: loop the clicked section
+                        if (!e.shiftKey || !playing()) return;
+                        e.stopImmediatePropagation();
+                        const r = e.currentTarget.getBoundingClientRect();
+                        loop(sectionIndexAt(app.song, clamp((e.clientX - r.left) / r.width, 0, 0.999) * app.song.total));
+                      }, true);
+                    
+                      UI.key(['1', '2', '3', '4', '5', '6', '7', '8', '9'], 'Jump to section N', (e) => go(+e.key - 1), { group: 'Form', display: '1 – 9' });
+                      UI.key('[', 'Previous section (or restart current)', prev, { group: 'Form', display: '[' });
+                      UI.key(']', 'Next section', () => go(cur() + 1), { group: 'Form', display: ']' });
+                      UI.key('l', 'Loop / unloop the current section', () => loop(), { group: 'Form', display: 'L' });
+                      return { go, loop, prev };
+                    })();
+                    </script>
+                    <script>
+                        /* ══════════════════════════════════════════════════════════════════════════
+                           M5 · ACCESS: motion, contrast, text size, screen-reader support
+                           The palette filter runs at priority 100, so contrast always wins.
+                           ══════════════════════════════════════════════════════════════════════════ */
+                        const Access = (() => {
+                          'use strict';
+                          const mm = (q) => (window.matchMedia ? matchMedia(q) : { matches: false, addEventListener() {} });
+                          const mqMotion = mm('(prefers-reduced-motion: reduce)'), mqContrast = mm('(prefers-contrast: more)');
+                          const S = { motion: 'auto', contrast: 'auto', large: false, announce: true, ...Prefs.get('a11y', {}) };
+                          const CONTRAST = { name: 'High contrast', bg: '#000000', line: [255, 255, 255], accent: [255, 214, 0] };
+                          const reduced = () => S.motion === 'on' || (S.motion === 'auto' && mqMotion.matches);
+                          const contrast = () => S.contrast === 'on' || (S.contrast === 'auto' && mqContrast.matches);
+                        
+                          UI.css(`body.a11y-reduce *,body.a11y-reduce *::before,body.a11y-reduce *::after{animation-duration:.001ms!important;animation-delay:0ms!important;transition-duration:.001ms!important}
+                            body.a11y-large #secInfo .name{font-size:31px}body.a11y-large #secInfo .desc,body.a11y-large #meta{font-size:15px}
+                            body.a11y-large #letters{font-size:25px}body.a11y-large button{font-size:12.5px}
+                            body.a11y-large .tool-body,body.a11y-large .ctl{font-size:16px}body.a11y-large .tool-note{font-size:14.5px}
+                            body.a11y-large #desire{font-size:28px}body.a11y-large .hint,body.a11y-large #invoke label{font-size:17px}
+                            #progress:focus-visible{outline:1px dotted rgba(var(--accent),.8);outline-offset:4px}`);
+                        
+                          // Renderer hooks: motes can be swapped out, sparks gated. Both are reversible.
+                          const motes = renderer.motes;
+                          const spawn = renderer.spawn.bind(renderer);
+                          renderer.spawn = (...a) => (reduced() ? undefined : spawn(...a));
+                          Hooks.on('palette', () => (contrast() ? CONTRAST : undefined), 100);
+                        
+                          function applyAll() {
+                            document.body.classList.toggle('a11y-reduce', reduced());
+                            document.body.classList.toggle('a11y-large', !!S.large);
+                            renderer.motes = reduced() ? [] : motes;
+                            UI.refreshPalette();
+                            Prefs.set('a11y', S);
+                          }
+                          mqMotion.addEventListener && mqMotion.addEventListener('change', applyAll);
+                          mqContrast.addEventListener && mqContrast.addEventListener('change', applyAll);
+                        
+                          function describe() {
+                            const { sigil, song } = app;
+                            if (!sigil || !song) return 'No sigil is active.';
+                            const curved = sigil.curves.filter((c) => c !== 0).length;
+                            const parts = [`Sigil of ${sigil.reduced.length} letters: ${[...sigil.reduced].join(' ')}.`,
+                              `A path of ${sigil.nodes.length - 1} strokes, ${curved} of them curved, across a wheel of twenty-one consonants.`,
+                              `Music in ${song.keyName.replace('♯', ' sharp').replace('♭', ' flat')}, ${Math.round(60 / (app.engine ? app.engine.spb : song.spb))} beats per minute, sung by ${TIMBRE_NAMES[song.leadTimbre]}.`];
+                            if (sigil.partners && sigil.partners.length) parts.push(`Joined by ${sigil.partners.map((p) => [...p.reduced].join(' ')).join(', and ')}.`);
+                            const si = renderer.info ? renderer.info.si : null;
+                            if (si != null && app.mode === 'playing') { const s = song.sections[si]; parts.push(`Now in section ${s.roman}, ${s.name}: ${s.desc}.`); }
+                            return parts.join(' ');
+                          }
+                        
+                          // Progress bar as a keyboard slider over sections
+                          const prog = document.querySelector('#progress');
+                          Object.entries({ tabindex: '0', role: 'slider', 'aria-label': 'Song form. Use the arrow keys to move between sections.', 'aria-valuemin': '1', 'aria-valuemax': '7', 'aria-valuenow': '1' })
+                            .forEach(([k, v]) => prog.setAttribute(k, v));
+                          prog.addEventListener('keydown', (e) => {
+                            if (app.mode !== 'playing') return;
+                            const S2 = app.song.sections, si = renderer.info ? renderer.info.si : 0;
+                            const t = { ArrowRight: si + 1, ArrowUp: si + 1, ArrowLeft: si - 1, ArrowDown: si - 1, Home: 0, End: S2.length - 1 }[e.key];
+                            if (t == null) return;
+                            e.preventDefault(); e.stopPropagation(); // don't let the Live Lens arrows fire too
+                            app.engine.seek(S2[clamp(t, 0, S2.length - 1)].start);
+                          });
+                          Hooks.on('section', (s, si, song) => {
+                            prog.setAttribute('aria-valuemax', String(song.sections.length));
+                            prog.setAttribute('aria-valuenow', String(si + 1));
+                            prog.setAttribute('aria-valuetext', `${s.roman}, ${s.name}`);
+                            if (S.announce) UI.announce(`Section ${s.roman}: ${s.name}. ${s.desc}.`);
+                          });
+                          Hooks.on('song', () => {
+                            renderer.cv.setAttribute('role', 'img');
+                            renderer.cv.setAttribute('aria-label', describe());
+                          });
+                        
+                          UI.section({ id: 'access', title: 'Access', order: 90, build(el) {
+                            el.append(
+                              UI.select({ label: 'Motion', value: S.motion, options: [['auto', 'Follow system'], ['on', 'Reduced'], ['off', 'Full']], onChange: (v) => { S.motion = v; applyAll(); } }),
+                              UI.select({ label: 'Contrast', value: S.contrast, options: [['auto', 'Follow system'], ['on', 'High'], ['off', 'Palette']], onChange: (v) => { S.contrast = v; applyAll(); } }),
+                              UI.check({ label: 'Larger text', checked: S.large, onChange: (v) => { S.large = v; applyAll(); } }),
+                              UI.check({ label: 'Announce sections to screen readers', checked: S.announce, onChange: (v) => { S.announce = v; Prefs.set('a11y', S); } }),
+                              UI.h('div', { class: 'sgrow' }, UI.button('Describe the sigil', () => UI.announce(describe()))));
+                          } });
+                          UI.whenReady(applyAll);
+                          return { describe, reduced };
+                        })();
+                        </script>
+                        <script>
+                            /* ══════════════════════════════════════════════════════════════════════════
+                               M6 · MOODS: arrangement presets via the 'compose' and 'plan' filters
+                               Presets draw randomness from stream(hash,'mood:<id>'), never from the
+                               composer's R, so they never disturb the melody or rhythm jitter.
+                               ══════════════════════════════════════════════════════════════════════════ */
+                            const Moods = (() => {
+                              'use strict';
+                              const { h } = UI;
+                              const MOODS = {
+                                ritual: { label: 'Ritual', blurb: 'The full rite, from invocation to banishing.' },
+                                ambient: {
+                                  label: 'Ambient', blurb: 'No drums. Slow breath, long bells, open space.',
+                                  compose(cfg) { cfg.bpm = Math.round(cfg.bpm * 0.72); if (cfg.leadTimbre === 'koto') cfg.leadTimbre = 'glass'; cfg.P.swing = 0; cfg.levels = { drums: 0, bass: 0.55, pad: 1.15, drone: 1.2 }; },
+                                  plan(plan) { for (const s of plan) { s.intensity = 0; s.drone = true; s.halfTime = false; s.density = 0; if (s.arp) s.arp = 'light'; } },
+                                },
+                                pulse: {
+                                  label: 'Pulse', blurb: 'Brighter and driving: a steady four-on-the-floor pulse with arpeggios everywhere.',
+                                  compose(cfg) { cfg.bpm = Math.min(128, Math.round(cfg.bpm * 1.25)); cfg.P.kick = euclid(4, 16, 0); cfg.P.swing = Math.min(cfg.P.swing, 0.12); cfg.levels = { drums: 1.1, arp: 1.15 }; },
+                                  plan(plan) {
+                                    for (const s of plan) {
+                                      if (s.id === 'intro' || s.id === 'outro') { s.intensity = 1; continue; }
+                                      s.intensity = Math.max(2, s.intensity); s.halfTime = false; s.arp = s.intensity >= 3 ? 'full' : 'light';
+                                    }
+                                  },
+                                },
+                                lullaby: {
+                                  label: 'Lullaby', blurb: 'Major modes, music-box bells, a rocking hush.',
+                                  compose(cfg) {
+                                    const MAJ = { Aeolian: 'Ionian', Dorian: 'Mixolydian', Phrygian: 'Lydian', 'Harmonic minor': 'Ionian' };
+                                    cfg.modeName = MAJ[cfg.modeName] || cfg.modeName; cfg.bpm = Math.round(cfg.bpm * 0.74);
+                                    cfg.leadTimbre = 'glass'; cfg.voicing = { seventh: false, ninth: true }; cfg.P.arp = 'pendulum';
+                                    cfg.levels = { drums: 0.45, bass: 0.7, arp: 0.9 };
+                                  },
+                                  plan(plan) { for (const s of plan) { s.intensity = Math.min(1, s.intensity); s.halfTime = false; s.density = 0; if (s.arp || s.harm) s.arp = 'light'; } },
+                                },
+                                dirge: {
+                                  label: 'Dirge', blurb: 'Slow processional: Phrygian or harmonic minor, half-time drums, constant drone.',
+                                  compose(cfg, R) { cfg.modeName = R.pick(['Phrygian', 'Harmonic minor']); cfg.bpm = Math.round(cfg.bpm * 0.8); cfg.leadTimbre = 'reed'; cfg.levels = { drone: 1.3, drums: 0.85 }; },
+                                  plan(plan) { for (const s of plan) { s.drone = true; s.intensity = Math.min(2, s.intensity); if (s.intensity > 0) s.halfTime = true; } },
+                                },
+                              };
+                              let current = MOODS[Prefs.get('mood', 'ritual')] ? Prefs.get('mood', 'ritual') : 'ritual';
+                              const groups = [];
+                            
+                              function set(id, { persist = true } = {}) {
+                                if (!MOODS[id]) id = 'ritual';
+                                current = id; if (persist) Prefs.set('mood', id);
+                                for (const g of groups) {
+                                  g.querySelectorAll('button[data-mood]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mood === id)));
+                                  const bl = g.querySelector('.mood-blurb'); if (bl) bl.textContent = MOODS[id].blurb;
+                                }
+                              }
+                              function pills(live) {
+                                const g = h('div', { class: 'moods', role: 'group', 'aria-label': 'Mood' },
+                                  h('div', { class: 'mood-pills' }, Object.entries(MOODS).map(([id, m]) =>
+                                    UI.button(m.label, () => { set(id); if (live && app.mode === 'playing') { UI.recompose(); UI.announce(`${m.label} mood`); } },
+                                      { 'data-mood': id, title: m.blurb, 'aria-pressed': String(id === current) }))),
+                                  h('div', { class: 'mood-blurb' }, MOODS[current].blurb));
+                                groups.push(g); return g;
+                              }
+                            
+                              // Filters. Astral (priority −10) runs first; an explicit mood can override its mode.
+                              Hooks.on('compose', (cfg, sigil) => { cfg.mood = current; const m = MOODS[current]; if (m.compose) m.compose(cfg, stream(sigil.hash, 'mood:' + current)); });
+                              Hooks.on('plan', (plan, cfg) => { const m = MOODS[cfg.mood]; if (m && m.plan) m.plan(plan, cfg); });
+                              Hooks.on('shareKey', (key) => (current !== 'ritual' ? key + '~' + current : undefined), 10);
+                              Hooks.on('meta', (parts) => { const m = app.song && app.song.cfg.mood; if (m && m !== 'ritual') parts.push(MOODS[m].label); });
+                              Hooks.on('beforeCast', (ctx) => { if (ctx.opts.preset) set(ctx.opts.preset, { persist: false }); });
+                              Hooks.on('link', (link) => { if (link.preset) set(link.preset, { persist: false }); });
+                            
+                              UI.css(`.moods{margin-top:14px;text-align:center}.mood-pills{display:flex;flex-wrap:wrap;justify-content:center;gap:6px}
+                                .moods button{padding:5px 11px;font-size:9.5px}.mood-blurb{font-size:12.5px;opacity:.45;font-style:italic;margin-top:8px;min-height:1.2em}
+                                #tool-moods .moods{text-align:left}#tool-moods .mood-pills{justify-content:flex-start}`);
+                              document.querySelector('#invoke .hint').before(pills(false));
+                              UI.section({ id: 'moods', title: 'Mood', order: 10, build(el) {
+                                el.append(pills(true), UI.note('Changing the mood during a performance re-composes the song and resumes at the current section. The sigil, melody and form stay the same; only the arrangement changes.'));
+                              } });
+                              return { set, get: () => current, MOODS };
+                            })();
+                            </script>
+                            <script>
+                                /* ══════════════════════════════════════════════════════════════════════════
+                                   M7 · RENDER · WAV: offline rendering with the same Engine class
+                                   ══════════════════════════════════════════════════════════════════════════ */
+                                const Render = (() => {
+                                  'use strict';
+                                  const { h } = UI;
+                                  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+                                  const S = { loops: 1, normalize: true, lens: true, tempo: true };
+                                  const SR = 44100, TAIL = 7, CH = 5;
+                                  let busy = false, bar, status, btn, est;
+                                
+                                  const spbFor = (song) => (S.tempo && app.engine && app.engine.song === song ? app.engine.spb : song.spb);
+                                  const lengthOf = (song) => S.loops * song.total * spbFor(song) + TAIL;
+                                
+                                  async function renderSong(song, onProgress) {
+                                    const spb = spbFor(song), lenSec = lengthOf(song);
+                                    const off = new OAC(2, Math.ceil(SR * lenSec), SR);
+                                    const eng = new Engine(off);   // C3a: the engine runs on any context
+                                    eng.load(song);                // emits 'buses', so mixer levels apply
+                                    eng.spb = spb;
+                                    eng.delay.delayTime.setValueAtTime(spb * 0.75, 0);
+                                    const useLens = S.lens && typeof LiveLens !== 'undefined' && LiveLens.active();
+                                    const list = [];
+                                    for (let L = 0; L < S.loops; L++) for (const ev of song.events)
+                                      list.push([(L * song.total + ev.beat) * spb + 0.05, useLens ? LiveLens.map(ev, song) : ev]);
+                                    let i = 0;
+                                    const until = (t) => { while (i < list.length && list[i][0] < t) { const [tt, ev] = list[i++]; eng.play(ev, tt); } };
+                                    let chunked = false;
+                                    if (typeof off.suspend === 'function') {
+                                      try {
+                                        until(CH * 2);
+                                        for (let c = CH; c < lenSec - 1; c += CH)
+                                          off.suspend(c).then(() => { until(c + CH * 2); onProgress(c / lenSec); return off.resume(); });
+                                        chunked = true;
+                                      } catch (e) { /* suspend unsupported: schedule the remainder below */ }
+                                    }
+                                    if (!chunked) until(Infinity);
+                                    const buf = await off.startRendering();
+                                    onProgress(1);
+                                    return buf;
+                                  }
+                                
+                                  /** 16-bit PCM WAV with TPDF dither; optional peak normalisation to −1 dBFS. */
+                                  function encodeWav(buf, normalize) {
+                                    const L = buf.getChannelData(0), R = buf.numberOfChannels > 1 ? buf.getChannelData(1) : L, n = buf.length;
+                                    let peak = 0;
+                                    for (let i = 0; i < n; i++) { const a = Math.abs(L[i]), b = Math.abs(R[i]); if (a > peak) peak = a; if (b > peak) peak = b; }
+                                    const gain = peak > 0 ? (normalize ? 0.891 / peak : Math.min(1, 0.999 / peak)) : 1;
+                                    const ab = new ArrayBuffer(44 + n * 4), dv = new DataView(ab);
+                                    const str = (o, s) => { for (let k = 0; k < s.length; k++) dv.setUint8(o + k, s.charCodeAt(k)); };
+                                    str(0, 'RIFF'); dv.setUint32(4, 36 + n * 4, true); str(8, 'WAVE'); str(12, 'fmt ');
+                                    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 2, true);
+                                    dv.setUint32(24, buf.sampleRate, true); dv.setUint32(28, buf.sampleRate * 4, true);
+                                    dv.setUint16(32, 4, true); dv.setUint16(34, 16, true); str(36, 'data'); dv.setUint32(40, n * 4, true);
+                                    const q = (x) => { x = x < -1 ? -1 : x > 1 ? 1 : x; return x < 0 ? x * 32768 : x * 32767; };
+                                    for (let i = 0, o = 44; i < n; i++, o += 4) {
+                                      dv.setInt16(o, q(L[i] * gain + (Math.random() - Math.random()) / 32768), true);
+                                      dv.setInt16(o + 2, q(R[i] * gain + (Math.random() - Math.random()) / 32768), true);
+                                    }
+                                    return new Blob([ab], { type: 'audio/wav' });
+                                  }
+                                
+                                  const setBar = (f) => (bar.firstChild.style.width = `${Math.round(f * 100)}%`);
+                                  function refresh() {
+                                    if (!btn) return;
+                                    btn.disabled = busy || !app.song || !OAC;
+                                    if (!OAC) { est.textContent = 'Offline rendering is not supported in this browser.'; return; }
+                                    if (!app.song) { est.textContent = 'Cast a sigil to render it.'; return; }
+                                    const d = lengthOf(app.song);
+                                    est.textContent = `≈ ${UI.fmt(d)} · ${Math.round((d * SR * 4) / 1048576)} MB`;
+                                  }
+                                  async function go() {
+                                    if (busy || !app.song || !OAC) return;
+                                    busy = true; refresh(); btn.textContent = 'Rendering…';
+                                    bar.classList.add('busy'); setBar(0);
+                                    status.textContent = 'Performing the rite offline…';
+                                    const t0 = performance.now();
+                                    try {
+                                      const buf = await renderSong(app.song, (f) => { bar.classList.remove('busy'); setBar(f); });
+                                      status.textContent = 'Encoding…';
+                                      await new Promise((r) => setTimeout(r, 30)); // let the UI paint before the encode loop
+                                      const blob = encodeWav(buf, S.normalize);
+                                      download(blob, `sigil-${UI.fileKey()}.wav`);
+                                      status.textContent = `Done in ${((performance.now() - t0) / 1000).toFixed(1)} s · ${(blob.size / 1048576).toFixed(1)} MB`;
+                                      UI.announce('The WAV file is ready.');
+                                    } catch (e) {
+                                      console.error('[render]', e); status.textContent = 'Rendering failed: ' + (e.message || e);
+                                    } finally {
+                                      busy = false; btn.textContent = 'Render WAV'; bar.classList.remove('busy'); refresh();
+                                    }
+                                  }
+                                
+                                  UI.section({ id: 'render', title: 'Render · WAV', order: 45, build(el) {
+                                    btn = UI.button('Render WAV', go);
+                                    bar = h('div', { class: 'sgbar' }, h('i'));
+                                    est = UI.note(''); status = UI.note('');
+                                    el.append(
+                                      UI.note('Renders the performance offline, faster than real time, into a lossless stereo file. It includes your mix, tempo and live lens.'),
+                                      UI.select({ label: 'Length', value: 1, options: [['1', 'One pass'], ['2', 'Two passes'], ['3', 'Three passes']], onChange: (v) => { S.loops = +v; refresh(); } }),
+                                      UI.check({ label: 'Normalise to −1 dBFS', checked: true, onChange: (v) => (S.normalize = v) }),
+                                      UI.check({ label: 'Use the current tempo', checked: true, onChange: (v) => { S.tempo = v; refresh(); } }),
+                                      UI.check({ label: 'Apply the live lens', checked: true, onChange: (v) => (S.lens = v) }),
+                                      est, h('div', { class: 'sgrow' }, btn), bar, status);
+                                    refresh();
+                                  } });
+                                  Hooks.on('song', refresh); Hooks.on('forget', () => setTimeout(refresh, 4000));
+                                  return { renderSong, encodeWav };
+                                })();
+                                </script>
+                                <script>
+                                    /* ══════════════════════════════════════════════════════════════════════════
+                                       M8 · FUSION: up to three desires on one wheel, as counterpoint
+                                       The returned sigil object is compatible with everything in the core:
+                                       nodes/curves belong to the primary voice, and partners[] hold the others.
+                                       ══════════════════════════════════════════════════════════════════════════ */
+                                    const Fusion = (() => {
+                                      'use strict';
+                                      const { h } = UI;
+                                      const MAX_EXTRA = 2;
+                                    
+                                      /** Build a fused sigil from reduced consonant strings (the first one leads). */
+                                      function build(members) {
+                                        const hash = hashStr('SIGIL/fusion::' + [...members].sort().join('+')); // the wheel is order-independent
+                                        const g = stream(hash, 'geometry');
+                                        const wheel = g.shuffle(CONSONANTS);
+                                        const slotOf = {}; wheel.forEach((L, i) => (slotOf[L] = i));
+                                        const ringOf = {}; CONSONANTS.forEach((L) => (ringOf[L] = g.int(0, 2)));
+                                        const baseAngle = g.float() * TAU;
+                                        const voice = (r) => {
+                                          const c = stream(hash, 'curves:' + r);
+                                          const nodes = [...r].map((L) => ({ letter: L, slot: slotOf[L], ring: ringOf[L] }));
+                                          const curves = nodes.slice(1).map(() => (c.chance(0.42) ? c.range(0.28, 0.62) * (c.chance(0.5) ? 1 : -1) : 0));
+                                          return { reduced: r, nodes, curves };
+                                        };
+                                        const [first, ...rest] = members.map(voice);
+                                        return {
+                                          reduced: first.reduced, fusionKey: members.join('+'), label: members.join(' + '), hash, hex: toHex(hash),
+                                          wheel, baseAngle, nodes: first.nodes, curves: first.curves, letterSet: new Set(members.join('')),
+                                          palette: PALETTES[stream(hash, 'palette').int(0, PALETTES.length - 1)], partners: rest,
+                                        };
+                                      }
+                                    
+                                      /* ── Invocation UI: extra voice inputs ── */
+                                      UI.css(`.voices{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+                                        .voice-row{display:flex;gap:8px;align-items:flex-end}
+                                        .voice-in{flex:1;min-width:0;background:transparent;border:0;border-bottom:1px solid rgba(var(--line),.2);color:rgb(var(--line));font-family:inherit;font-size:17px;font-style:italic;padding:6px 4px;text-align:center;outline:none;border-radius:0;pointer-events:auto}
+                                        .voice-in:focus{border-bottom-color:rgba(var(--accent),.7)}
+                                        .add-voice{margin-top:10px}
+                                        #letters.fused{font-size:16px;letter-spacing:.26em;white-space:normal;max-width:min(520px,80vw);margin-left:auto;margin-right:auto}
+                                        #letters .sep{opacity:.35;padding:0 .25em}#letters .p1{color:rgba(var(--accent),.9)}#letters .p2{opacity:.8;font-style:italic}`);
+                                      const voices = h('div', { class: 'voices' });
+                                      const addBtn = h('button', { class: 'ghost sm add-voice', type: 'button', title: 'Join another desire to this one (up to three voices)', onclick: () => addVoice() }, '+ join another desire');
+                                      document.querySelector('#invoke .field').after(voices, addBtn);
+                                    
+                                      function addVoice(value = '') {
+                                        if (voices.children.length >= MAX_EXTRA) return;
+                                        const inp = h('input', { class: 'voice-in', maxlength: '180', autocomplete: 'off', spellcheck: 'false',
+                                          placeholder: voices.children.length ? 'and a third…' : 'and another desire…', 'aria-label': 'Additional desire', value });
+                                        inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') cast(); });
+                                        const row = h('div', { class: 'voice-row' }, inp,
+                                          h('button', { class: 'ghost sm', type: 'button', 'aria-label': 'Remove this voice', onclick: () => { row.remove(); syncAdd(); } }, '×'));
+                                        voices.append(row); syncAdd();
+                                        if (!value) inp.focus();
+                                      }
+                                      const syncAdd = () => (addBtn.hidden = voices.children.length >= MAX_EXTRA);
+                                      const clearVoices = () => { voices.innerHTML = ''; syncAdd(); };
+                                    
+                                      /* ── Core integration ── */
+                                      Hooks.on('buildSigil', (sig, ctx) => {
+                                        // Explicit partners (grimoire, links) win over the input fields, even when empty.
+                                        const raw = ctx.opts.partners ?? [...voices.querySelectorAll('input')].map((i) => i.value.trim()).filter(Boolean);
+                                        if (!raw.length) return;
+                                        const members = [ctx.reduced];
+                                        for (const r of raw) {
+                                          const red = reduceDesire(r).reduced;
+                                          if (red.length < 3) return { error: `“${r.slice(0, 24)}” leaves too little after reduction.` };
+                                          if (!members.includes(red)) members.push(red);
+                                        }
+                                        return members.length > 1 ? build(members.slice(0, 3)) : undefined;
+                                      });
+                                      Hooks.on('shareKey', (key, sig) => (sig && sig.fusionKey ? sig.fusionKey : undefined));
+                                      Hooks.on('link', (link) => { clearVoices(); link.members.slice(1).forEach((m) => addVoice(m)); });
+                                      Hooks.on('forget', clearVoices);
+                                      Hooks.on('cast', (sig) => { if (sig.partners && sig.partners.length) setTimeout(() => toast(`joined by ${sig.partners.map((p) => p.reduced).join(' · ')}`, true, 3200), 600); });
+                                      Hooks.on('song', (sig) => {
+                                        const L = document.querySelector('#letters');
+                                        const fused = !!(sig.partners && sig.partners.length);
+                                        L.classList.toggle('fused', fused);
+                                        if (!fused) return;
+                                        sig.partners.forEach((p, i) => {
+                                          L.append(h('span', { class: 'sep', 'aria-hidden': 'true' }, '+'));
+                                          for (const ch of p.reduced) L.append(h('span', { class: 'p' + (i + 1) }, ch));
+                                        });
+                                      });
+                                    
+                                      /* ── Drawing: partner paths with their own pens ── */
+                                      const mix = (a, b) => a.map((v, i) => (v + b[i]) >> 1);
+                                      Hooks.on('drawPlaying', ({ r, F, T, beat, ph, lines }) => {
+                                        if (!ph.partners || !ph.partners.length) return;
+                                        ph.partners.forEach((pp, i) => {
+                                          const col = i === 0 ? r.pal.accent : mix(r.pal.line, r.pal.accent);
+                                          r.strokeGlow(tracePoints(pp.seq, pp.curves, T, F, pp.seq.length - 1), col, 0.05, 0.8);
+                                          const pts = tracePoints(pp.seq, pp.curves, T, F, penProgress(pp, beat));
+                                          r.strokeGlow(pts, col, 0.75, 1.1); lines.push(pts);
+                                          r.circle(pts[0], pts[1], F.R * 0.022, col, 0.8, false, 1.1);
+                                          r.circle(pts[pts.length - 2], pts[pts.length - 1], 2, col, 0.9, true);
+                                          for (const nd of pp.path) {
+                                            const age = beat - nd.beat;
+                                            if (age >= 0 && age < 1.5) { const [x, y] = nodeXY(nd, T, F), q = age / 1.5; r.circle(x, y, 2 + F.R * 0.05 * q, col, 0.6 * (1 - q), false, 1); }
+                                          }
+                                        });
+                                      });
+                                      return { build, addVoice };
+                                    })();
+                                    </script>
+                                    <script>
+                                        /* ══════════════════════════════════════════════════════════════════════════
+                                           M9 · LIVE LENS: rotate and mirror the sigil in real time
+                                           Musical state (m, k): displayed slot → m·slot + k (composed after the
+                                           section's own transform). The visual composition is
+                                             phi = s_u·phi_s + phi_u,  s = s_u·s_s,  where phi_u = 2πk/21, s_u = m
+                                           and it animates independently of the (instant) musical state.
+                                           ══════════════════════════════════════════════════════════════════════════ */
+                                        const LiveLens = (() => {
+                                          'use strict';
+                                          const { h } = UI;
+                                          const STEP = TAU / SLOTS;
+                                          const INTV = ['', 'a step', 'a third', 'a fourth', 'a fifth', 'a sixth', 'a seventh'];
+                                          let m = 1, k = 0;
+                                        
+                                          /* ── Visual animation state: a pure function of time, so no extra RAF loop ── */
+                                          const V = { pf: 0, pt: 0, sf: 1, st: 1, t0: 0, dur: 0.001 };
+                                          const nowS = () => performance.now() / 1000;
+                                          function view() { const p = ease((nowS() - V.t0) / V.dur); return { phi: lerp(V.pf, V.pt, p), s: lerp(V.sf, V.st, p) }; }
+                                          function animateTo(phi, s, dur = 0.55) { const c = view(); Object.assign(V, { pf: c.phi, sf: c.s, pt: phi, st: s, t0: nowS(), dur }); }
+                                          function jump(phi, s) { Object.assign(V, { pf: phi, pt: phi, sf: s, st: s, t0: 0, dur: 0.001 }); }
+                                        
+                                          /* ── Music mapping ── */
+                                          const active = () => m !== 1 || mod(k, 7) !== 0;
+                                          const shift = () => mod(k, 7);
+                                          function mapDeg(d) { let x = m * d + shift() + (m < 0 ? 7 : 0); while (x < -2) x += 7; while (x > 10) x -= 7; return x; }
+                                          function mapChord(c, song = app.song) {
+                                            if (!active()) return c;
+                                            let r = mod(m === 1 ? c + shift() : -c - 4 + shift(), 7);
+                                            if (song && song.validChords && !song.validChords.includes(r)) r = mod(r - 2, 7); // diminished → the chord a third below
+                                            return r;
+                                          }
+                                          /** Return a transformed copy of an event (or the same event if unaffected). Pure; safe for offline use. */
+                                          function map(ev, song = app.song) {
+                                            if (!active() || !song) return ev;
+                                            const sc = song.scale;
+                                            switch (ev.type) {
+                                              case 'lead': case 'harm': case 'bell': {
+                                                if (ev.deg == null) return ev;
+                                                let midi = degToMidi(mapDeg(ev.deg) + (ev.off || 0), ev.reg, sc) + (ev.add || 0);
+                                                if (ev.cap && midi > ev.cap) midi -= 12;
+                                                const from = ev.fromDeg != null ? degToMidi(mapDeg(ev.fromDeg), ev.reg, sc) : ev.from;
+                                                return { ...ev, midi, from };
+                                              }
+                                              case 'pad': return ev.chord == null ? ev : { ...ev, midis: padVoicing(mapChord(ev.chord, song), sc, song.leadBase, song.voicing) };
+                                              case 'bass': return ev.chord == null ? ev : { ...ev, midi: bassPitch(mapChord(ev.chord, song), ev.role, song.bassBase, sc) };
+                                              case 'arp': return ev.chord == null ? ev : { ...ev, midi: arpTones(mapChord(ev.chord, song), sc, song.leadBase)[ev.idx] };
+                                              default: return ev;
+                                            }
+                                          }
+                                          // Live engine only; offline renders call map() explicitly when requested.
+                                          const _play = Engine.prototype.play;
+                                          Engine.prototype.play = function (ev, t) { return _play.call(this, this === app.engine && active() ? map(ev, this.song) : ev, t); };
+                                          Hooks.on('viewT', (T) => {
+                                            const u = view();
+                                            if (u.phi === 0 && u.s === 1) return;
+                                            return { phi: u.s * T.phi + u.phi, s: u.s * T.s };
+                                          });
+                                        
+                                          /* ── Actions ── */
+                                          const playing = () => app.mode === 'playing';
+                                          function rotate(d) { if (!playing()) return; k += d; animateTo(k * STEP, m, 0.35); sync(); }
+                                          function mirror() { if (!playing()) return; m = -m; k = 1 - k; animateTo(k * STEP, m); sync(); } // reflect about the half-slot axis
+                                          function reset() {
+                                            const c = view(); const wrapped = mod(c.phi + Math.PI, TAU) - Math.PI; // don't spin through many turns
+                                            jump(wrapped, c.s); m = 1; k = 0; animateTo(0, 1, 0.6); sync();
+                                          }
+                                          function describe() {
+                                            const p = []; const sh = shift();
+                                            if (sh) p.push(`${INTV[sh]} up`);
+                                            if (m < 0) p.push('inverted');
+                                            if (!p.length && mod(k, SLOTS)) p.push('turned · same pitches');
+                                            return p.join(' · ');
+                                          }
+                                          const badge = h('div', { id: 'lens', hidden: true }, h('span', { class: 'lens-text' }), UI.button('Reset', reset, { class: 'sm ghost', title: 'Reset the lens (0)' }));
+                                          document.querySelector('#center').append(badge);
+                                          UI.css(`#lens{margin-top:8px;font-size:12px;letter-spacing:.12em;font-style:italic;display:flex;gap:10px;justify-content:center;align-items:center;color:rgb(var(--accent))}
+                                            #lens[hidden]{display:none}#lens button{padding:3px 8px}`);
+                                          let lastText = '';
+                                          function sync() {
+                                            const on = m !== 1 || mod(k, SLOTS) !== 0, t = on ? describe() : '';
+                                            badge.hidden = !on; badge.querySelector('.lens-text').textContent = t ? `lens · ${t}` : '';
+                                            if (t !== lastText) { lastText = t; if (t) UI.announce(`Lens: ${t}`); }
+                                          }
+                                        
+                                          /* ── Pointer interaction ── */
+                                          const cv = renderer.cv;
+                                          cv.style.touchAction = 'none';
+                                          let drag = null, lastTap = 0;
+                                          const polarOf = (e) => { const F = renderer.F, dx = e.clientX - F.cx, dy = e.clientY - F.cy; return { a: Math.atan2(dx, -dy), d: Math.hypot(dx, dy) / F.R }; };
+                                          cv.addEventListener('pointerdown', (e) => {
+                                            if (!playing() || app.charging) return;
+                                            const p = polarOf(e); if (p.d > 1.3) return;
+                                            drag = { id: e.pointerId, a0: p.a, phi: view().phi, x: e.clientX, y: e.clientY, moved: false, ring: p.d >= 0.45 };
+                                            try { cv.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+                                          });
+                                          cv.addEventListener('pointermove', (e) => {
+                                            if (!drag) { // hover affordance
+                                              if (playing() && !app.charging) { const p = polarOf(e); cv.style.cursor = p.d >= 0.45 && p.d <= 1.3 ? 'grab' : ''; }
+                                              return;
+                                            }
+                                            if (e.pointerId !== drag.id || !drag.ring) return;
+                                            if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 6) return;
+                                            drag.moved = true; cv.style.cursor = 'grabbing';
+                                            const p = polarOf(e);
+                                            drag.phi += mod(p.a - drag.a0 + Math.PI, TAU) - Math.PI; drag.a0 = p.a; // incremental, so multiple turns work
+                                            jump(drag.phi, view().s);
+                                            const nk = Math.round(drag.phi / STEP);
+                                            if (nk !== k) { k = nk; if (navigator.vibrate) navigator.vibrate(4); sync(); }
+                                          });
+                                          const end = (e) => {
+                                            if (!drag || e.pointerId !== drag.id) return;
+                                            const moved = drag.moved; drag = null; cv.style.cursor = '';
+                                            if (moved) { animateTo(k * STEP, m, 0.35); return; }
+                                            const t = nowS(), p = polarOf(e);
+                                            if (p.d <= 1.05 && t - lastTap < 0.33) { mirror(); lastTap = 0; } else lastTap = t;
+                                          };
+                                          cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+                                        
+                                          Hooks.on('cast', () => {
+                                            m = 1; k = 0; jump(0, 1); sync();
+                                            if (!Prefs.get('lens.hinted', false)) { Prefs.set('lens.hinted', true); setTimeout(() => toast('Tip: drag the wheel to transpose · double-tap to mirror', true, 4200), 7000); }
+                                          });
+                                          UI.key('ArrowLeft', 'Lens: turn one step down', () => rotate(-1), { group: 'Live lens', display: '←' });
+                                          UI.key('ArrowRight', 'Lens: turn one step up', () => rotate(1), { group: 'Live lens', display: '→' });
+                                          UI.key('m', 'Lens: mirror (invert the melody)', mirror, { group: 'Live lens', display: 'M' });
+                                          UI.key('0', 'Lens: reset', reset, { group: 'Live lens', display: '0' });
+                                          UI.section({ id: 'lens', title: 'Live Lens', order: 15, build(el) {
+                                            el.append(UI.note('Turn the wheel and the melody transposes by scale steps; mirror it and the melody inverts. Drag the outer ring, double-tap the circle, or use these controls.'),
+                                              h('div', { class: 'sgrow' }, UI.button('⟲ step', () => rotate(-1)), UI.button('step ⟳', () => rotate(1)), UI.button('Mirror', mirror), UI.button('Reset', reset)));
+                                          } });
+                                          return { map, mapChord, active, rotate, mirror, reset };
+                                        })();
+                                        </script>
+                                        <script>
+                                            /* ══════════════════════════════════════════════════════════════════════════
+                                               M10 · HOURS & MOON: planetary hours, moon phase, timed sessions
+                                               Sunrise/sunset: the standard "sunrise equation" (accurate to ~1–2 min).
+                                               Planetary hours: 12 unequal day hours (sunrise→sunset) and 12 night hours;
+                                               the first hour of a day belongs to the day's ruler, and rulers follow the
+                                               Chaldean order Saturn → Jupiter → Mars → Sun → Venus → Mercury → Moon.
+                                               NOTE: planet palettes are kept separate from PALETTES on purpose. Adding to
+                                               PALETTES would change the palette index of every existing sigil.
+                                               ══════════════════════════════════════════════════════════════════════════ */
+                                            const Astral = (() => {
+                                              'use strict';
+                                              const { h } = UI;
+                                              const RAD = Math.PI / 180;
+                                              const CHALDEAN = ['saturn', 'jupiter', 'mars', 'sun', 'venus', 'mercury', 'moon'];
+                                              const WEEK = ['sun', 'moon', 'mars', 'mercury', 'jupiter', 'venus', 'saturn']; // by Date.getDay()
+                                              const PLANETS = {
+                                                saturn: { glyph: '♄', name: 'Saturn', mode: 'Harmonic minor', timbre: 'reed', tempo: 0.9, virtue: 'boundaries, endings, patience' },
+                                                jupiter: { glyph: '♃', name: 'Jupiter', mode: 'Lydian', timbre: 'glass', tempo: 1.0, virtue: 'expansion, fortune, generosity' },
+                                                mars: { glyph: '♂', name: 'Mars', mode: 'Phrygian', timbre: 'koto', tempo: 1.12, virtue: 'courage, force, protection' },
+                                                sun: { glyph: '☉', name: 'Sun', mode: 'Ionian', timbre: 'glass', tempo: 1.05, virtue: 'success, vitality, clarity' },
+                                                venus: { glyph: '♀', name: 'Venus', mode: 'Dorian', timbre: 'reed', tempo: 0.95, virtue: 'love, beauty, harmony' },
+                                                mercury: { glyph: '☿', name: 'Mercury', mode: 'Mixolydian', timbre: 'koto', tempo: 1.1, virtue: 'speech, study, travel' },
+                                                moon: { glyph: '☽', name: 'Moon', mode: 'Aeolian', timbre: 'glass', tempo: 0.88, virtue: 'dreams, intuition, the tides' },
+                                              };
+                                              const ASTRAL_PALETTES = {
+                                                saturn: { name: 'Saturnine', bg: '#09090a', line: [214, 210, 200], accent: [140, 126, 190] },
+                                                jupiter: { name: 'Jovian', bg: '#0a0810', line: [236, 214, 160], accent: [120, 150, 255] },
+                                                mars: { name: 'Martial', bg: '#0d0605', line: [246, 224, 210], accent: [235, 60, 40] },
+                                                sun: { name: 'Solar', bg: '#0c0905', line: [255, 222, 150], accent: [255, 160, 40] },
+                                                venus: { name: 'Venusian', bg: '#070d0b', line: [190, 240, 214], accent: [255, 150, 180] },
+                                                mercury: { name: 'Quicksilver', bg: '#09090b', line: [214, 222, 232], accent: [150, 200, 255] },
+                                                moon: { name: 'Lunar', bg: '#07080d', line: [220, 224, 255], accent: [180, 200, 255] },
+                                              };
+                                              const S = { attune: false, loc: null, minutes: '7', endAction: 'forget', charge: true, ...Prefs.get('astral', {}) };
+                                              const save = () => Prefs.set('astral', S);
+                                            
+                                              /* ── Astronomy ── */
+                                              function sunTimes(date, lat, lon) {
+                                                const noon = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12);
+                                                const jd = noon.getTime() / 864e5 + 2440587.5;
+                                                const n = Math.round(jd - 2451545.0 + lon / 360);
+                                                const Js = n - lon / 360;
+                                                const M = mod(357.5291 + 0.98560028 * Js, 360);
+                                                const C = 1.9148 * Math.sin(M * RAD) + 0.02 * Math.sin(2 * M * RAD) + 0.0003 * Math.sin(3 * M * RAD);
+                                                const lam = mod(M + C + 180 + 102.9372, 360);
+                                                const Jt = 2451545.0 + Js + 0.0053 * Math.sin(M * RAD) - 0.0069 * Math.sin(2 * lam * RAD);
+                                                const sinD = Math.sin(lam * RAD) * Math.sin(23.4397 * RAD), cosD = Math.cos(Math.asin(sinD));
+                                                const cosW = (Math.sin(-0.833 * RAD) - Math.sin(lat * RAD) * sinD) / (Math.cos(lat * RAD) * cosD);
+                                                if (cosW < -1 || cosW > 1) return null; // polar day or night → equal hours
+                                                const w = Math.acos(cosW) / RAD, toDate = (j) => new Date((j - 2440587.5) * 864e5);
+                                                return { rise: toDate(Jt - w / 360), set: toDate(Jt + w / 360) };
+                                              }
+                                              function dayTimes(d) {
+                                                if (S.loc) { const t = sunTimes(d, S.loc.lat, S.loc.lon); if (t) return t; }
+                                                const rise = new Date(d); rise.setHours(6, 0, 0, 0);
+                                                const set = new Date(d); set.setHours(18, 0, 0, 0);
+                                                return { rise, set };
+                                              }
+                                              function planetaryHour(now = new Date()) {
+                                                const day = (off) => { const d = new Date(now); d.setDate(d.getDate() + off); return { d, ...dayTimes(d) }; };
+                                                const today = day(0);
+                                                let start, end, rulerDate, base;
+                                                if (now < today.rise) { const y = day(-1); start = y.set; end = today.rise; rulerDate = y.d; base = 12; }
+                                                else if (now < today.set) { start = today.rise; end = today.set; rulerDate = today.d; base = 0; }
+                                                else { const t = day(1); start = today.set; end = t.rise; rulerDate = today.d; base = 12; }
+                                                const len = (end - start) / 12, idx = clamp(Math.floor((now - start) / len), 0, 11);
+                                                const dayRuler = WEEK[rulerDate.getDay()];
+                                                return { planet: CHALDEAN[(CHALDEAN.indexOf(dayRuler) + base + idx) % 7], dayRuler, isDay: base === 0, hourNumber: idx + 1,
+                                                  start: new Date(+start + idx * len), end: new Date(+start + (idx + 1) * len) };
+                                              }
+                                              function nextHourOf(planet, from = new Date()) {
+                                                let t = from;
+                                                for (let i = 0; i < 24 * 8; i++) { const hr = planetaryHour(t); if (hr.planet === planet) return hr; t = new Date(+hr.end + 1000); }
+                                                return null;
+                                              }
+                                              function moonPhase(date = new Date()) {
+                                                const f = mod((date.getTime() / 864e5 + 2440587.5 - 2451550.26) / 29.530588853, 1);
+                                                const names = [[0.03, 'New moon'], [0.22, 'Waxing crescent'], [0.28, 'First quarter'], [0.47, 'Waxing gibbous'],
+                                                  [0.53, 'Full moon'], [0.72, 'Waning gibbous'], [0.78, 'Last quarter'], [0.97, 'Waning crescent'], [1.01, 'New moon']];
+                                                return { f, illum: (1 - Math.cos(TAU * f)) / 2, name: names.find(([x]) => f < x)[1] };
+                                              }
+                                              function drawMoon(cv, f, col) {
+                                                const g = cv.getContext('2d'), s = cv.width, r = s * 0.42, c = s / 2, k = Math.cos(TAU * f), waxing = f < 0.5;
+                                                g.clearRect(0, 0, s, s);
+                                                g.fillStyle = rgba(col, 0.1); g.beginPath(); g.arc(c, c, r, 0, TAU); g.fill();
+                                                g.fillStyle = rgba(col, 0.9); g.beginPath();
+                                                g.arc(c, c, r, -Math.PI / 2, Math.PI / 2, !waxing);                                   // the lit limb
+                                                g.ellipse(c, c, r * Math.abs(k), r, 0, Math.PI / 2, -Math.PI / 2, waxing ? k > 0 : k < 0); // the terminator
+                                                g.fill();
+                                              }
+                                            
+                                              /* ── Composition integration (runs before Moods) ── */
+                                              Hooks.on('compose', (cfg) => {
+                                                if (!S.attune) return;
+                                                const hr = planetaryHour(), pl = PLANETS[hr.planet], moon = moonPhase();
+                                                cfg.modeName = pl.mode; cfg.leadTimbre = pl.timbre;
+                                                cfg.bpm = Math.round(cfg.bpm * pl.tempo * (1 + 0.06 * Math.cos(TAU * (moon.f - 0.5))));
+                                                cfg.astral = { planet: hr.planet, moon: moon.name };
+                                              }, -10);
+                                              Hooks.on('palette', () => { const a = app.song && app.song.cfg && app.song.cfg.astral; return a ? ASTRAL_PALETTES[a.planet] : undefined; }, 10);
+                                              Hooks.on('meta', (parts) => { const a = app.song && app.song.cfg.astral; if (a) parts.push(`${PLANETS[a.planet].glyph} hour of ${PLANETS[a.planet].name}`); });
+                                            
+                                              /* ── Sessions ── */
+                                              const sess = { total: 0, left: 0, warned: false, timer: null, last: 0 };
+                                              function startSession() {
+                                                if (app.mode !== 'playing') { toast('Cast a sigil first', true); return; }
+                                                const sec = S.minutes === 'hour' ? Math.max(60, (planetaryHour().end - Date.now()) / 1000) : +S.minutes * 60;
+                                                Object.assign(sess, { total: sec, left: sec, warned: sec <= 75, last: performance.now() });
+                                                clearInterval(sess.timer); sess.timer = setInterval(tick, 250);
+                                                if (S.charge) toggleCharge(true);
+                                                app.engine.chime(app.song.leadBase + 24);
+                                                UI.announce(`Session begun: ${UI.fmt(sec)}.`);
+                                                syncSession();
+                                              }
+                                              function stopSession(silent) {
+                                                clearInterval(sess.timer); sess.timer = null; sess.total = 0;
+                                                if (!silent) UI.announce('Session ended.');
+                                                syncSession();
+                                              }
+                                              function tick() {
+                                                const t = performance.now(), dt = (t - sess.last) / 1000; sess.last = t;
+                                                if (app.mode !== 'playing') return stopSession(true);
+                                                if (app.engine.ctx.state !== 'running') return; // paused: the session waits too
+                                                sess.left -= dt;
+                                                if (!sess.warned && sess.left <= 60) { sess.warned = true; app.engine.chime(app.song.leadBase + 19); }
+                                                if (sess.left <= 0) return finish();
+                                                syncSession();
+                                              }
+                                              function finish() {
+                                                stopSession(true);
+                                                app.engine.chime(app.song.leadBase + 24); setTimeout(() => app.engine.chime(app.song.leadBase + 31), 420);
+                                                if (S.endAction === 'forget') setTimeout(() => forget(), 1400);
+                                                else if (S.endAction === 'return') setTimeout(() => { toggleCharge(false); newDesire(); }, 1400);
+                                                else toast('The session is complete.', false, 3000);
+                                              }
+                                              Hooks.on('stop', () => { if (sess.timer) stopSession(true); });
+                                              Hooks.on('drawPlaying', ({ r, g, F }) => { // countdown ring, visible in Charge mode too
+                                                if (!sess.timer || !sess.total) return;
+                                                const f = clamp(sess.left / sess.total, 0, 1);
+                                                g.beginPath(); g.arc(F.cx, F.cy, F.R * 1.36, -Math.PI / 2, -Math.PI / 2 + TAU * f);
+                                                g.strokeStyle = rgba(r.pal.accent, 0.3); g.lineWidth = 1.2; g.stroke();
+                                              });
+                                            
+                                              /* ── Panel ── */
+                                              const fmtT = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                              const fmtDay = (d) => d.toLocaleDateString([], { weekday: 'short' });
+                                              const ord = (n) => n + (['th', 'st', 'nd', 'rd'][(n % 100 > 10 && n % 100 < 14) ? 0 : n % 10 < 4 ? n % 10 : 0] || 'th');
+                                              let nowLine, moonLine, moonCv, attuneNote, nextOut, nextSel, locNote, sessBtn, sessOut;
+                                              function refresh() {
+                                                if (!nowLine) return;
+                                                const hr = planetaryHour(), pl = PLANETS[hr.planet], day = PLANETS[hr.dayRuler], moon = moonPhase();
+                                                nowLine.innerHTML = '';
+                                                nowLine.append(h('em', {}, `${pl.glyph} Hour of ${pl.name}`), h('br'),
+                                                  `${ord(hr.hourNumber)} hour of ${hr.isDay ? 'day' : 'night'} · until ${fmtT(hr.end)}`, h('br'), `Day of ${day.name} ${day.glyph}`);
+                                                moonLine.textContent = `${moon.name} · ${Math.round(moon.illum * 100)}% lit`;
+                                                drawMoon(moonCv, moon.f, renderer.pal.line);
+                                                attuneNote.textContent = `Now: ${pl.name}, ${pl.virtue}. ${pl.mode}, ${TIMBRE_NAMES[pl.timbre]}.`;
+                                                const nx = nextHourOf(nextSel.input.value);
+                                                if (nx) {
+                                                  const inMin = Math.round((nx.start - Date.now()) / 60000);
+                                                  nextOut.textContent = nx.start <= new Date() ? `Now, until ${fmtT(nx.end)}` : `${fmtDay(nx.start)} ${fmtT(nx.start)} · in ${inMin >= 60 ? Math.floor(inMin / 60) + ' h ' : ''}${inMin % 60} min`;
+                                                }
+                                                locNote.textContent = S.loc ? `Using sunrise and sunset near ${S.loc.lat}°, ${S.loc.lon}° (rounded, stored only here).` : 'No location set: using equal hours from 06:00 to 18:00.';
+                                              }
+                                              function syncSession() {
+                                                if (!sessBtn) return;
+                                                sessBtn.textContent = sess.timer ? 'End session' : 'Begin session';
+                                                sessOut.textContent = sess.timer ? `${UI.fmt(sess.left)} remaining${app.engine && app.engine.ctx.state !== 'running' ? ' (paused)' : ''}` : '';
+                                              }
+                                              function locate() {
+                                                if (!navigator.geolocation) { toast('Location is unavailable here', true); return; }
+                                                navigator.geolocation.getCurrentPosition(
+                                                  (p) => { S.loc = { lat: +p.coords.latitude.toFixed(1), lon: +p.coords.longitude.toFixed(1) }; save(); refresh(); },
+                                                  () => toast('Location was not shared. Using equal hours.', true), { maximumAge: 864e5, timeout: 10000 });
+                                              }
+                                            
+                                              UI.section({ id: 'astral', title: 'Hours & Moon', order: 30, build(el) {
+                                                UI.css(`.as-now{display:flex;gap:14px;align-items:center;margin:6px 0 4px}.as-now canvas{width:44px;height:44px;flex:none}
+                                                  .as-line{font-size:14px;line-height:1.55}.as-line em{color:rgb(var(--accent));font-style:normal}
+                                                  .as-h{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;opacity:.6;margin:16px 0 4px}`);
+                                                moonCv = h('canvas', { width: 88, height: 88, 'aria-hidden': 'true' });
+                                                nowLine = h('div', { class: 'as-line' }); moonLine = h('div', { class: 'as-line', style: 'opacity:.7' });
+                                                attuneNote = UI.note(''); nextOut = UI.note(''); locNote = UI.note('');
+                                                nextSel = UI.select({ label: 'Next hour of', value: 'venus', options: CHALDEAN.map((p) => [p, `${PLANETS[p].glyph} ${PLANETS[p].name}`]), onChange: refresh });
+                                                sessBtn = UI.button('Begin session', () => (sess.timer ? stopSession() : startSession()));
+                                                sessOut = UI.note('');
+                                                el.append(
+                                                  h('div', { class: 'as-now' }, moonCv, h('div', {}, nowLine, moonLine)),
+                                                  UI.check({ label: 'Attune new castings to the hour', checked: S.attune, onChange: (v) => { S.attune = v; save(); } }),
+                                                  attuneNote,
+                                                  h('div', { class: 'sgrow' }, UI.button('Re-attune now', () => { if (!S.attune) { toast('Turn on attunement first', true); return; } UI.recompose(); })),
+                                                  nextSel, nextOut,
+                                                  h('div', { class: 'sgrow' }, UI.button('Use my location', locate), UI.button('Forget location', () => { S.loc = null; save(); refresh(); })),
+                                                  locNote,
+                                                  h('div', { class: 'as-h' }, 'Session'),
+                                                  UI.select({ label: 'Length', value: S.minutes, options: [['3', '3 minutes'], ['7', '7 minutes'], ['11', '11 minutes'], ['21', '21 minutes'], ['hour', 'Until this hour ends']], onChange: (v) => { S.minutes = v; save(); } }),
+                                                  UI.select({ label: 'At the end', value: S.endAction, options: [['forget', 'Forget (banish)'], ['return', 'Return quietly'], ['chime', 'Chime only']], onChange: (v) => { S.endAction = v; save(); } }),
+                                                  UI.check({ label: 'Enter Charge mode when it begins', checked: S.charge, onChange: (v) => { S.charge = v; save(); } }),
+                                                  h('div', { class: 'sgrow' }, sessBtn), sessOut);
+                                                refresh();
+                                              } });
+                                              setInterval(refresh, 20000);
+                                              Hooks.on('song', refresh);
+                                              return { planetaryHour, moonPhase, nextHourOf, sunTimes, startSession, stopSession };
+                                            })();
+                                            </script>
 </body>
 </html>

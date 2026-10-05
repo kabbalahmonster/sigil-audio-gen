@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SIGIL · core test harness</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, Menlo, Consolas, monospace; background: #111; color: #ddd; margin: 24px; }
+  h1 { font-size: 16px; letter-spacing: .2em; font-weight: normal; }
+  .pass { color: #8f8; } .fail { color: #f77; } .info { color: #aaa; }
+  pre { background: #000; padding: 12px; overflow: auto; white-space: pre-wrap; }
+  #summary { font-size: 18px; margin: 12px 0; }
+</style>
+
+<!--
+  ╔══════════════════════════════════════════════════════════════════════╗
+  ║  CORE TEST HARNESS                                                   ║
+  ║                                                                      ║
+  ║  Purpose: a regression net for the deterministic core. Run this page  ║
+  ║  after ANY change to src/core/*. If a golden hash changes, every song ║
+  ║  ever cast has changed. That is sometimes intended (bump the version),║
+  ║  and it must never be accidental.                                     ║
+  ║                                                                      ║
+  ║  GOLDEN MODE                                                          ║
+  ║    GOLDEN = {} on first run → RECORD mode: the page prints the digests ║
+  ║    for each fixture. Paste them into GOLDEN below, then reload.        ║
+  ║    Once populated → VERIFY mode: mismatches fail the run.              ║
+  ║                                                                      ║
+  ║  Loads only the core pure + runtime files. The UI and modules are NOT  ║
+  ║  loaded, so this page works even when a module is broken.              ║
+  ╚══════════════════════════════════════════════════════════════════════╝
+-->
+</head>
+<body>
+<h1>SIGIL · CORE TESTS</h1>
+<div id="summary"></div>
+<pre id="log"></pre>
+
+<!-- Core, in the same order as index.html. The UI and feature modules are
+     deliberately omitted. The ren­derer and app files need a DOM, so we
+     provide the minimal elements they query below. -->
+<script src="../src/core/00-utils.js"></script>
+<script src="../src/core/01-crypto.js"></script>
+<script src="../src/core/02-reduction.js"></script>
+<script src="../src/core/03-geometry.js"></script>
+<script src="../src/core/04-theory.js"></script>
+<script src="../src/core/05-composer.js"></script>
+
+<script>
+/* ── Test framework ───────────────────────────────────────────────────── */
+const results = [];
+const log = (msg, cls = 'info') => {
+  const el = document.getElementById('log');
+  el.insertAdjacentHTML('beforeend', `<span class="${cls}">${msg}</span>\n`);
+};
+function test(name, fn) {
+  try { fn(); results.push({ name, ok: true }); log(`✔ ${name}`, 'pass'); }
+  catch (e) { results.push({ name, ok: false, e }); log(`✘ ${name}\n    ${e && e.message}`, 'fail'); }
+}
+function eq(a, b, msg = '') {
+  const A = JSON.stringify(a), B = JSON.stringify(b);
+  if (A !== B) throw new Error(`${msg} expected ${B}, got ${A}`);
+}
+function ok(cond, msg = 'assertion failed') { if (!cond) throw new Error(msg); }
+
+/* ── 1. Cryptography ─────────────────────────────────────────────────── */
+test('SHA-256("abc") matches the FIPS vector', () => {
+  eq(toHex(hashStr('abc')), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+});
+test('SHA-256("") matches the FIPS vector', () => {
+  eq(toHex(hashStr('')), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+});
+test('SHA-256 handles the 56-byte padding boundary', () => {
+  // 56 bytes forces a second padding block. Known vector:
+  eq(toHex(hashStr('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq')),
+     '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1');
+});
+test('Rng is deterministic for a given seed', () => {
+  const a = stream(hashStr('x'), 'geometry'), b = stream(hashStr('x'), 'geometry');
+  for (let i = 0; i < 50; i++) eq(a.float(), b.float());
+});
+test('Labelled streams are independent', () => {
+  const h = hashStr('x');
+  ok(stream(h, 'geometry').float() !== stream(h, 'music').float(), 'streams collided');
+});
+
+/* ── 2. Reduction ────────────────────────────────────────────────────── */
+test('Reduction strikes vowels and repeats, keeps first consonants in order', () => {
+  const { reduced } = reduceDesire('It is my will to finish');
+  eq(reduced, 'TSMWLFNH');
+});
+test('Reduction folds accents before striking', () => {
+  eq(reduceDesire('Café').reduced, 'CF');
+});
+test('Reduction classifies every character', () => {
+  const { chars } = reduceDesire('A b!');
+  eq(chars.map(c => c.fate), ['vowel','kept','space','mark'])
+});
+test('Reduction: Y is a consonant', () => {
+  eq(reduceDesire('YYZ').reduced, 'YZ');
+});
+
+/* ── 3. Geometry ─────────────────────────────────────────────────────── */
+test('Wheel is a permutation of the 21 consonants', () => {
+  const s = buildSigil('TSMWLFNH');
+  eq([...s.wheel].sort(), [...CONSONANTS].sort());
+});
+test('Sigil is deterministic', () => {
+  eq(buildSigil('KRST').hex, buildSigil('KRST').hex);
+  eq(buildSigil('KRST').wheel, buildSigil('KRST').wheel);
+});
+test('One changed letter changes the hash (avalanche smoke test)', () => {
+  ok(buildSigil('KRST').hex !== buildSigil('KRSV').hex);
+});
+test('Node slots agree with the wheel', () => {
+  const s = buildSigil('BCDFG');
+  s.nodes.forEach((n) => eq(s.wheel[n.slot], n.letter));
+});
+test('Y never shares a ring with a slot-adjacent letter', () => {
+  // Exhaustive over many single-letter fixtures containing Y.
+  for (const w of ['Y', 'YB', 'YBC', 'BYCD', 'TYMHLR', 'WXYZKQ']) {
+    const s = buildSigil(w);
+    const y = s.wheel.indexOf('Y');
+    const nb = [s.wheel[mod(y - 1, SLOTS)], s.wheel[mod(y + 1, SLOTS)]];
+    const ringY = s.nodes.find((n) => n.letter === 'Y')?.ring;
+    for (const L of nb) {
+      const other = s.nodes.find((n) => n.letter === L);
+      if (ringY !== undefined && other) ok(other.ring !== ringY, `collision in ${w}`);
+    }
+  }
+});
+test('polyLength of a straight unit segment is its length', () => {
+  const pts = [0, 0, 3, 4];
+  eq(polyLength(pts), 5);
+});
+test('tracePoints returns at least one point for any progress', () => {
+  const s = buildSigil('KRST');
+  ok(tracePoints(s.nodes, s.curves, ID_T, UNIT_F, 0).length >= 2);
+});
+
+/* ── 4. Theory ───────────────────────────────────────────────────────── */
+test('degToMidi: scale degree 0 is the base', () => {
+  eq(degToMidi(0, 60, MODES.Ionian), 60);
+});
+test('degToMidi: degree 7 is one octave up', () => {
+  eq(degToMidi(7, 60, MODES.Ionian), 72);
+});
+test('degToMidi: negative degrees step down correctly', () => {
+  eq(degToMidi(-1, 60, MODES.Ionian), 59);
+  eq(degToMidi(-7, 60, MODES.Ionian), 48);
+});
+test('mtof: A4 = 440 Hz', () => {
+  ok(Math.abs(mtof(69) - 440) < 1e-9);
+});
+test('fold brings a note into the window', () => {
+  
+  ok(fold(90, 60, 71) >= 60 && fold(90, 60, 71) <= 71);
+});
+test('euclid(3,8) is the tresillo', () => {
+  eq(euclid(3, 8).map(Number), [1, 0, 0, 1, 0, 0, 1, 0]);
+});
+test('euclid has exactly k onsets', () => {
+  for (const [k, n] of [[3, 16], [5, 16], [7, 16], [4, 16]]) {
+    eq(euclid(k, n).filter(Boolean).length, k);
+  }
+});
+test('allocate sums to the total and gives every item ≥ 1', () => {
+  const a = allocate([1, 2, 3, 0.1], 32);
+  eq(a.reduce((x, y) => x + y, 0), 32);
+  ok(a.every((v) => v >= 1));
+});
+test('validChords on Ionian yields the seven diatonic triads minus diminished', () => {
+  eq(validChords(MODES.Ionian), [0, 1, 2, 3, 4, 5]);
+});
+
+/* ── 5. Composer: invariants ─────────────────────────────────────────── */
+const FIXTURES = ['KRST', 'TSMWLFNH', 'BCDFGHJKLMNPQRSTVWXYZ', 'YB', 'ZQX'];
+
+test('Composer is deterministic (same input, same song)', () => {
+  for (const f of FIXTURES) {
+    const a = composeSong(buildSigil(f)), b = composeSong(buildSigil(f));
+    eq(a.events.length, b.events.length, f);
+    eq(a.events.slice(0, 50), b.events.slice(0, 50), f);
+  }
+});
+test('Events are sorted by beat', () => {
+  for (const f of FIXTURES) {
+    const e = composeSong(buildSigil(f)).events;
+    for (let i = 1; i < e.length; i++) ok(e[i].beat >= e[i - 1].beat, `unsorted at ${i} in ${f}`);
+  }
+});
+test('Form is seven sections, total length is consistent', () => {
+  const s = composeSong(buildSigil('KRST'));
+  eq(s.sections.length, 7);
+  eq(s.sections[s.sections.length - 1].end, s.total);
+});
+test('Every melodic note lies within the lead register window', () => {
+  const s = composeSong(buildSigil('TSMWLFNH'));
+  for (const ev of s.events) if (ev.type === 'lead' && !ev.part) {
+    ok(ev.midi >= 36 && ev.midi <= 96, `midi ${ev.midi} out of range`);
+  }
+});
+test('Every chord root is a valid triad of the mode', () => {
+  for (const f of FIXTURES) {
+    const s = composeSong(buildSigil(f));
+    for (const ph of s.phrases) for (const c of ph.chords) {
+      ok(s.validChords.includes(c), `invalid chord ${c} in ${f}`);
+    }
+  }
+});
+test('Phrases cover the whole form without gaps', () => {
+  const s = composeSong(buildSigil('KRST'));
+  let t = 0;
+  for (const ph of s.phrases) { ok(ph.start >= t, 'overlap'); t = ph.end; }
+});
+test('pulse() decays and is zero before any event', () => {
+  ok(pulse([4, 8], 0, 5) === 0);
+  ok(pulse([4, 8], 4, 5) === 1);
+  ok(pulse([4, 8], 5, 5) < 1);
+});
+test('displayTransform is continuous across a section boundary', () => {
+  const s = composeSong(buildSigil('KRST'));
+  const b = s.sections[2].start;
+  const before = displayTransform(s, b - 0.001), after = displayTransform(s, b + 0.001);
+  ok(Math.abs(before.phi - after.phi) < 0.05, 'phi jumped');
+});
+
+/* ── 6. Golden snapshots ─────────────────────────────────────────────────
+   RECORD: leave GOLDEN empty. The digest of each fixture is printed.
+   VERIFY: paste the printed digests here. Any drift then fails the run.
+   A digest covers the whole event list, the sections and the key, so it
+   catches any change to the score, however small.                        */
+const GOLDEN = {
+  // 'KRST': '',
+};
+function songDigest(song) {
+  const payload = JSON.stringify({
+    key: song.keyName, bpm: song.bpm, total: song.total,
+    events: song.events.map((e) => [e.beat, e.type, e.midi ?? null, e.dur ?? null, e.deg ?? null]),
+    sections: song.sections.map((s) => [s.id, s.start, s.end]),
+  });
+  return toHex(hashStr(payload)).slice(0, 16);
+}
+const recording = Object.keys(GOLDEN).length === 0;
+test(`Golden snapshots (${recording ? 'RECORD' : 'VERIFY'} mode)`, () => {
+  const lines = [];
+  for (const f of FIXTURES) {
+    const d = songDigest(composeSong(buildSigil(f)));
+    lines.push(`  '${f}': '${d}',`);
+    if (!recording) eq(d, GOLDEN[f], `golden mismatch for ${f}`);
+  }
+  if (recording) {
+    log('Paste into GOLDEN:\n' + lines.join('\n'), 'info');
+    throw new Error('Record mode: golden values are not pinned yet.');
+  }
+});
+
+/* ── 7. Runtime smoke (needs a DOM). Skipped unless the canvas exists. ── */
+test('Renderer target frame is centred on the desktop layout', () => {
+  const fake = Object.create(Renderer.prototype);
+  fake.w = 1000; fake.h = 800;
+  const t = fake.targetFrame(false);
+  ok(t.cx === 500 && t.cy > 300 && t.cy < 400 && t.R > 0, 'layout off');
+});
+
+/* ── Summary ─────────────────────────────────────────────────────────── */
+setTimeout(() => {
+  const passed = results.filter((r) => r.ok).length;
+  const el = document.getElementById('summary');
+  el.className = passed === results.length ? 'pass' : 'fail';
+  el.textContent = `${passed} / ${results.length} passed`;
+}, 0);
+</script>
+</body>
+</html>

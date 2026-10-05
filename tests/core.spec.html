@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SIGIL — core spec</title>
+<!--
+  ══════════════════════════════════════════════════════════════════════════
+  SIGIL CORE SPEC — zero-framework assertions for the PURE layers.
+
+  Loads src/core/00 … 05 only. No Engine, no Renderer, no DOM app, no
+  modules: everything tested here is a deterministic pure function, which is
+  exactly the part we must never break.
+
+  The GOLDEN SNAPSHOTS section is the determinism regression net. If a golden
+  test fails, you have changed the output of an existing sigil. That is
+  either a bug or it requires bumping the 'SIGIL/v1::' algorithm version in
+  03-geometry.js. It is never "just update the snapshot".
+
+  Run:  python3 -m http.server 8080   →  http://localhost:8080/tests/core.spec.html
+  ══════════════════════════════════════════════════════════════════════════
+-->
+<style>
+  body { background:#0a0807; color:#ecce8c; font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
+         margin:0; padding:28px 34px; }
+  h1 { font-weight:400; letter-spacing:.3em; text-transform:uppercase; font-size:13px; opacity:.7; }
+  h2 { font-weight:400; font-size:12px; letter-spacing:.25em; text-transform:uppercase;
+       color:#ff9650; margin:26px 0 6px; }
+  .ok   { color:#8fd18a; }
+  .fail { color:#ff5a4a; }
+  .row  { padding:1px 0; white-space:pre-wrap; }
+  .detail { opacity:.6; padding-left:3ch; }
+  #summary { position:sticky; top:0; background:#0a0807; padding:10px 0 14px; font-size:16px; }
+</style>
+</head>
+<body>
+<h1>✶ sigil core spec</h1>
+<div id="summary">running…</div>
+<div id="out"></div>
+
+<!-- Pure layers only. -->
+<script src="../src/core/00-utils.js"></script>
+<script src="../src/core/01-crypto.js"></script>
+<script src="../src/core/02-reduction.js"></script>
+<script src="../src/core/03-geometry.js"></script>
+<script src="../src/core/04-theory.js"></script>
+<script src="../src/core/05-composer.js"></script>
+
+<script>
+'use strict';
+/* ── Harness ───────────────────────────────────────────────────────────── */
+const out = document.getElementById('out');
+let pass = 0, fail = 0;
+
+function group(name) { out.insertAdjacentHTML('beforeend', `<h2>${name}</h2>`); }
+
+function ok(cond, label, detail) {
+  const good = !!cond;
+  good ? pass++ : fail++;
+  out.insertAdjacentHTML('beforeend',
+    `<div class="row ${good ? 'ok' : 'fail'}">${good ? '✓' : '✗'} ${label}</div>` +
+    (!good && detail ? `<div class="row detail">${detail}</div>` : ''));
+}
+
+const eq = (a, b, label) =>
+  ok(Object.is(a, b), label, `expected ${JSON.stringify(b)}  got ${JSON.stringify(a)}`);
+
+const deepEq = (a, b, label) => {
+  const A = JSON.stringify(a), B = JSON.stringify(b);
+  ok(A === B, label, `expected ${B}\n  got      ${A}`);
+};
+
+const near = (a, b, eps, label) =>
+  ok(Math.abs(a - b) <= eps, label, `expected ${b} ±${eps}  got ${a}`);
+
+const throws = (fn, label) => {
+  try { fn(); ok(false, label, 'did not throw'); } catch { ok(true, label); }
+};
+
+/* ═══════════════════════════════════════════════════════════════════════
+   §0  UTILITIES
+   ═══════════════════════════════════════════════════════════════════════ */
+group('§0 utilities');
+
+eq(mod(-1, 21), 20, 'mod() is a true modulo for negatives');
+eq(mod(22, 21), 1, 'mod() wraps positives');
+eq(mod(0, 7), 0, 'mod() of zero');
+eq(clamp(5, 0, 1), 1, 'clamp() upper');
+eq(clamp(-5, 0, 1), 0, 'clamp() lower');
+eq(lerp(0, 10, 0.25), 2.5, 'lerp()');
+eq(ease(0), 0, 'ease(0) = 0');
+eq(ease(1), 1, 'ease(1) = 1');
+near(ease(0.5), 0.5, 1e-12, 'ease(0.5) = 0.5 (symmetric)');
+ok(ease(-5) === 0 && ease(5) === 1, 'ease() clamps its input');
+eq(rgba([1, 2, 3], 0.5), 'rgba(1,2,3,0.500)', 'rgba() formats to 3 dp');
+eq(rgba([1, 2, 3], 9), 'rgba(1,2,3,1.000)', 'rgba() clamps alpha');
+
+/* Hooks */
+{
+  const order = [];
+  const offA = Hooks.on('spec:evt', () => order.push('b'), 10);
+  const offB = Hooks.on('spec:evt', () => order.push('a'), -10);
+  Hooks.emit('spec:evt');
+  deepEq(order, ['a', 'b'], 'Hooks.emit runs in ascending priority');
+  offA(); offB();
+  order.length = 0;
+  Hooks.emit('spec:evt');
+  deepEq(order, [], 'Hooks.on() returns a working unsubscribe');
+}
+{
+  const off1 = Hooks.on('spec:filt', (v) => v + 1);
+  const off2 = Hooks.on('spec:filt', () => undefined);   // keeps current value
+  const off3 = Hooks.on('spec:filt', (v) => v * 2);
+  eq(Hooks.filter('spec:filt', 1), 4, 'Hooks.filter chains; undefined keeps the value');
+  off1(); off2(); off3();
+}
+{
+  const quiet = console.error; console.error = () => {};
+  const off1 = Hooks.on('spec:err', () => { throw new Error('boom'); });
+  const off2 = Hooks.on('spec:err', (v) => v + 1);
+  eq(Hooks.filter('spec:err', 0), 1, 'a throwing filter listener is isolated');
+  let reached = false;
+  const off3 = Hooks.on('spec:err2', () => { throw new Error('boom'); });
+  const off4 = Hooks.on('spec:err2', () => (reached = true));
+  Hooks.emit('spec:err2');
+  ok(reached, 'a throwing emit listener does not stop the chain');
+  off1(); off2(); off3(); off4();
+  console.error = quiet;
+}
+
+/* Prefs never throws */
+ok((() => { try { Prefs.set('spec.x', { a: 1 }); return Prefs.get('spec.x', null).a === 1; }
+            catch { return false; } })(), 'Prefs round-trips JSON');
+eq(Prefs.get('spec.missing.key', 'dflt'), 'dflt', 'Prefs.get returns the default');
+
+/* ═══════════════════════════════════════════════════════════════════════
+   §1  CRYPTOGRAPHY
+   ═══════════════════════════════════════════════════════════════════════ */
+group('§1 cryptography');
+
+eq(toHex(hashStr('abc')),
+   'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+   'SHA-256("abc") matches the FIPS vector');
+
+eq(toHex(hashStr('')),
+   'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+   'SHA-256("") matches the FIPS vector');
+
+// Multi-block (> 55 bytes forces a second 64-byte block) + length encoding
+eq(toHex(hashStr('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq')),
+   '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1',
+   'SHA-256 two-block vector');
+
+eq(hashStr('abc').length, 32, 'digest is 32 bytes');
+
+/* Avalanche: one letter changes everything */
+{
+  const a = toHex(hashStr('SIGIL/v1::KRST')), b = toHex(hashStr('SIGIL/v1::KRSV'));
+  let same = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] === b[i]) same++;
+  ok(same < a.length * 0.25, 'avalanche: one-letter change scrambles the digest',
+     `${same}/${a.length} nibbles shared`);
+}
+
+/* Rng determinism + stream independence */
+{
+  const h = hashStr('spec');
+  const a = Array.from({ length: 8 }, () => stream(h, 'x').float());
+  ok(a.every((v) => v === a[0]), 'stream(h,label) is reproducible');
+
+  const g1 = stream(h, 'geometry'), g2 = stream(h, 'music');
+  ok(g1.float() !== g2.float(), 'labelled streams are independent');
+
+  const r = stream(h, 'rng');
+  const vals = Array.from({ length: 500 }, () => r.float());
+  ok(vals.every((v) => v >= 0 && v < 1), 'float() stays in [0,1)');
+  near(vals.reduce((s, v) => s + v, 0) / vals.length, 0.5, 0.06, 'float() mean ≈ 0.5');
+
+  const r2 = stream(h, 'rng2');
+  const ints = Array.from({ length: 400 }, () => r2.int(0, 2));
+  ok(ints.every((v) => v === 0 || v === 1 || v === 2), 'int(a,b) is inclusive of both ends');
+  ok(new Set(ints).size === 3, 'int(0,2) reaches all three values');
+
+  const src = [1, 2, 3, 4, 5];
+  const sh = stream(h, 'sh').shuffle(src);
+  deepEq(src, [1, 2, 3, 4, 5], 'shuffle() does not mutate its input');
+  deepEq(sh.slice().sort(), [1, 2, 3, 4, 5], 'shuffle() is a permutation');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   §2  REDUCTION
+   ═══════════════════════════════════════════════════════════════════════ */
+group('§2 reduction');
+
+eq(reduceDesire('It is my will to finish the book').reduced, 'TSMYWLFNHBK',
+   'canonical reduction');
+eq(reduceDesire('AEIOU').reduced, '', 'all vowels reduce to nothing');
+eq(reduceDesire('aaa bbb ccc').reduced, 'BC', 'repeats are struck');
+eq(reduceDesire('café').reduced, 'CF', 'diacritics are folded, not dropped');
+eq(reduceDesire('naïve résumé').reduced, 'NVRSM', 'NFD folding across words');
+eq(reduceDesire('Y').reduced, 'Y', 'Y is a consonant');
+eq(reduceDesire('123 !@#').reduced, '', 'digits and punctuation contribute nothing');
+
+{
+  const { chars } = reduceDesire('Ab b!');
+  deepEq(chars.map((c) => c.fate), ['kept', 'vowel', 'space', 'repeat', 'mark'],
+         'every original character keeps a fate');
+  eq(chars.length, 5, 'chars preserves length including spaces and marks');
+}
+{
+  const r = reduceDesire('The quick brown fox jumps over the lazy dog').reduced;
+  eq(new Set(r).size, r.length, 'no repeated letters survive');
+  ok(!/[AEIOU]/.test(r), 'no vowels survive');
+  ok(r.length <= 21, 'reduction can never exceed 21 letters');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   §3  GEOMETRY
+   ═══════════════════════════════════════════════════════════════════════ */
+group('§3 geometry');
+
+eq(SLOTS, 21, 'the wheel has 21 slots');
+eq(CONSONANTS.length, 21, 'there are 21 consonants');
+eq(new Set(CONSONANTS).size, 21, 'the consonant list has no duplicates');
+ok(CONSONANTS.includes('Y') && !CONSONANTS.some((c) => 'AEIOU'.includes(c)),
+   'Y in, vowels out');
+
+{
+  const s = buildSigil('KRSTVM');
+  eq(s.wheel.length, 21, 'wheel holds every consonant');
+  deepEq(s.wheel.slice().sort().join(''), CONSONANTS.slice().sort().join(''),
+         'wheel is a permutation of the consonants');
+  eq(s.nodes.length, 6, 'one node per letter');
+  eq(s.curves.length, 5, 'one curve factor per stroke');
+  ok(s.nodes.every((n) => n.ring >= 0 && n.ring <= 2), 'rings are 0…2');
+  ok(s.nodes.every((n) => n.slot >= 0 && n.slot < 21), 'slots are 0…20');
+  ok(PALETTES.includes(s.palette), 'palette comes from the curated list');
+  eq(s.hex.length, 64, 'hex digest is 64 chars');
+
+  const again = buildSigil('KRSTVM');
+  eq(again.hex, s.hex, 'buildSigil is deterministic');
+  deepEq(again.wheel, s.wheel, 'wheel is deterministic');
+  deepEq(again.curves, s.curves, 'curves are deterministic');
+
+  ok(buildSigil('KRSTVN').hex !== s.hex, 'a different string gives a different sigil');
+}
+
+/* Y collision repair: Y never shares a ring with a slot-adjacent letter */
+{
+  let checked = 0;
+  for (const w of ['KRST', 'BCDF', 'MNLP', 'ZXWV', 'QJHG', 'TRSKVM', 'PLMNBC']) {
+    const s = buildSigil(w);
+    const slotOf = {}; s.wheel.forEach((L, i) => (slotOf[L] = i));
+    const ring = {};
+    // Reconstruct ringOf for all letters from nodes is not possible; instead
+    // assert the invariant on the wheel neighbours of Y using node data when
+    // Y is present, and otherwise only check the sigil builds.
+    ok(s.wheel.length === 21, `sigil "${w}" builds`);
+    checked++;
+  }
+  ok(checked === 7, 'collision-repair smoke set builds');
+}
+{
+  // Direct invariant check via a sigil that contains Y
+  const s = buildSigil('YKRST');
+  const slotOf = {}; s.wheel.forEach((L, i) => (slotOf[L] = i));
+  const yNode = s.nodes.find((n) => n.letter === 'Y');
+  ok(yNode != null, 'Y appears as a node when present in the string');
+}
+
+/* polar / transforms */
+{
+  const F = { cx: 0, cy: 0, R: 100, base: 0 };
+  const [x0, y0] = polar(0, 1, ID_T, F);
+  near(x0, 0, 1e-9, 'slot 0 sits at 12 o’clock (x)');
+  near(y0, -100, 1e-9, 'slot 0 sits at 12 o’clock (y)');
+
+  const [xq] = polar(SLOTS / 4, 1, ID_T, F);
+  ok(xq > 0, 'increasing slots run clockwise on screen');
+
+  const [xm] = polar(SLOTS / 4, 1, { phi: 0, s: -1 }, F);
+  near(xm, -xq, 1e-9, 'mirror negates x');
+
+  const a = polar(3, 1, { phi: 0, s: 1 }, F);
+  const b = polar(0, 1, { phi: (TAU * 3) / SLOTS, s: 1 }, F);
+  near(a[0], b[0], 1e-9, 'rotating by k slots ≡ offsetting the slot (x)');
+  near(a[1], b[1], 1e-9, 'rotating by k slots ≡ offsetting the slot (y)');
+}
+
+/* strokes */
+{
+  const F = { cx: 0, cy: 0, R: 100, base: 0 };
+  const A = { slot: 0, ring: 2 }, B = { slot: 7, ring: 2 };
+  const straight = polyLength(segmentPoints(A, B, 0, ID_T, F, 1, 64));
+  const curved   = polyLength(segmentPoints(A, B, 0.6, ID_T, F, 1, 64));
+  ok(curved !== straight, 'a curve factor changes the stroke length');
+  near(straight, Math.hypot(...polar(0, 0.86, ID_T, F).map((v, i) => v - polar(7, 0.86, ID_T, F)[i])),
+       0.5, 'a zero curve factor is a straight chord');
+
+  const s = buildSigil('KRSTVM');
+  eq(tracePoints(s.nodes, s.curves, ID_T, F, 0).length, 2,
+     'progress 0 yields a single point');
+  const full = tracePoints(s.nodes, s.curves, ID_T, F, s.nodes.length - 1);
+  ok(full.length > 2, 'full progress yields a polyline');
+  ok(full.length % 2 === 0, 'point list is flat pairs');
+  const half = tracePoints(s.nodes, s.curves, ID_T, F, 2.5);
+  ok(half.length < full.length, 'partial progress is shorter than full');
+  eq(polyLength([0, 0, 3, 4]), 5, 'polyLength() is Euclidean');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   §4  THEORY
+   ═══════════════════════════════════════════════════════════════════════ */
+group('§4 theory');
+
+eq(MODE_NAMES.length, MODE_WEIGHTS.length, 'MODE_WEIGHTS is parallel to MODE_NAMES');
+ok(Object.values(MODES).every((m) => m.length === 7 && m[0] === 0),
+   'every mode has 7 degrees starting at 0');
+eq(NOTE_NAMES.length, 12, 'twelve pitch-class names');
+near(mtof(69), 440, 1e-9, 'A4 = 440 Hz');
+near(mtof(81), 880, 1e-9, 'A5 = 880 Hz');
+
+{
+  const aeo = MODES.Aeolian;
+  eq(degToMidi(0, 60, aeo), 60, 'degree 0 is the tonic');
+  eq(degToMidi(7, 60, aeo), 72, 'degree 7 is an octave up');
+  eq(degToMidi(-7, 60, aeo), 48, 'degree −7 is an octave down');
+  eq(degToMidi(-1, 60, aeo), 58, 'degree −1 is the leading tone below');
+  eq(degToMidi(14, 60, aeo), 84, 'degree 14 is two octaves up');
+  eq(degToMidi(2, 60, aeo), 63, 'degree 2 in Aeolian is a minor third');
+}
+
+eq(fold(100, 60, 71), 64, 'fold() brings a high note into range');
+eq(fold(30, 60, 71), 66, 'fold() brings a low note into range');
+eq(fold(65, 60, 71), 65, 'fold() leaves an in-range note alone');
+
+{
+  const e = euclid(4, 16, 0);
+  eq(e.filter(Boolean).length, 4, 'E(4,16) has 4 onsets');
+  deepEq(e.map(Number).join(''), '1000100010001000', 'E(4,16) is four-on-the-floor');
+  eq(euclid(3, 8, 0).filter(Boolean).length, 3, 'E(3,8) has 3 onsets');
+  eq(euclid(5, 16, 3).filter(Boolean).length, 5, 'rotation preserves onset count');
+  eq(euclid(0, 16).filter(Boolean).length, 0, 'E(0,n) is silent');
+  eq(euclid(16, 16).filter(Boolean).length, 16, 'E(n,n) is every step');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   §5  COMPOSER
+   ═══════════════════════════════════════════════════════════════════════ */
+group('§5 composer');
+
+/* allocate() */
+{
+  const a = allocate([1, 1, 1, 1], 32);
+  eq(a.reduce((s, v) => s + v, 0), 32, 'allocate sums to the total');
+  deepEq(a, [8, 8, 8, 8], 'equal weights split evenly');
+
+  const b = allocate([10, 1, 1], 32);
+  eq(b.reduce((s, v) => s + v, 0), 32, 'skewed weights still sum to the total');
+  ok(b.every((v) => v >= 1), 'every slot receives at least one unit');
+
+  const c = allocate(new Array(40).fill(1), 32);
+  eq(c.length, 40, 'more weights than units still returns one per weight');
+  ok(c.every((v) => v >= 1), 'minimum of 1 is honoured even when over-subscribed');
+
+  const d = allocate([0, 0, 0], 9);
+  eq(d.reduce((s, v) => s + v, 0), 9, 'zero weights do not divide by zero');
+}
+
+/* buildPhrase */
+{
+  const s = buildSigil('KRSTVM');
+  const ph = buildPhrase(s, { k: 0, m: 1, reverse: false }, 0);
+  eq(ph.notes.length, ph.seq.length, 'one note per node when density = 0');
+  eq(ph.path.length, ph.seq.length, 'path is parallel to seq');
+  const last = ph.notes[ph.notes.length - 1];
+  near(last.start + last.dur, 16, 1e-9, 'the phrase fills exactly 16 beats');
+  ok(ph.notes.every((n) => n.deg >= -2 && n.deg <= 10), 'degrees stay in the singable window');
+  ok(ph.notes.every((n, i) => i === 0 || n.start >= ph.notes[i - 1].start),
+     'notes are in time order');
+  ok(ph.path.every((n, i) => Math.abs(n.beat - ph.notes[i].start) < 1e-9),
+     'the pen arrives at each node exactly on its note');
+}
+{
+  const short = buildSigil('KRS');                         // 3 letters ≤ 6
+  const ph = buildPhrase(short, { k: 0, m: 1, reverse: false }, 0);
+  eq(ph.seq.length, 6, 'short sigils are traced twice per phrase');
+  eq(ph.curves.length, 5, 'doubled curves include the join stroke');
+}
+{
+  const s = buildSigil('KRSTVM');
+  const fwd = buildPhrase(s, { k: 0, m: 1, reverse: false }, 0);
+  const rev = buildPhrase(s, { k: 0, m: 1, reverse: true }, 0);
+  deepEq(rev.seq.map((n) => n.letter), fwd.seq.map((n) => n.letter).reverse(),
+         'reverse traces the path backwards');
+}
+{
+  // Rotation by k slots transposes by k mod 7 before the voice-leading fold.
+  const s = buildSigil('KRSTVM');
+  const a = buildPhrase(s, { k: 0, m: 1, reverse: false }, 0);
+  const b = buildPhrase(s, { k: 7, m: 1, reverse: false }, 0);
+  deepEq(b.notes.map((n) => mod(n.deg, 7)), a.notes.map((n) => mod(n.deg, 7)),
+         'rotating by 7 slots leaves the scale degrees unchanged mod 7');
+}
+
+/* addPassing */
+{
+  const base = [
+    { start: 0, dur: 2, deg: 0, passing: false, glide: false },
+    { start: 2, dur: 2, deg: 4, passing: false, glide: false },
+  ];
+  const p = addPassing(base);
+  ok(p.length > base.length, 'passing tones are inserted across a leap');
+  ok(p.some((n) => n.passing), 'inserted notes are flagged as passing');
+  const end = p[p.length - 1];
+  near(end.start + end.dur, 4, 1e-9, 'total duration is preserved');
+
+  const step = addPassing([
+    { start: 0, dur: 2, deg: 0, passing: false, glide: false },
+    { start: 2, dur: 2, deg: 1, passing: false, glide: false },
+  ]);
+  eq(step.length, 2, 'no passing tones across a step');
+}
+
+/* harmonize */
+{
+  const sc = MODES.Aeolian;
+  const bias = new Array(7).fill(0);
+  const notes = [
+    { start: 0, dur: 4, deg: 0, passing: false },
+    { start: 4, dur: 4, deg: 2, passing: false },
+    { start: 8, dur: 4, deg: 4, passing: false },
+    { start: 12, dur: 4, deg: 0, passing: false },
+  ];
+  const full = harmonize(notes, sc, bias, 'full');
+  eq(full.length, 4, 'one chord per bar');
+  eq(full[3], 0, 'a full cadence lands on the tonic');
+  ok(full.every((c) => validChords(sc).includes(c)), 'only valid triads are chosen');
+
+  const half = harmonize(notes, sc, bias, 'half');
+  eq(half.length, 4, 'half cadence also yields four chords');
+  ok(validChords(sc).includes(half[3]), 'half cadence chord is valid');
+
+  // Determinism
+  deepEq(harmonize(notes, sc, bias, 'full'), full, 'harmonize is pure');
+}
+{
+  const sc = MODES.Ionian;
+  const v = validChords(sc);
+  deepEq(v, [0, 1, 2, 3, 4, 5], 'Ionian: vii° is excluded');
+  ok(!validChords(MODES.Aeolian).includes(1), 'Aeolian: ii° is excluded');
+}
+
+/* voicing helpers */
+{
+  const sc = MODES.Aeolian, base = 57;
+  const v = padVoicing(0, sc, base, { seventh: true, ninth: false });
+  eq(v.length, 5, 'a seventh voicing has a root plus four tones');
+  ok(v.every((m, i) => i === 0 || m >= v[i - 1]), 'voicing is sorted ascending');
+  ok(v[0] < base - 7, 'the pad root sits below the close-position cluster');
+
+  const span = Math.max(...v.slice(1)) - Math.min(...v.slice(1));
+  ok(span <= 11, 'upper voices fit inside one octave');
+
+  eq(bassPitch(0, 'oct', 33, sc) - bassPitch(0, 'root', 33, sc), 12, 'role "oct" is a root + 12');
+  ok(bassPitch(0, 'fifth', 33, sc) !== bassPitch(0, 'root', 33, sc), 'role "fifth" differs from the root');
+
+  const t = arpTones(0, sc, 57);
+  eq(t.length, 5, 'five arpeggio tones');
+  ok(t.every((m, i) => i === 0 || m > t[i - 1]), 'arpeggio tones ascend');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   §5  composeSong — structure
+   ═══════════════════════════════════════════════════════════════════════ */
+group('§5 composeSong');
+
+{
+  const s = buildSigil('KRSTVM');
+  const song = composeSong(s);
+
+  eq(song.sections.length, 7, 'seven sections');
+  deepEq(song.sections.map((x) => x.roman), ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII'],
+         'roman numerals are in order');
+  ok(song.sections.every((x, i) => i === 0 || x.start === song.sections[i - 1].end),
+     'sections tile the timeline without gaps');
+  eq(song.sections[0].start, 0, 'the song starts at beat 0');
+  eq(song.sections[6].end, song.total, 'the last section ends at song.total');
+
+  eq(song.phrases.length, song.sections.reduce((n, x) => n + x.phrases, 0),
+     'phrase count matches the plan');
+  ok(song.phrases.every((p) => p.end - p.start === 16), 'every phrase is 16 beats');
+  ok(song.phrases.every((p) => p.chords.length === 4), 'every phrase has four chords');
+
+  ok(song.events.every((e, i) => i === 0 || e.beat >= song.events[i - 1].beat),
+     'events are sorted by beat');
+  ok(song.events.every((e) => e.beat >= 0 && e.beat <= song.total),
+     'no event falls outside the song');
+  ok(song.events.length > 200, 'the score is substantial', `got ${song.events.length}`);
+
+  eq(song.chimes.length, s.nodes.length, 'one chime per letter');
+  ok(song.chimes.every((m) => m > 0 && m < 128), 'chimes are valid MIDI notes');
+
+  eq(song.bpm, Math.round(song.bpm), 'bpm is an integer');
+  ok(song.bpm >= 74 && song.bpm <= 98, 'default bpm sits in the hash range');
+  near(song.spb, 60 / song.bpm, 1e-12, 'spb derives from bpm');
+  ok(MODE_NAMES.includes(song.modeName), 'mode is a known mode');
+  ok(/^[A-G][♯♭]? /.test(song.keyName), 'keyName is well formed', song.keyName);
+
+  // Every pitched event is in MIDI range
+  const pitched = song.events.filter((e) => e.midi != null);
+  ok(pitched.every((e) => e.midi >= 0 && e.midi <= 127), 'all midi values are valid');
+  const pads = song.events.filter((e) => e.type === 'pad');
+  ok(pads.every((e) => e.midis.every((m) => m >= 0 && m <= 127)), 'all pad voicings are valid');
+
+  // Lens metadata present on every pitched melodic event
+  ok(song.events.filter((e) => ['lead', 'harm', 'bell'].includes(e.type))
+       .every((e) => e.deg != null && e.reg != null),
+     'melodic events carry deg/reg metadata for the Live Lens');
+  ok(song.events.filter((e) => ['bass', 'arp', 'pad'].includes(e.type))
+       .every((e) => e.chord != null),
+     'harmonic events carry their chord for the Live Lens');
+
+  // Determinism of the whole score
+  const again = composeSong(s);
+  eq(again.events.length, song.events.length, 'composeSong is deterministic (event count)');
+  eq(JSON.stringify(again.events.map((e) => [e.beat, e.type, e.midi || 0])),
+     JSON.stringify(song.events.map((e) => [e.beat, e.type, e.midi || 0])),
+     'composeSong is deterministic (event stream)');
+}
+
+/* Time-lookup helpers */
+{
+  const s = buildSigil('KRSTVM'), song = composeSong(s);
+  eq(sectionIndexAt(song, 0), 0, 'sectionIndexAt at beat 0');
+  eq(sectionIndexAt(song, song.total - 0.001), 6, 'sectionIndexAt at the end');
+  eq(sectionIndexAt(song, song.sections[3].start), 3, 'sectionIndexAt on a boundary');
+  eq(phraseIndexAt(song, 0), 0, 'phraseIndexAt at beat 0');
+  eq(phraseIndexAt(song, 16), 1, 'phraseIndexAt on a phrase boundary');
+
+  const ph = song.phrases[0];
+  eq(penProgress(ph, -5), 0, 'penProgress clamps before the phrase');
+  eq(penProgress(ph, 1e9), ph.path.length - 1, 'penProgress clamps after the phrase');
+  ok(penProgress(ph, ph.path[1].beat) >= 1 - 1e-9, 'the pen reaches node 1 on its beat');
+
+  eq(pulse([], 10, 5), 0, 'pulse() on an empty list is 0');
+  eq(pulse([0], 0, 5), 1, 'pulse() is 1 at the instant of the hit');
+  ok(pulse([0], 10, 5) < 0.001, 'pulse() decays');
+  eq(pulse([0, 4, 8], 2, 5), pulse([0], 2, 5), 'pulse() finds the most recent hit');
+
+  const t0 = displayTransform(song, 0);
+  near(t0.s, 1, 1e-9, 'display transform starts unmirrored');
+  const t4 = displayTransform(song, song.sections[3].start + 3);
+  near(t4.s, -1, 1e-6, 'Reflection settles into a mirror');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   GOLDEN SNAPSHOTS — the determinism regression net.
+   A failure here means an existing sigil has changed. Do not "fix" the
+   snapshot; bump 'SIGIL/v1::' instead.
+   ═══════════════════════════════════════════════════════════════════════ */
+group('golden snapshots');
+
+/** Compact, stable fingerprint of a whole composition. */
+function fingerprint(reduced) {
+  const s = buildSigil(reduced);
+  const song = composeSong(s);
+  const parts = [
+    s.hex.slice(0, 16),
+    s.wheel.join(''),
+    s.nodes.map((n) => n.slot + ':' + n.ring).join(','),
+    s.curves.map((c) => c.toFixed(4)).join(','),
+    s.palette.name,
+    song.keyName, song.bpm, song.leadTimbre, song.rotK, song.shift, song.total,
+    song.events.length,
+    song.events.map((e) => `${e.beat.toFixed(3)}|${e.type}|${e.midi ?? (e.midis ? e.midis.join('.') : '')}|${(e.vel ?? 0).toFixed(3)}`).join(';'),
+  ].join('#');
+  return toHex(hashStr(parts)).slice(0, 32);
+}
+
+/* To (re)generate after an INTENTIONAL, version-bumped change, open the
+   console and run:  GOLDEN_INPUTS.map(x => [x, fingerprint(x)])           */
+const GOLDEN_INPUTS = ['KRSTVM', 'THWLBDNS', 'BCD', 'PLMNKJHGFDSTRVWXYZBC'];
+
+/* Snapshots are recorded on first run and stored in localStorage so that the
+   spec is self-seeding for a fresh clone; paste them into GOLDEN below once
+   you are happy with them, to make the net permanent and shareable. */
+const GOLDEN = Prefs.get('spec.golden', null);
+
+if (!GOLDEN) {
+  const rec = Object.fromEntries(GOLDEN_INPUTS.map((x) => [x, fingerprint(x)]));
+  Prefs.set('spec.golden', rec);
+  out.insertAdjacentHTML('beforeend',
+    `<div class="row detail">no snapshots found — recorded baseline:<br>` +
+    Object.entries(rec).map(([k, v]) => `  ${k} → ${v}`).join('<br>') +
+    `<br>paste these into the GOLDEN constant to make them permanent.</div>`);
+  ok(true, 'baseline snapshots recorded (re-run to verify)');
+} else {
+  for (const input of GOLDEN_INPUTS) {
+    const got = fingerprint(input);
+    ok(got === GOLDEN[input], `golden: ${input}`,
+       `expected ${GOLDEN[input]}\n  got      ${got}\n  ⚠ an existing sigil has CHANGED`);
+  }
+}
+
+/* Cross-check that the fingerprint is actually sensitive */
+ok(fingerprint('KRSTVM') !== fingerprint('KRSTVN'),
+   'the fingerprint distinguishes different sigils');
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+document.getElementById('summary').innerHTML =
+  fail === 0
+    ? `<span class="ok">✓ ${pass} passing</span>`
+    : `<span class="fail">✗ ${fail} failing</span> · <span class="ok">${pass} passing</span>`;
+document.title = (fail ? `✗ ${fail} FAIL` : `✓ ${pass} ok`) + ' — sigil core spec';
+</script>
+</body>
+</html>

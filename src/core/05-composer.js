@@ -74,21 +74,41 @@ function makePlan(rotK, shift) {
 
 /* ── §5.2 PHRASE CONSTRUCTION ──────────────────────────────────────────── */
 
+
 /**
  * Share `total` integer units among weights (largest-remainder method).
- * Every note gets at least one unit, so strokes become eighth-note rhythms
- * that always fill the phrase exactly.
+ * Every weight gets at least one unit whenever weights.length ≤ total, so
+ * strokes become eighth-note rhythms that always fill the phrase exactly.
+ *
+ * Over-subscription (more weights than units) cannot honour the minimum of 1;
+ * in that case the result sums to more than `total` and the caller must not
+ * rely on it. The composer never hits this case: phrases have at most 22
+ * weights against 32 units.
+ *
+ * Output is identical to the previous version for every input where
+ * weights.length ≤ total, so existing sigils are unaffected.
  */
 function allocate(weights, total) {
+  if (!weights.length) return [];
   const sum = weights.reduce((a, b) => a + b, 0) || 1;
   const raw = weights.map((w) => (w / sum) * total);
   const out = raw.map((r) => Math.max(1, Math.floor(r)));
-
   let diff = total - out.reduce((a, b) => a + b, 0);
-  const order = raw.map((r, i) => [r - Math.floor(r), i]).sort((a, b) => b[0] - a[0]);
 
+  // Hand leftover units to the largest fractional remainders first.
+  const order = raw.map((r, i) => [r - Math.floor(r), i]).sort((a, b) => b[0] - a[0]);
   for (let j = 0; diff > 0; j++, diff--) out[order[j % order.length][1]]++;
-  while (diff < 0) { let mi = 0; out.forEach((v, i) => { if (v > out[mi]) mi = i; }); out[mi]--; diff++; }
+
+  // Take back surplus from the longest entries, never below 1.
+  while (diff < 0) {
+    let mi = -1;
+    for (let i = 0; i < out.length; i++) {
+      if (out[i] > 1 && (mi < 0 || out[i] > out[mi])) mi = i;
+    }
+    if (mi < 0) break;                 // over-subscribed: stop rather than create zero-length notes
+    out[mi]--;
+    diff++;
+  }
   return out;
 }
 

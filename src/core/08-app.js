@@ -541,23 +541,24 @@ const SigilCore = {
 };
 
 /* ── §8.8 BOOT ─────────────────────────────────────────────────────────────
-   Accepts a plain shared sigil from the URL fragment. (UI.whenReady in the UI
-   kit handles the EXTENDED link format #A+B~mood, which supersedes this when
-   the modules are present.)
+   Link handling now has ONE owner: the UI kit's UI.whenReady handler, which
+   parses plain (#KRSTV) and extended (#A+B~mood) links. This file only starts
+   the frame loop and the focus timer.
+
+   The frame loop is exception-safe. A throw in one frame is logged once and the
+   loop keeps scheduling itself, so a single bug can no longer freeze animation.
    ─────────────────────────────────────────────────────────────────────────── */
-(function boot() {
-  const h = decodeURIComponent(location.hash.slice(1)).toUpperCase();
-  if (/^[BCDFGHJKLMNPQRSTVWXYZ]{3,21}$/.test(h) && new Set(h).size === h.length) {
-    $('#desire').value = h;
-    $('#desireLabel').textContent = 'A sigil has been shared with you. Cast it to hear it sing.';
-  }
-
-  setTimeout(() => $('#desire').focus({ preventScroll: true }), 900);
-
-  // The single render loop. Everything visual is driven from here.
-  (function loop() {
-    renderer.draw(app);
-    updateHUD();
-    requestAnimationFrame(loop);
+   (function boot() {
+    setTimeout(() => $('#desire').focus({ preventScroll: true }), 900);
+  
+    let frameErrorShown = false;
+    (function loop() {
+      try {
+        renderer.draw(app);
+        updateHUD();
+      } catch (e) {
+        if (!frameErrorShown) { frameErrorShown = true; console.error('[frame]', e); }
+      }
+      requestAnimationFrame(loop);
+    })();
   })();
-})();

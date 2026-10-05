@@ -677,3 +677,34 @@ class Engine {
     }
   }
 }
+
+/* ── §6.8 PATCH REGISTRY ─────────────────────────────────────────────────
+   Modules announce which Engine method they replace or wrap. If two different
+   owners claim the same method, a warning is logged, which turns a silent
+   overwrite into a visible one. index.html's preflight compares the claims
+   against EXPECTED_CLAIMS.
+   ─────────────────────────────────────────────────────────────────────────── */
+   Engine.claims = Object.create(null);
+
+   /**
+    * Record that `owner` replaces or wraps Engine.prototype[method].
+    * @param {string} method e.g. 'pump'
+    * @param {string} owner  e.g. 'M4 Form'
+    */
+   Engine.claim = function (method, owner) {
+     const prev = Engine.claims[method];
+     if (prev && prev !== owner) {
+       console.warn(`[patch] Engine.${method} claimed by "${prev}" and "${owner}"`);
+     }
+     Engine.claims[method] = owner;
+   };
+   
+   /** The canonical list of patch points and their owners. Keep in sync with the modules. */
+   Engine.EXPECTED_CLAIMS = {
+     start: 'M4 Form',
+     seek: 'M4 Form',
+     pump: 'M4 Form',
+     beatNow: 'M4 Form',
+     play: 'M9 Live Lens',
+     setTempo: 'M2 Mixer',
+   };

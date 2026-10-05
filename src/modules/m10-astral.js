@@ -322,7 +322,11 @@ const Astral = (() => {
                  onChange: (v) => { S.charge = v; save(); } }),
       h('div', { class: 'sgrow' }, sessBtn), sessOut);
 
-    refresh();
+        // Refresh once the page is ready, then every 20 s while visible.
+  // Hidden tabs skip the work; returning to the tab refreshes immediately.
+  UI.whenReady(refresh);
+  setInterval(() => { if (!document.hidden) refresh(); }, 20000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
   } });
 
   setInterval(refresh, 20000);   // TODO (Tier 3 #16): pause this when document.hidden

@@ -157,7 +157,6 @@ const Grimoire = (() => {
         })),
       file);
 
-    render();
   } });
 
   async function importFile(input) {

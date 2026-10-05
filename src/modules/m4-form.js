@@ -16,7 +16,11 @@
 const Form = (() => {
   'use strict';
   const { h } = UI;
-
+  // Declare the Engine methods this module replaces or wraps (see 06-engine.js §6.8).
+  Engine.claim('start', 'M4 Form');
+  Engine.claim('seek', 'M4 Form');
+  Engine.claim('pump', 'M4 Form');
+  Engine.claim('beatNow', 'M4 Form');
   /** Binary search: index of the first event with beat ≥ b. */
   function firstAt(events, b) {
     let lo = 0, hi = events.length;

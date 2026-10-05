@@ -139,41 +139,163 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════════
-     SCRIPT LOAD ORDER — this is a hard dependency chain, not a preference.
+     SCRIPT LOAD ORDER — a hard dependency chain, not a preference.
+     Each tag records download failures. Preflight (last tag) verifies that
+     every expected global exists and names the FIRST file that failed.
      ═══════════════════════════════════════════════════════════════════════ -->
-
-<!-- Core: pure/deterministic layer -->
-<script src="src/core/00-utils.js"></script>
-<script src="src/core/01-crypto.js"></script>
-<script src="src/core/02-reduction.js"></script>
-<script src="src/core/03-geometry.js"></script>
-<script src="src/core/04-theory.js"></script>
-<script src="src/core/05-composer.js"></script>
-
-<!-- Core: runtime layer -->
-<script src="src/core/06-engine.js"></script>
-<script src="src/core/07-renderer.js"></script>
-<script src="src/core/08-app.js"></script>
-
-<!-- Shared module infrastructure -->
-<script src="src/ui/ui-kit.js"></script>
-
-<!-- Optional offline MP3 encoder. If absent, M7 falls back to a CDN fetch.
-     Kept as text/plain so it is never parsed on the main thread at load;
-     M7 evals it inside a Worker (or, as a last resort, on the main thread). -->
-<!--script type="text/plain" id="lamejs-src" src="src/vendor/lame.min.js"></script-->
-
-<!-- Feature modules. Order matters where noted. -->
-<script src="src/modules/m1-midi.js"></script>      <!-- soft-depends on M9 -->
-<script src="src/modules/m2-mixer.js"></script>
-<script src="src/modules/m3-grimoire.js"></script>  <!-- soft-depends on M8 -->
-<script src="src/modules/m4-form.js"></script>
-<script src="src/modules/m5-access.js"></script>
-<script src="src/modules/m6-moods.js"></script>
-<script src="src/modules/m7-render.js"></script>    <!-- soft-depends on M9 -->
-<script src="src/modules/m8-fusion.js"></script>
-<script src="src/modules/m9-lens.js"></script>
-<script src="src/modules/m10-astral.js"></script>
-
-</body>
-</html>
+     <script>
+      /* Download failures (404, blocked, file://) are recorded here. Syntax errors
+         do not fire onerror, so preflight also checks for the globals each file
+         should have defined. */
+      window.SIGIL_LOAD_FAILS = [];
+      window.SIGIL_FAIL = (el) => SIGIL_LOAD_FAILS.push(el.getAttribute('src'));
+    </script>
+    
+    <!-- Core: pure / deterministic layer -->
+    <script src="src/core/00-utils.js"   onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/core/01-crypto.js"  onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/core/02-reduction.js" onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/core/03-geometry.js" onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/core/04-theory.js"  onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/core/05-composer.js" onerror="SIGIL_FAIL(this)"></script>
+    
+    <!-- Core: runtime layer -->
+    <script src="src/core/06-engine.js"   onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/core/07-renderer.js" onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/core/08-app.js"      onerror="SIGIL_FAIL(this)"></script>
+    
+    <!-- Shared module infrastructure -->
+    <script src="src/ui/ui-kit.js" onerror="SIGIL_FAIL(this)"></script>
+    
+    <!-- Optional offline MP3 encoder. M7 fetches this file; if it is absent, M7
+         falls back to a CDN. Vendor it to work offline. -->
+    <script type="text/plain" id="lamejs-src"></script>
+    
+    <!-- Feature modules -->
+    <script src="src/modules/m1-midi.js"    onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m2-mixer.js"   onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m3-grimoire.js" onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m4-form.js"    onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m5-access.js"  onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m6-moods.js"   onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m7-render.js"  onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m8-fusion.js"  onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m9-lens.js"    onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m10-astral.js" onerror="SIGIL_FAIL(this)"></script>
+    
+    <!-- ═══════════════════════════════════════════════════════════════════════
+         PREFLIGHT. Runs after everything above, even if some of it threw.
+         Reports the FIRST file whose globals are missing (the root cause), and
+         warns if the page is opened from file://.
+         ═══════════════════════════════════════════════════════════════════════ -->
+    <script>
+    (function preflight() {
+      'use strict';
+    
+      /** Each file, in load order, with the globals it must define. */
+      const MANIFEST = [
+        ['src/core/00-utils.js',     ['TAU', 'mod', 'clamp', 'lerp', 'ease', 'rgba', 'te', 'SERIF', 'Hooks', 'Prefs', '$', 'wait']],
+        ['src/core/01-crypto.js',    ['SHA256', 'toHex', 'hashStr', 'sfc32', 'mulberry32', 'Rng', 'stream']],
+        ['src/core/02-reduction.js', ['VOWELS', 'reduceDesire']],
+        ['src/core/03-geometry.js',  ['SLOTS', 'CONSONANTS', 'RINGS', 'ID_T', 'UNIT_F', 'PALETTES', 'buildSigil', 'polar', 'nodeXY', 'segmentPoints', 'tracePoints', 'polyLength']],
+        ['src/core/04-theory.js',    ['MODES', 'MODE_NAMES', 'MODE_WEIGHTS', 'NOTE_NAMES', 'mtof', 'degToMidi', 'fold', 'euclid']],
+        ['src/core/05-composer.js',  ['makePlan', 'allocate', 'buildPhrase', 'addPassing', 'harmonize', 'validChords', 'composeSong', 'sectionIndexAt', 'phraseIndexAt', 'penProgress', 'pulse', 'displayTransform']],
+        ['src/core/06-engine.js',    ['Engine']],
+        ['src/core/07-renderer.js',  ['Renderer']],
+        ['src/core/08-app.js',       ['app', 'renderer', 'hud', 'TIMBRE_NAMES', 'cast', 'forget', 'newDesire', 'toast', 'SigilCore']],
+        ['src/ui/ui-kit.js',         ['UI']],
+        ['src/modules/m1-midi.js',   ['MidiExport']],
+        ['src/modules/m2-mixer.js',  ['Mixer']],
+        ['src/modules/m3-grimoire.js', ['Grimoire']],
+        ['src/modules/m4-form.js',   ['Form']],
+        ['src/modules/m5-access.js', ['Access']],
+        ['src/modules/m6-moods.js',  ['Moods']],
+        ['src/modules/m7-render.js', ['Render']],
+        ['src/modules/m8-fusion.js', ['Fusion']],
+        ['src/modules/m9-lens.js',   ['LiveLens']],
+        ['src/modules/m10-astral.js', ['Astral']],
+      ];
+    
+      /** 'ok' | 'missing' | 'not-initialised' (declared, but its script threw before it was set). */
+      const status = (name) => {
+        try { return new Function(`return typeof ${name} !== 'undefined';`)() ? 'ok' : 'missing'; }
+        catch { return 'not-initialised'; }
+      };
+    
+      const problems = [];
+    
+      // 1. Downloads that failed.
+      for (const src of window.SIGIL_LOAD_FAILS || []) {
+        problems.push({ file: src, detail: 'could not be downloaded (404, blocked, or file:// restriction)' });
+      }
+    
+      // 2. Globals that should exist but do not.
+      for (const [file, names] of MANIFEST) {
+        const bad = names.map((n) => [n, status(n)]).filter(([, s]) => s !== 'ok');
+        if (bad.length) {
+          problems.push({ file, detail: 'missing: ' + bad.map(([n, s]) => `${n} (${s})`).join(', ') });
+        }
+      }
+    
+      // 3. Engine patch points that no module claimed (a module is absent or disabled).
+      try {
+        for (const [method, owner] of Object.entries(Engine.EXPECTED_CLAIMS)) {
+          if (Engine.claims[method] !== owner) {
+            problems.push({ file: owner, detail: `Engine.${method} was not claimed by "${owner}"` });
+          }
+        }
+      } catch (e) {
+        problems.push({ file: '06-engine.js', detail: 'patch registry unavailable: ' + e.message });
+      }
+    
+      const fileProtocol = location.protocol === 'file:';
+    
+      if (!problems.length && !fileProtocol) {
+        console.info('[SIGIL] preflight ok: every module is present and loaded.');
+        return;
+      }
+    
+      if (problems.length) {
+        console.group('[SIGIL] preflight problems');
+        console.table(problems);
+        console.groupEnd();
+      }
+      if (fileProtocol) {
+        console.warn('[SIGIL] Opened from file://. Serve over HTTP: python3 -m http.server 8000');
+      }
+    
+      // On-screen report. textContent only, so nothing here can inject markup.
+      const lines = [];
+      if (fileProtocol) {
+        lines.push('⚠ Opened from file://. Serve over HTTP instead:');
+        lines.push('    python3 -m http.server 8000   →   http://localhost:8000/');
+        lines.push('');
+      }
+      if (problems.length) {
+        const root = problems.find((p) => !p.file.startsWith('m')) || problems[0];
+        lines.push(`✗ ${problems.length} problem(s). The first is the root cause; later ones are usually consequences.`);
+        lines.push('');
+        lines.push(`ROOT CAUSE CANDIDATE: ${root.file}`);
+        lines.push(`    ${root.detail}`);
+        lines.push('');
+        problems.filter((p) => p !== root).forEach((p) => lines.push(`  • ${p.file}: ${p.detail}`));
+        lines.push('');
+        lines.push('Check: node --check <file>   ·   DevTools → Network for red entries.');
+      }
+    
+      const box = document.createElement('div');
+      box.setAttribute('role', 'alert');
+      box.title = 'Click to dismiss';
+      box.style.cssText = [
+        'position:fixed', 'left:16px', 'right:16px', 'top:16px', 'z-index:99',
+        'max-width:820px', 'margin:0 auto', 'padding:16px 20px',
+        'background:#1a0d0b', 'color:#ffd6a8', 'border:1px solid #ff7a4a',
+        'font:13px/1.55 ui-monospace,Menlo,Consolas,monospace', 'white-space:pre-wrap', 'cursor:pointer',
+      ].join(';');
+      box.textContent = lines.join('\n');
+      box.addEventListener('click', () => box.remove());
+      document.body.append(box);
+    })();
+    </script>
+    </body>
+    </html>

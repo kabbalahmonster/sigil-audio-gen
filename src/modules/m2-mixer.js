@@ -42,6 +42,7 @@ const Mixer = (() => {
   const save = () => { clearTimeout(saveT); saveT = setTimeout(() => Prefs.set('mixer', S), 300); };
 
   /* ── Engine extension: tempo change that preserves musical position ──── */
+  Engine.claim('setTempo', 'M2 Mixer');
   Engine.prototype.setTempo = function (bpm) {
     if (!this.song || !(bpm > 0)) return;
     const now = this.ctx.currentTime;

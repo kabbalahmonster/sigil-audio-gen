@@ -87,6 +87,7 @@ const LiveLens = (() => {
     }
   }
 
+  Engine.claim('play', 'M9 Live Lens');
   const _play = Engine.prototype.play;
   Engine.prototype.play = function (ev, t) {
     return _play.call(this, this === app.engine && active() ? map(ev, this.song) : ev, t);

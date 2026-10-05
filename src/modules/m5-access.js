@@ -30,17 +30,24 @@ const Access = (() => {
     body.a11y-large #desire{font-size:28px}body.a11y-large .hint,body.a11y-large #invoke label{font-size:17px}
     #progress:focus-visible{outline:1px dotted rgba(var(--accent),.8);outline-offset:4px}`);
 
-  /* Renderer hooks. Motes are swapped out; sparks are gated at the source. */
-  const motes = renderer.motes;
-  const spawn = renderer.spawn.bind(renderer);
-  renderer.spawn = (...a) => (reduced() ? undefined : spawn(...a));
+  /* Renderer hooks. Motes are swapped out; sparks are gated at the source.
+     Guarded so that a core boot failure produces ONE diagnostic (from the
+     preflight) rather than a second, misleading one from here. */
+     let motes = [];
+     if (typeof renderer !== 'undefined' && renderer) {
+       motes = renderer.motes;
+       const spawn = renderer.spawn.bind(renderer);
+       renderer.spawn = (...a) => (reduced() ? undefined : spawn(...a));
+     } else {
+       console.warn('[M5 Access] renderer unavailable; motion controls are inert.');
+     }
 
   Hooks.on('palette', () => (contrast() ? CONTRAST : undefined), 100);
 
   function applyAll() {
     document.body.classList.toggle('a11y-reduce', reduced());
     document.body.classList.toggle('a11y-large', !!S.large);
-    renderer.motes = reduced() ? [] : motes;
+    if (typeof renderer !== 'undefined' && renderer) renderer.motes = reduced() ? [] : motes;
     UI.refreshPalette();
     Prefs.set('a11y', S);
   }

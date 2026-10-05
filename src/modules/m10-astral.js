@@ -241,8 +241,11 @@ const Astral = (() => {
       `${ord(hr.hourNumber)} hour of ${hr.isDay ? 'day' : 'night'} · until ${fmtT(hr.end)}`, h('br'),
       `Day of ${day.name} ${day.glyph}`);
 
-    moonLine.textContent = `${moon.name} · ${Math.round(moon.illum * 100)}% lit`;
-    drawMoon(moonCv, moon.f, renderer.pal.line);
+      moonLine.textContent = `${moon.name} · ${Math.round(moon.illum * 100)}% lit`;
+      // The palette can legitimately change under us (cast, contrast, attunement);
+      // read it fresh each time, and fall back if the renderer is not up yet.
+      const inkCol = (typeof renderer !== 'undefined' && renderer.pal) ? renderer.pal.line : [236, 206, 140];
+      drawMoon(moonCv, moon.f, inkCol);
 
     attuneNote.textContent = `Now: ${pl.name}, ${pl.virtue}. ${pl.mode}, ${TIMBRE_NAMES[pl.timbre]}.`;
 
@@ -325,8 +328,20 @@ const Astral = (() => {
     refresh();
   } });
 
-  setInterval(refresh, 20000);   // TODO (Tier 3 #16): pause this when document.hidden
-  Hooks.on('song', refresh);
+    /* ── Clock. Planetary hours change at most once an hour, so a 20 s refresh
+        is generous; but a background tab has no business running it at all.
+        We stop on hide, and refresh immediately on show so the panel is never
+        stale when you look at it. ───────────────────────────────────────── */
+        let clock = 0;
+        function startClock() { if (!clock) clock = setInterval(refresh, 20000); }
+        function stopClock() { if (clock) { clearInterval(clock); clock = 0; } }
+        document.addEventListener('visibilitychange', () => {
+          if (document.hidden) stopClock();
+          else { refresh(); startClock(); }
+        });
+        if (!document.hidden) startClock();
+      
+        Hooks.on('song', refresh);
 
-  return { planetaryHour, moonPhase, nextHourOf, sunTimes, startSession, stopSession };
+        return { planetaryHour, moonPhase, nextHourOf, sunTimes, startSession, stopSession, startClock, stopClock };
 })();

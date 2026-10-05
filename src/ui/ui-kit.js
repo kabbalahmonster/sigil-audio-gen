@@ -287,15 +287,26 @@ const UI = (() => {
 
   /* Extended links (#A+B~mood): prefill the invocation and let modules react.
      This supersedes the simple boot handler in 08-app.js. */
-  whenReady(() => {
-    const link = parseKey(location.hash);
-    if (!link) return;
-    document.querySelector('#desire').value = link.members[0];
-    document.querySelector('#desireLabel').textContent = link.members.length > 1
-      ? 'A joined sigil has been shared with you. Cast it to hear the voices together.'
-      : 'A sigil has been shared with you. Cast it to hear it sing.';
-    Hooks.emit('link', link);
-  });
+  /* Extended links (#A+B~mood): prefill the invocation and let modules react.
+     This SUPERSEDES the fallback handler in 08-app.js. If the core already
+     prefilled the same single member and there is nothing extra to do (no
+     partners, no mood), we leave the DOM alone and only emit the event, so
+     there is exactly one writer per field. */
+     whenReady(() => {
+        const link = parseKey(location.hash);
+        if (!link) return;
+    
+        const richer = link.members.length > 1 || !!link.preset;
+        const alreadyDone = app.linkPrefilled === link.members[0];
+    
+        if (richer || !alreadyDone) {
+          document.querySelector('#desire').value = link.members[0];
+          document.querySelector('#desireLabel').textContent = link.members.length > 1
+            ? 'A joined sigil has been shared with you. Cast it to hear the voices together.'
+            : 'A sigil has been shared with you. Cast it to hear it sing.';
+        }
+        Hooks.emit('link', link);
+      });
 
   return {
     h, css, section, open, close,

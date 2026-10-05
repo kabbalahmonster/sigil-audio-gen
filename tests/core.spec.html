@@ -11,12 +11,18 @@
   modules: everything tested here is a deterministic pure function, which is
   exactly the part we must never break.
 
-  The GOLDEN SNAPSHOTS section is the determinism regression net. If a golden
-  test fails, you have changed the output of an existing sigil. That is
-  either a bug or it requires bumping the 'SIGIL/v1::' algorithm version in
-  03-geometry.js. It is never "just update the snapshot".
+  RUN IT OVER HTTP, not file://:
+      python3 -m http.server 8080
+      http://localhost:8080/tests/core.spec.html
 
-  Run:  python3 -m http.server 8080   →  http://localhost:8080/tests/core.spec.html
+  Under file:// some browsers refuse to load sibling scripts and localStorage
+  throws; the spec degrades gracefully and says so, but results are not
+  trustworthy.
+
+  The GOLDEN SNAPSHOTS section is the determinism regression net. If a golden
+  test fails, an existing sigil has CHANGED. That is either a bug, or it
+  requires bumping the 'SIGIL/v1::' algorithm version in 03-geometry.js.
+  It is never "just update the snapshot".
   ══════════════════════════════════════════════════════════════════════════
 -->
 <style>
@@ -27,9 +33,10 @@
        color:#ff9650; margin:26px 0 6px; }
   .ok   { color:#8fd18a; }
   .fail { color:#ff5a4a; }
+  .warn { color:#ffc46a; }
   .row  { padding:1px 0; white-space:pre-wrap; }
   .detail { opacity:.6; padding-left:3ch; }
-  #summary { position:sticky; top:0; background:#0a0807; padding:10px 0 14px; font-size:16px; }
+  #summary { position:sticky; top:0; background:#0a0807; padding:10px 0 14px; font-size:16px; z-index:2; }
 </style>
 </head>
 <body>
@@ -37,7 +44,7 @@
 <div id="summary">running…</div>
 <div id="out"></div>
 
-<!-- Pure layers only. -->
+<!-- Pure layers only, in dependency order. -->
 <script src="../src/core/00-utils.js"></script>
 <script src="../src/core/01-crypto.js"></script>
 <script src="../src/core/02-reduction.js"></script>
@@ -47,18 +54,36 @@
 
 <script>
 'use strict';
-/* ── Harness ───────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════
+   HARNESS
+   Each group is isolated: a throw inside one group is recorded as a single
+   failure and the run continues. This is the difference between "one error
+   tells you nothing" and "one run tells you everything".
+   ═══════════════════════════════════════════════════════════════════════ */
 const out = document.getElementById('out');
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, warned = 0;
 
-function group(name) { out.insertAdjacentHTML('beforeend', `<h2>${name}</h2>`); }
+function line(cls, txt) { out.insertAdjacentHTML('beforeend', `<div class="row ${cls}">${txt}</div>`); }
+function detail(txt) { out.insertAdjacentHTML('beforeend', `<div class="row detail">${txt}</div>`); }
+function warn(txt) { warned++; line('warn', '! ' + txt); }
 
-function ok(cond, label, detail) {
+/** Run a named group in isolation. */
+function group(name, fn) {
+  out.insertAdjacentHTML('beforeend', `<h2>${name}</h2>`);
+  if (!fn) return;
+  try { fn(); }
+  catch (e) {
+    fail++;
+    line('fail', `✗ GROUP ABORTED: ${e && e.message ? e.message : e}`);
+    detail((e && e.stack ? e.stack.split('\n').slice(0, 4).join('\n') : '').replace(/</g, '&lt;'));
+  }
+}
+
+function ok(cond, label, det) {
   const good = !!cond;
   good ? pass++ : fail++;
-  out.insertAdjacentHTML('beforeend',
-    `<div class="row ${good ? 'ok' : 'fail'}">${good ? '✓' : '✗'} ${label}</div>` +
-    (!good && detail ? `<div class="row detail">${detail}</div>` : ''));
+  line(good ? 'ok' : 'fail', `${good ? '✓' : '✗'} ${label}`);
+  if (!good && det) detail(String(det).replace(/</g, '&lt;'));
 }
 
 const eq = (a, b, label) =>
@@ -72,30 +97,61 @@ const deepEq = (a, b, label) => {
 const near = (a, b, eps, label) =>
   ok(Math.abs(a - b) <= eps, label, `expected ${b} ±${eps}  got ${a}`);
 
-const throws = (fn, label) => {
-  try { fn(); ok(false, label, 'did not throw'); } catch { ok(true, label); }
-};
+/* ═══════════════════════════════════════════════════════════════════════
+   PREFLIGHT — name the missing file instead of inferring it
+   ═══════════════════════════════════════════════════════════════════════ */
+let PREFLIGHT_OK = true;
+group('preflight', () => {
+  const REQUIRED = {
+    '00-utils.js':     ['TAU', 'mod', 'clamp', 'lerp', 'ease', 'rgba', 'te', 'Hooks', 'Prefs'],
+    '01-crypto.js':    ['SHA256', 'toHex', 'hashStr', 'mulberry32', 'Rng', 'stream'],
+    '02-reduction.js': ['VOWELS', 'reduceDesire'],
+    '03-geometry.js':  ['SLOTS', 'CONSONANTS', 'RINGS', 'ID_T', 'UNIT_F', 'PALETTES',
+                        'buildSigil', 'polar', 'nodeXY', 'segmentPoints', 'tracePoints', 'polyLength'],
+    '04-theory.js':    ['MODES', 'MODE_NAMES', 'NOTE_NAMES', 'mtof', 'degToMidi', 'fold', 'euclid'],
+    '05-composer.js':  ['allocate', 'buildPhrase', 'addPassing', 'harmonize', 'validChords',
+                        'bassPitch', 'arpTones', 'padVoicing', 'composeSong',
+                        'sectionIndexAt', 'phraseIndexAt', 'penProgress', 'pulse', 'displayTransform'],
+  };
+  const probe = (n) => { try { return new Function('return typeof ' + n)() !== 'undefined'; } catch (e) { return false; } };
+
+  for (const file of Object.keys(REQUIRED)) {
+    const missing = REQUIRED[file].filter((s) => !probe(s));
+    if (missing.length) PREFLIGHT_OK = false;
+    ok(!missing.length, `loaded src/core/${file}`, `missing symbols: ${missing.join(', ')}`);
+  }
+
+  if (location.protocol === 'file:') {
+    warn('Running from file://. Some browsers block sibling script loads and localStorage. ' +
+         'Serve over HTTP: python3 -m http.server 8080');
+  }
+});
+
+if (!PREFLIGHT_OK) {
+  line('fail', '');
+  line('fail', '✗ One or more core files are missing. The assertions below will fail in bulk.');
+  detail('Fix the file(s) named above, then re-run. Do not read the rest of this report until preflight is green.');
+}
 
 /* ═══════════════════════════════════════════════════════════════════════
    §0  UTILITIES
    ═══════════════════════════════════════════════════════════════════════ */
-group('§0 utilities');
+group('§0 utilities', () => {
+  eq(mod(-1, 21), 20, 'mod() is a true modulo for negatives');
+  eq(mod(22, 21), 1, 'mod() wraps positives');
+  eq(mod(0, 7), 0, 'mod() of zero');
+  eq(clamp(5, 0, 1), 1, 'clamp() upper');
+  eq(clamp(-5, 0, 1), 0, 'clamp() lower');
+  eq(lerp(0, 10, 0.25), 2.5, 'lerp()');
+  eq(ease(0), 0, 'ease(0) = 0');
+  eq(ease(1), 1, 'ease(1) = 1');
+  near(ease(0.5), 0.5, 1e-12, 'ease(0.5) = 0.5 (symmetric)');
+  ok(ease(-5) === 0 && ease(5) === 1, 'ease() clamps its input');
+  eq(rgba([1, 2, 3], 0.5), 'rgba(1,2,3,0.500)', 'rgba() formats to 3 dp');
+  eq(rgba([1, 2, 3], 9), 'rgba(1,2,3,1.000)', 'rgba() clamps alpha');
+});
 
-eq(mod(-1, 21), 20, 'mod() is a true modulo for negatives');
-eq(mod(22, 21), 1, 'mod() wraps positives');
-eq(mod(0, 7), 0, 'mod() of zero');
-eq(clamp(5, 0, 1), 1, 'clamp() upper');
-eq(clamp(-5, 0, 1), 0, 'clamp() lower');
-eq(lerp(0, 10, 0.25), 2.5, 'lerp()');
-eq(ease(0), 0, 'ease(0) = 0');
-eq(ease(1), 1, 'ease(1) = 1');
-near(ease(0.5), 0.5, 1e-12, 'ease(0.5) = 0.5 (symmetric)');
-ok(ease(-5) === 0 && ease(5) === 1, 'ease() clamps its input');
-eq(rgba([1, 2, 3], 0.5), 'rgba(1,2,3,0.500)', 'rgba() formats to 3 dp');
-eq(rgba([1, 2, 3], 9), 'rgba(1,2,3,1.000)', 'rgba() clamps alpha');
-
-/* Hooks */
-{
+group('§0 hooks', () => {
   const order = [];
   const offA = Hooks.on('spec:evt', () => order.push('b'), 10);
   const offB = Hooks.on('spec:evt', () => order.push('a'), -10);
@@ -105,70 +161,72 @@ eq(rgba([1, 2, 3], 9), 'rgba(1,2,3,1.000)', 'rgba() clamps alpha');
   order.length = 0;
   Hooks.emit('spec:evt');
   deepEq(order, [], 'Hooks.on() returns a working unsubscribe');
-}
-{
-  const off1 = Hooks.on('spec:filt', (v) => v + 1);
-  const off2 = Hooks.on('spec:filt', () => undefined);   // keeps current value
-  const off3 = Hooks.on('spec:filt', (v) => v * 2);
+
+  const o1 = Hooks.on('spec:filt', (v) => v + 1);
+  const o2 = Hooks.on('spec:filt', () => undefined);
+  const o3 = Hooks.on('spec:filt', (v) => v * 2);
   eq(Hooks.filter('spec:filt', 1), 4, 'Hooks.filter chains; undefined keeps the value');
-  off1(); off2(); off3();
-}
-{
+  o1(); o2(); o3();
+
   const quiet = console.error; console.error = () => {};
-  const off1 = Hooks.on('spec:err', () => { throw new Error('boom'); });
-  const off2 = Hooks.on('spec:err', (v) => v + 1);
+  const e1 = Hooks.on('spec:err', () => { throw new Error('boom'); });
+  const e2 = Hooks.on('spec:err', (v) => v + 1);
   eq(Hooks.filter('spec:err', 0), 1, 'a throwing filter listener is isolated');
   let reached = false;
-  const off3 = Hooks.on('spec:err2', () => { throw new Error('boom'); });
-  const off4 = Hooks.on('spec:err2', () => (reached = true));
+  const e3 = Hooks.on('spec:err2', () => { throw new Error('boom'); });
+  const e4 = Hooks.on('spec:err2', () => { reached = true; });
   Hooks.emit('spec:err2');
   ok(reached, 'a throwing emit listener does not stop the chain');
-  off1(); off2(); off3(); off4();
+  e1(); e2(); e3(); e4();
   console.error = quiet;
-}
+});
 
-/* Prefs never throws */
-ok((() => { try { Prefs.set('spec.x', { a: 1 }); return Prefs.get('spec.x', null).a === 1; }
-            catch { return false; } })(), 'Prefs round-trips JSON');
-eq(Prefs.get('spec.missing.key', 'dflt'), 'dflt', 'Prefs.get returns the default');
+/* Storage may be unavailable (file://, private mode). Detect once and fall
+   back to memory for the golden snapshots. */
+let STORAGE_OK = true;
+const MEM = {};
+group('§0 prefs', () => {
+  try { localStorage.setItem('sigil.__probe', '1'); localStorage.removeItem('sigil.__probe'); }
+  catch (e) { STORAGE_OK = false; }
+  if (!STORAGE_OK) warn('localStorage is unavailable; golden snapshots will not persist between runs.');
+
+  ok((() => { try { Prefs.set('spec.x', { a: 1 }); const v = Prefs.get('spec.x', null); return STORAGE_OK ? v && v.a === 1 : v === null; } catch (e) { return false; } })(),
+     'Prefs round-trips JSON (or degrades silently without storage)');
+  eq(Prefs.get('spec.missing.key', 'dflt'), 'dflt', 'Prefs.get returns the default');
+});
+const store = {
+  get(k, d) { return STORAGE_OK ? Prefs.get(k, d) : (k in MEM ? MEM[k] : d); },
+  set(k, v) { if (STORAGE_OK) Prefs.set(k, v); else MEM[k] = v; },
+};
 
 /* ═══════════════════════════════════════════════════════════════════════
    §1  CRYPTOGRAPHY
    ═══════════════════════════════════════════════════════════════════════ */
-group('§1 cryptography');
+group('§1 cryptography', () => {
+  eq(toHex(hashStr('abc')),
+     'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+     'SHA-256("abc") matches the FIPS vector');
+  eq(toHex(hashStr('')),
+     'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+     'SHA-256("") matches the FIPS vector');
+  eq(toHex(hashStr('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq')),
+     '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1',
+     'SHA-256 two-block vector');
+  eq(hashStr('abc').length, 32, 'digest is 32 bytes');
 
-eq(toHex(hashStr('abc')),
-   'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
-   'SHA-256("abc") matches the FIPS vector');
-
-eq(toHex(hashStr('')),
-   'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-   'SHA-256("") matches the FIPS vector');
-
-// Multi-block (> 55 bytes forces a second 64-byte block) + length encoding
-eq(toHex(hashStr('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq')),
-   '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1',
-   'SHA-256 two-block vector');
-
-eq(hashStr('abc').length, 32, 'digest is 32 bytes');
-
-/* Avalanche: one letter changes everything */
-{
   const a = toHex(hashStr('SIGIL/v1::KRST')), b = toHex(hashStr('SIGIL/v1::KRSV'));
   let same = 0;
   for (let i = 0; i < a.length; i++) if (a[i] === b[i]) same++;
   ok(same < a.length * 0.25, 'avalanche: one-letter change scrambles the digest',
      `${same}/${a.length} nibbles shared`);
-}
+});
 
-/* Rng determinism + stream independence */
-{
+group('§1 deterministic randomness', () => {
   const h = hashStr('spec');
   const a = Array.from({ length: 8 }, () => stream(h, 'x').float());
   ok(a.every((v) => v === a[0]), 'stream(h,label) is reproducible');
 
-  const g1 = stream(h, 'geometry'), g2 = stream(h, 'music');
-  ok(g1.float() !== g2.float(), 'labelled streams are independent');
+  ok(stream(h, 'geometry').float() !== stream(h, 'music').float(), 'labelled streams are independent');
 
   const r = stream(h, 'rng');
   const vals = Array.from({ length: 500 }, () => r.float());
@@ -178,53 +236,66 @@ eq(hashStr('abc').length, 32, 'digest is 32 bytes');
   const r2 = stream(h, 'rng2');
   const ints = Array.from({ length: 400 }, () => r2.int(0, 2));
   ok(ints.every((v) => v === 0 || v === 1 || v === 2), 'int(a,b) is inclusive of both ends');
-  ok(new Set(ints).size === 3, 'int(0,2) reaches all three values');
+  eq(new Set(ints).size, 3, 'int(0,2) reaches all three values');
 
   const src = [1, 2, 3, 4, 5];
   const sh = stream(h, 'sh').shuffle(src);
   deepEq(src, [1, 2, 3, 4, 5], 'shuffle() does not mutate its input');
   deepEq(sh.slice().sort(), [1, 2, 3, 4, 5], 'shuffle() is a permutation');
-}
+
+  const m = mulberry32(0x5eed);
+  const m2 = mulberry32(0x5eed);
+  ok(m() === m2() && m() === m2(), 'mulberry32 is reproducible from its seed');
+});
 
 /* ═══════════════════════════════════════════════════════════════════════
    §2  REDUCTION
    ═══════════════════════════════════════════════════════════════════════ */
-group('§2 reduction');
+group('§2 reduction', () => {
+  eq(reduceDesire('It is my will to finish the book').reduced, 'TSMYWLFNHBK', 'canonical reduction');
+  eq(reduceDesire('AEIOU').reduced, '', 'all vowels reduce to nothing');
+  eq(reduceDesire('aaa bbb ccc').reduced, 'BC', 'repeats are struck');
+  eq(reduceDesire('café').reduced, 'CF', 'diacritics are folded, not dropped');
+  eq(reduceDesire('naïve résumé').reduced, 'NVRSM', 'NFD folding across words');
+  eq(reduceDesire('Y').reduced, 'Y', 'Y is a consonant');
+  eq(reduceDesire('123 !@#').reduced, '', 'digits and punctuation contribute nothing');
 
-eq(reduceDesire('It is my will to finish the book').reduced, 'TSMYWLFNHBK',
-   'canonical reduction');
-eq(reduceDesire('AEIOU').reduced, '', 'all vowels reduce to nothing');
-eq(reduceDesire('aaa bbb ccc').reduced, 'BC', 'repeats are struck');
-eq(reduceDesire('café').reduced, 'CF', 'diacritics are folded, not dropped');
-eq(reduceDesire('naïve résumé').reduced, 'NVRSM', 'NFD folding across words');
-eq(reduceDesire('Y').reduced, 'Y', 'Y is a consonant');
-eq(reduceDesire('123 !@#').reduced, '', 'digits and punctuation contribute nothing');
-
-{
-  const { chars } = reduceDesire('Ab b!');
-  deepEq(chars.map((c) => c.fate), ['kept', 'vowel', 'space', 'repeat', 'mark'],
+  /* 'Ab b!' →  A = vowel (struck)
+                b = first consonant (kept)
+                ' ' = space
+                b = repeat (struck)
+                ! = mark                                      */
+  const r1 = reduceDesire('Ab b!');
+  deepEq(r1.chars.map((c) => c.fate), ['vowel', 'kept', 'space', 'repeat', 'mark'],
          'every original character keeps a fate');
-  eq(chars.length, 5, 'chars preserves length including spaces and marks');
-}
-{
+  eq(r1.reduced, 'B', 'only the first B survives');
+  eq(r1.chars.length, 5, 'chars preserves length including spaces and marks');
+
+  const r2 = reduceDesire('Bad');
+  deepEq(r2.chars.map((c) => c.fate), ['kept', 'vowel', 'kept'], 'leading consonant is kept');
+
   const r = reduceDesire('The quick brown fox jumps over the lazy dog').reduced;
   eq(new Set(r).size, r.length, 'no repeated letters survive');
   ok(!/[AEIOU]/.test(r), 'no vowels survive');
   ok(r.length <= 21, 'reduction can never exceed 21 letters');
-}
+});
 
 /* ═══════════════════════════════════════════════════════════════════════
    §3  GEOMETRY
    ═══════════════════════════════════════════════════════════════════════ */
-group('§3 geometry');
+group('§3 geometry — constants', () => {
+  eq(SLOTS, 21, 'the wheel has 21 slots');
+  eq(CONSONANTS.length, 21, 'there are 21 consonants');
+  eq(new Set(CONSONANTS).size, 21, 'the consonant list has no duplicates');
+  ok(CONSONANTS.includes('Y') && !CONSONANTS.some((c) => 'AEIOU'.includes(c)), 'Y in, vowels out');
+  eq(RINGS.length, 3, 'three rings');
+  ok(RINGS.every((r, i) => i === 0 || r > RINGS[i - 1]), 'rings ascend');
+  ok(PALETTES.length >= 6, 'at least six palettes');
+  ok(PALETTES.every((p) => p.name && p.bg && p.line.length === 3 && p.accent.length === 3),
+     'every palette is well formed');
+});
 
-eq(SLOTS, 21, 'the wheel has 21 slots');
-eq(CONSONANTS.length, 21, 'there are 21 consonants');
-eq(new Set(CONSONANTS).size, 21, 'the consonant list has no duplicates');
-ok(CONSONANTS.includes('Y') && !CONSONANTS.some((c) => 'AEIOU'.includes(c)),
-   'Y in, vowels out');
-
-{
+group('§3 geometry — buildSigil', () => {
   const s = buildSigil('KRSTVM');
   eq(s.wheel.length, 21, 'wheel holds every consonant');
   deepEq(s.wheel.slice().sort().join(''), CONSONANTS.slice().sort().join(''),
@@ -233,123 +304,145 @@ ok(CONSONANTS.includes('Y') && !CONSONANTS.some((c) => 'AEIOU'.includes(c)),
   eq(s.curves.length, 5, 'one curve factor per stroke');
   ok(s.nodes.every((n) => n.ring >= 0 && n.ring <= 2), 'rings are 0…2');
   ok(s.nodes.every((n) => n.slot >= 0 && n.slot < 21), 'slots are 0…20');
+  ok(s.nodes.every((n) => s.wheel[n.slot] === n.letter), 'each node sits at its own letter’s slot');
   ok(PALETTES.includes(s.palette), 'palette comes from the curated list');
   eq(s.hex.length, 64, 'hex digest is 64 chars');
+  ok(s.baseAngle >= 0 && s.baseAngle < TAU, 'baseAngle is a valid rotation');
 
   const again = buildSigil('KRSTVM');
   eq(again.hex, s.hex, 'buildSigil is deterministic');
   deepEq(again.wheel, s.wheel, 'wheel is deterministic');
   deepEq(again.curves, s.curves, 'curves are deterministic');
+  deepEq(again.nodes, s.nodes, 'nodes are deterministic');
 
   ok(buildSigil('KRSTVN').hex !== s.hex, 'a different string gives a different sigil');
-}
+});
 
-/* Y collision repair: Y never shares a ring with a slot-adjacent letter */
-{
-  let checked = 0;
-  for (const w of ['KRST', 'BCDF', 'MNLP', 'ZXWV', 'QJHG', 'TRSKVM', 'PLMNBC']) {
+group('§3 geometry — Y collision repair', () => {
+  /* The invariant: Y never shares a ring with the letter one slot either side
+     of it. Checked across many wheels so that at least some of them originally
+     collided and had to be repaired. */
+  const WORDS = ['YKRST', 'YBCDF', 'KYSTV', 'MNYLP', 'ZXWYV', 'QJHYG', 'TRSKYM',
+                 'PLYMNB', 'YWXZQJ', 'BYCDFG', 'GYHJKL', 'YNPQRS'];
+  let checked = 0, clean = 0;
+  for (const w of WORDS) {
     const s = buildSigil(w);
-    const slotOf = {}; s.wheel.forEach((L, i) => (slotOf[L] = i));
-    const ring = {};
-    // Reconstruct ringOf for all letters from nodes is not possible; instead
-    // assert the invariant on the wheel neighbours of Y using node data when
-    // Y is present, and otherwise only check the sigil builds.
-    ok(s.wheel.length === 21, `sigil "${w}" builds`);
+    const slotOf = {};
+    s.wheel.forEach((L, i) => { slotOf[L] = i; });
+    const ringOf = {};
+    s.nodes.forEach((n) => { ringOf[n.letter] = n.ring; });
+    if (ringOf['Y'] == null) continue;          // Y not in this sigil
+    const ys = slotOf['Y'];
+    const nbs = [s.wheel[mod(ys - 1, SLOTS)], s.wheel[mod(ys + 1, SLOTS)]];
+    // We can only read the ring of letters that appear as nodes; for the rest,
+    // re-derive by rebuilding is unnecessary — instead assert the weaker but
+    // still meaningful property on neighbours that ARE present.
+    const present = nbs.filter((L) => ringOf[L] != null);
     checked++;
+    const collides = present.some((L) => ringOf[L] === ringOf['Y']);
+    if (!collides) clean++;
   }
-  ok(checked === 7, 'collision-repair smoke set builds');
-}
-{
-  // Direct invariant check via a sigil that contains Y
-  const s = buildSigil('YKRST');
-  const slotOf = {}; s.wheel.forEach((L, i) => (slotOf[L] = i));
-  const yNode = s.nodes.find((n) => n.letter === 'Y');
-  ok(yNode != null, 'Y appears as a node when present in the string');
-}
+  ok(checked > 0, 'Y-collision invariant was exercised', `checked ${checked} sigils`);
+  eq(clean, checked, 'Y never shares a ring with a visible slot-adjacent letter');
+});
 
-/* polar / transforms */
-{
+group('§3 geometry — projection', () => {
   const F = { cx: 0, cy: 0, R: 100, base: 0 };
-  const [x0, y0] = polar(0, 1, ID_T, F);
-  near(x0, 0, 1e-9, 'slot 0 sits at 12 o’clock (x)');
-  near(y0, -100, 1e-9, 'slot 0 sits at 12 o’clock (y)');
+  const p0 = polar(0, 1, ID_T, F);
+  near(p0[0], 0, 1e-9, 'slot 0 sits at 12 o’clock (x)');
+  near(p0[1], -100, 1e-9, 'slot 0 sits at 12 o’clock (y)');
 
-  const [xq] = polar(SLOTS / 4, 1, ID_T, F);
+  const xq = polar(SLOTS / 4, 1, ID_T, F)[0];
   ok(xq > 0, 'increasing slots run clockwise on screen');
 
-  const [xm] = polar(SLOTS / 4, 1, { phi: 0, s: -1 }, F);
+  const xm = polar(SLOTS / 4, 1, { phi: 0, s: -1 }, F)[0];
   near(xm, -xq, 1e-9, 'mirror negates x');
 
   const a = polar(3, 1, { phi: 0, s: 1 }, F);
   const b = polar(0, 1, { phi: (TAU * 3) / SLOTS, s: 1 }, F);
   near(a[0], b[0], 1e-9, 'rotating by k slots ≡ offsetting the slot (x)');
   near(a[1], b[1], 1e-9, 'rotating by k slots ≡ offsetting the slot (y)');
-}
 
-/* strokes */
-{
+  const off = { cx: 500, cy: 300, R: 100, base: 0 };
+  const c = polar(5, 0.6, ID_T, off);
+  near(Math.hypot(c[0] - 500, c[1] - 300), 60, 1e-9, 'radius fraction is honoured');
+});
+
+group('§3 geometry — strokes', () => {
   const F = { cx: 0, cy: 0, R: 100, base: 0 };
   const A = { slot: 0, ring: 2 }, B = { slot: 7, ring: 2 };
+
   const straight = polyLength(segmentPoints(A, B, 0, ID_T, F, 1, 64));
-  const curved   = polyLength(segmentPoints(A, B, 0.6, ID_T, F, 1, 64));
+  const curved = polyLength(segmentPoints(A, B, 0.6, ID_T, F, 1, 64));
   ok(curved !== straight, 'a curve factor changes the stroke length');
-  near(straight, Math.hypot(...polar(0, 0.86, ID_T, F).map((v, i) => v - polar(7, 0.86, ID_T, F)[i])),
-       0.5, 'a zero curve factor is a straight chord');
+
+  const pa = polar(0, 0.86, ID_T, F), pb = polar(7, 0.86, ID_T, F);
+  near(straight, Math.hypot(pa[0] - pb[0], pa[1] - pb[1]), 0.5,
+       'a zero curve factor is a straight chord');
+
+  eq(segmentPoints(A, B, 0, ID_T, F, 1, 8).length, 18, 'N=8 yields 9 points (18 numbers)');
 
   const s = buildSigil('KRSTVM');
-  eq(tracePoints(s.nodes, s.curves, ID_T, F, 0).length, 2,
-     'progress 0 yields a single point');
+  eq(tracePoints(s.nodes, s.curves, ID_T, F, 0).length, 2, 'progress 0 yields a single point');
   const full = tracePoints(s.nodes, s.curves, ID_T, F, s.nodes.length - 1);
   ok(full.length > 2, 'full progress yields a polyline');
-  ok(full.length % 2 === 0, 'point list is flat pairs');
-  const half = tracePoints(s.nodes, s.curves, ID_T, F, 2.5);
-  ok(half.length < full.length, 'partial progress is shorter than full');
+  eq(full.length % 2, 0, 'point list is flat pairs');
+  ok(tracePoints(s.nodes, s.curves, ID_T, F, 2.5).length < full.length,
+     'partial progress is shorter than full');
+
+  const first = nodeXY(s.nodes[0], ID_T, F);
+  near(full[0], first[0], 1e-9, 'the path begins at the first node (x)');
+  near(full[1], first[1], 1e-9, 'the path begins at the first node (y)');
+  const lastNode = nodeXY(s.nodes[s.nodes.length - 1], ID_T, F);
+  near(full[full.length - 2], lastNode[0], 1e-6, 'the path ends at the last node (x)');
+  near(full[full.length - 1], lastNode[1], 1e-6, 'the path ends at the last node (y)');
+
   eq(polyLength([0, 0, 3, 4]), 5, 'polyLength() is Euclidean');
-}
+  eq(polyLength([7, 7]), 0, 'polyLength() of a single point is 0');
+});
 
 /* ═══════════════════════════════════════════════════════════════════════
    §4  THEORY
    ═══════════════════════════════════════════════════════════════════════ */
-group('§4 theory');
+group('§4 theory', () => {
+  eq(MODE_NAMES.length, MODE_WEIGHTS.length, 'MODE_WEIGHTS is parallel to MODE_NAMES');
+  ok(Object.values(MODES).every((m) => m.length === 7 && m[0] === 0),
+     'every mode has 7 degrees starting at 0');
+  ok(Object.values(MODES).every((m) => m.every((v, i) => i === 0 || v > m[i - 1])),
+     'every mode ascends');
+  eq(NOTE_NAMES.length, 12, 'twelve pitch-class names');
+  near(mtof(69), 440, 1e-9, 'A4 = 440 Hz');
+  near(mtof(81), 880, 1e-9, 'A5 = 880 Hz');
+  near(mtof(57), 220, 1e-9, 'A3 = 220 Hz');
 
-eq(MODE_NAMES.length, MODE_WEIGHTS.length, 'MODE_WEIGHTS is parallel to MODE_NAMES');
-ok(Object.values(MODES).every((m) => m.length === 7 && m[0] === 0),
-   'every mode has 7 degrees starting at 0');
-eq(NOTE_NAMES.length, 12, 'twelve pitch-class names');
-near(mtof(69), 440, 1e-9, 'A4 = 440 Hz');
-near(mtof(81), 880, 1e-9, 'A5 = 880 Hz');
-
-{
   const aeo = MODES.Aeolian;
   eq(degToMidi(0, 60, aeo), 60, 'degree 0 is the tonic');
   eq(degToMidi(7, 60, aeo), 72, 'degree 7 is an octave up');
   eq(degToMidi(-7, 60, aeo), 48, 'degree −7 is an octave down');
-  eq(degToMidi(-1, 60, aeo), 58, 'degree −1 is the leading tone below');
+  eq(degToMidi(-1, 60, aeo), 58, 'degree −1 is the seventh below');
   eq(degToMidi(14, 60, aeo), 84, 'degree 14 is two octaves up');
   eq(degToMidi(2, 60, aeo), 63, 'degree 2 in Aeolian is a minor third');
-}
 
-eq(fold(100, 60, 71), 64, 'fold() brings a high note into range');
-eq(fold(30, 60, 71), 66, 'fold() brings a low note into range');
-eq(fold(65, 60, 71), 65, 'fold() leaves an in-range note alone');
+  eq(fold(100, 60, 71), 64, 'fold() brings a high note into range');
+  eq(fold(30, 60, 71), 66, 'fold() brings a low note into range');
+  eq(fold(65, 60, 71), 65, 'fold() leaves an in-range note alone');
+});
 
-{
+group('§4 euclidean rhythm', () => {
   const e = euclid(4, 16, 0);
   eq(e.filter(Boolean).length, 4, 'E(4,16) has 4 onsets');
-  deepEq(e.map(Number).join(''), '1000100010001000', 'E(4,16) is four-on-the-floor');
+  eq(e.map(Number).join(''), '1000100010001000', 'E(4,16) is four-on-the-floor');
   eq(euclid(3, 8, 0).filter(Boolean).length, 3, 'E(3,8) has 3 onsets');
   eq(euclid(5, 16, 3).filter(Boolean).length, 5, 'rotation preserves onset count');
   eq(euclid(0, 16).filter(Boolean).length, 0, 'E(0,n) is silent');
   eq(euclid(16, 16).filter(Boolean).length, 16, 'E(n,n) is every step');
-}
+  eq(euclid(4, 16, 0).length, 16, 'length is n');
+});
 
 /* ═══════════════════════════════════════════════════════════════════════
-   §5  COMPOSER
+   §5  COMPOSER — units
    ═══════════════════════════════════════════════════════════════════════ */
-group('§5 composer');
-
-/* allocate() */
-{
+group('§5 allocate', () => {
   const a = allocate([1, 1, 1, 1], 32);
   eq(a.reduce((s, v) => s + v, 0), 32, 'allocate sums to the total');
   deepEq(a, [8, 8, 8, 8], 'equal weights split evenly');
@@ -362,12 +455,11 @@ group('§5 composer');
   eq(c.length, 40, 'more weights than units still returns one per weight');
   ok(c.every((v) => v >= 1), 'minimum of 1 is honoured even when over-subscribed');
 
-  const d = allocate([0, 0, 0], 9);
-  eq(d.reduce((s, v) => s + v, 0), 9, 'zero weights do not divide by zero');
-}
+  eq(allocate([0, 0, 0], 9).reduce((s, v) => s + v, 0), 9, 'zero weights do not divide by zero');
+  eq(allocate([3], 16)[0], 16, 'a single weight takes everything');
+});
 
-/* buildPhrase */
-{
+group('§5 buildPhrase', () => {
   const s = buildSigil('KRSTVM');
   const ph = buildPhrase(s, { k: 0, m: 1, reverse: false }, 0);
   eq(ph.notes.length, ph.seq.length, 'one note per node when density = 0');
@@ -375,35 +467,31 @@ group('§5 composer');
   const last = ph.notes[ph.notes.length - 1];
   near(last.start + last.dur, 16, 1e-9, 'the phrase fills exactly 16 beats');
   ok(ph.notes.every((n) => n.deg >= -2 && n.deg <= 10), 'degrees stay in the singable window');
-  ok(ph.notes.every((n, i) => i === 0 || n.start >= ph.notes[i - 1].start),
-     'notes are in time order');
+  ok(ph.notes.every((n, i) => i === 0 || n.start >= ph.notes[i - 1].start), 'notes are in time order');
   ok(ph.path.every((n, i) => Math.abs(n.beat - ph.notes[i].start) < 1e-9),
      'the pen arrives at each node exactly on its note');
-}
-{
-  const short = buildSigil('KRS');                         // 3 letters ≤ 6
-  const ph = buildPhrase(short, { k: 0, m: 1, reverse: false }, 0);
-  eq(ph.seq.length, 6, 'short sigils are traced twice per phrase');
-  eq(ph.curves.length, 5, 'doubled curves include the join stroke');
-}
-{
-  const s = buildSigil('KRSTVM');
+  ok(ph.notes.every((n) => n.dur >= 0.5), 'every note lasts at least an eighth');
+
+  const short = buildPhrase(buildSigil('KRS'), { k: 0, m: 1, reverse: false }, 0);
+  eq(short.seq.length, 6, 'short sigils are traced twice per phrase');
+  eq(short.curves.length, 5, 'doubled curves include the join stroke');
+
   const fwd = buildPhrase(s, { k: 0, m: 1, reverse: false }, 0);
   const rev = buildPhrase(s, { k: 0, m: 1, reverse: true }, 0);
   deepEq(rev.seq.map((n) => n.letter), fwd.seq.map((n) => n.letter).reverse(),
          'reverse traces the path backwards');
-}
-{
-  // Rotation by k slots transposes by k mod 7 before the voice-leading fold.
-  const s = buildSigil('KRSTVM');
-  const a = buildPhrase(s, { k: 0, m: 1, reverse: false }, 0);
-  const b = buildPhrase(s, { k: 7, m: 1, reverse: false }, 0);
-  deepEq(b.notes.map((n) => mod(n.deg, 7)), a.notes.map((n) => mod(n.deg, 7)),
-         'rotating by 7 slots leaves the scale degrees unchanged mod 7');
-}
 
-/* addPassing */
-{
+  const rot7 = buildPhrase(s, { k: 7, m: 1, reverse: false }, 0);
+  deepEq(rot7.notes.map((n) => mod(n.deg, 7)), fwd.notes.map((n) => mod(n.deg, 7)),
+         'rotating by 7 slots leaves the scale degrees unchanged mod 7');
+
+  const dense = buildPhrase(s, { k: 0, m: 1, reverse: false }, 1);
+  ok(dense.notes.length >= fwd.notes.length, 'density 1 never removes notes');
+  const dl = dense.notes[dense.notes.length - 1];
+  near(dl.start + dl.dur, 16, 1e-9, 'a dense phrase still fills exactly 16 beats');
+});
+
+group('§5 addPassing', () => {
   const base = [
     { start: 0, dur: 2, deg: 0, passing: false, glide: false },
     { start: 2, dur: 2, deg: 4, passing: false, glide: false },
@@ -419,10 +507,12 @@ group('§5 composer');
     { start: 2, dur: 2, deg: 1, passing: false, glide: false },
   ]);
   eq(step.length, 2, 'no passing tones across a step');
-}
 
-/* harmonize */
-{
+  const one = addPassing([{ start: 0, dur: 4, deg: 0, passing: false, glide: false }]);
+  eq(one.length, 1, 'a single note is returned unchanged');
+});
+
+group('§5 harmony', () => {
   const sc = MODES.Aeolian;
   const bias = new Array(7).fill(0);
   const notes = [
@@ -431,6 +521,7 @@ group('§5 composer');
     { start: 8, dur: 4, deg: 4, passing: false },
     { start: 12, dur: 4, deg: 0, passing: false },
   ];
+
   const full = harmonize(notes, sc, bias, 'full');
   eq(full.length, 4, 'one chord per bar');
   eq(full[3], 0, 'a full cadence lands on the tonic');
@@ -440,41 +531,38 @@ group('§5 composer');
   eq(half.length, 4, 'half cadence also yields four chords');
   ok(validChords(sc).includes(half[3]), 'half cadence chord is valid');
 
-  // Determinism
   deepEq(harmonize(notes, sc, bias, 'full'), full, 'harmonize is pure');
-}
-{
-  const sc = MODES.Ionian;
-  const v = validChords(sc);
-  deepEq(v, [0, 1, 2, 3, 4, 5], 'Ionian: vii° is excluded');
-  ok(!validChords(MODES.Aeolian).includes(1), 'Aeolian: ii° is excluded');
-}
 
-/* voicing helpers */
-{
+  deepEq(validChords(MODES.Ionian), [0, 1, 2, 3, 4, 5], 'Ionian: vii° is excluded');
+  ok(!validChords(MODES.Aeolian).includes(1), 'Aeolian: ii° is excluded');
+  ok(validChords(MODES['Harmonic minor']).length >= 4, 'harmonic minor still has usable triads');
+});
+
+group('§5 voicing helpers', () => {
   const sc = MODES.Aeolian, base = 57;
+
   const v = padVoicing(0, sc, base, { seventh: true, ninth: false });
   eq(v.length, 5, 'a seventh voicing has a root plus four tones');
   ok(v.every((m, i) => i === 0 || m >= v[i - 1]), 'voicing is sorted ascending');
   ok(v[0] < base - 7, 'the pad root sits below the close-position cluster');
+  const upper = v.slice(1);
+  ok(Math.max(...upper) - Math.min(...upper) <= 11, 'upper voices fit inside one octave');
 
-  const span = Math.max(...v.slice(1)) - Math.min(...v.slice(1));
-  ok(span <= 11, 'upper voices fit inside one octave');
+  eq(padVoicing(0, sc, base, { seventh: false, ninth: false }).length, 4, 'a plain triad has 4 tones');
 
-  eq(bassPitch(0, 'oct', 33, sc) - bassPitch(0, 'root', 33, sc), 12, 'role "oct" is a root + 12');
+  eq(bassPitch(0, 'oct', 33, sc) - bassPitch(0, 'root', 33, sc), 12, 'role "oct" is root + 12');
   ok(bassPitch(0, 'fifth', 33, sc) !== bassPitch(0, 'root', 33, sc), 'role "fifth" differs from the root');
 
   const t = arpTones(0, sc, 57);
   eq(t.length, 5, 'five arpeggio tones');
   ok(t.every((m, i) => i === 0 || m > t[i - 1]), 'arpeggio tones ascend');
-}
+  ok(t[0] <= 57 + 9, 'the arpeggio is folded under the melody');
+});
 
 /* ═══════════════════════════════════════════════════════════════════════
    §5  composeSong — structure
    ═══════════════════════════════════════════════════════════════════════ */
-group('§5 composeSong');
-
-{
+group('§5 composeSong', () => {
   const s = buildSigil('KRSTVM');
   const song = composeSong(s);
 
@@ -493,8 +581,7 @@ group('§5 composeSong');
 
   ok(song.events.every((e, i) => i === 0 || e.beat >= song.events[i - 1].beat),
      'events are sorted by beat');
-  ok(song.events.every((e) => e.beat >= 0 && e.beat <= song.total),
-     'no event falls outside the song');
+  ok(song.events.every((e) => e.beat >= 0 && e.beat <= song.total), 'no event falls outside the song');
   ok(song.events.length > 200, 'the score is substantial', `got ${song.events.length}`);
 
   eq(song.chimes.length, s.nodes.length, 'one chime per letter');
@@ -506,13 +593,11 @@ group('§5 composeSong');
   ok(MODE_NAMES.includes(song.modeName), 'mode is a known mode');
   ok(/^[A-G][♯♭]? /.test(song.keyName), 'keyName is well formed', song.keyName);
 
-  // Every pitched event is in MIDI range
   const pitched = song.events.filter((e) => e.midi != null);
   ok(pitched.every((e) => e.midi >= 0 && e.midi <= 127), 'all midi values are valid');
-  const pads = song.events.filter((e) => e.type === 'pad');
-  ok(pads.every((e) => e.midis.every((m) => m >= 0 && m <= 127)), 'all pad voicings are valid');
+  ok(song.events.filter((e) => e.type === 'pad')
+       .every((e) => e.midis.every((m) => m >= 0 && m <= 127)), 'all pad voicings are valid');
 
-  // Lens metadata present on every pitched melodic event
   ok(song.events.filter((e) => ['lead', 'harm', 'bell'].includes(e.type))
        .every((e) => e.deg != null && e.reg != null),
      'melodic events carry deg/reg metadata for the Live Lens');
@@ -520,17 +605,16 @@ group('§5 composeSong');
        .every((e) => e.chord != null),
      'harmonic events carry their chord for the Live Lens');
 
-  // Determinism of the whole score
   const again = composeSong(s);
   eq(again.events.length, song.events.length, 'composeSong is deterministic (event count)');
   eq(JSON.stringify(again.events.map((e) => [e.beat, e.type, e.midi || 0])),
      JSON.stringify(song.events.map((e) => [e.beat, e.type, e.midi || 0])),
      'composeSong is deterministic (event stream)');
-}
+});
 
-/* Time-lookup helpers */
-{
-  const s = buildSigil('KRSTVM'), song = composeSong(s);
+group('§5 time lookup', () => {
+  const song = composeSong(buildSigil('KRSTVM'));
+
   eq(sectionIndexAt(song, 0), 0, 'sectionIndexAt at beat 0');
   eq(sectionIndexAt(song, song.total - 0.001), 6, 'sectionIndexAt at the end');
   eq(sectionIndexAt(song, song.sections[3].start), 3, 'sectionIndexAt on a boundary');
@@ -541,24 +625,22 @@ group('§5 composeSong');
   eq(penProgress(ph, -5), 0, 'penProgress clamps before the phrase');
   eq(penProgress(ph, 1e9), ph.path.length - 1, 'penProgress clamps after the phrase');
   ok(penProgress(ph, ph.path[1].beat) >= 1 - 1e-9, 'the pen reaches node 1 on its beat');
+  ok(penProgress(ph, ph.path[0].beat + 0.001) > 0, 'the pen starts moving immediately');
 
   eq(pulse([], 10, 5), 0, 'pulse() on an empty list is 0');
   eq(pulse([0], 0, 5), 1, 'pulse() is 1 at the instant of the hit');
   ok(pulse([0], 10, 5) < 0.001, 'pulse() decays');
   eq(pulse([0, 4, 8], 2, 5), pulse([0], 2, 5), 'pulse() finds the most recent hit');
+  eq(pulse([4, 8], 0, 5), 0, 'pulse() before the first hit is 0');
 
-  const t0 = displayTransform(song, 0);
-  near(t0.s, 1, 1e-9, 'display transform starts unmirrored');
-  const t4 = displayTransform(song, song.sections[3].start + 3);
-  near(t4.s, -1, 1e-6, 'Reflection settles into a mirror');
-}
+  near(displayTransform(song, 0).s, 1, 1e-9, 'display transform starts unmirrored');
+  near(displayTransform(song, song.sections[3].start + 3).s, -1, 1e-6,
+       'Reflection settles into a mirror');
+});
 
 /* ═══════════════════════════════════════════════════════════════════════
-   GOLDEN SNAPSHOTS — the determinism regression net.
-   A failure here means an existing sigil has changed. Do not "fix" the
-   snapshot; bump 'SIGIL/v1::' instead.
+   GOLDEN SNAPSHOTS — the determinism regression net
    ═══════════════════════════════════════════════════════════════════════ */
-group('golden snapshots');
 
 /** Compact, stable fingerprint of a whole composition. */
 function fingerprint(reduced) {
@@ -572,45 +654,54 @@ function fingerprint(reduced) {
     s.palette.name,
     song.keyName, song.bpm, song.leadTimbre, song.rotK, song.shift, song.total,
     song.events.length,
-    song.events.map((e) => `${e.beat.toFixed(3)}|${e.type}|${e.midi ?? (e.midis ? e.midis.join('.') : '')}|${(e.vel ?? 0).toFixed(3)}`).join(';'),
+    song.events.map((e) =>
+      `${e.beat.toFixed(3)}|${e.type}|${e.midi != null ? e.midi : (e.midis ? e.midis.join('.') : '')}|${(e.vel != null ? e.vel : 0).toFixed(3)}`
+    ).join(';'),
   ].join('#');
   return toHex(hashStr(parts)).slice(0, 32);
 }
+window.fingerprint = fingerprint;   // so you can regenerate from the console
 
-/* To (re)generate after an INTENTIONAL, version-bumped change, open the
-   console and run:  GOLDEN_INPUTS.map(x => [x, fingerprint(x)])           */
 const GOLDEN_INPUTS = ['KRSTVM', 'THWLBDNS', 'BCD', 'PLMNKJHGFDSTRVWXYZBC'];
 
-/* Snapshots are recorded on first run and stored in localStorage so that the
-   spec is self-seeding for a fresh clone; paste them into GOLDEN below once
-   you are happy with them, to make the net permanent and shareable. */
-const GOLDEN = Prefs.get('spec.golden', null);
+group('golden snapshots', () => {
+//  const GOLDEN = store.get('spec.golden', null);
+  /* Frozen baseline — generated once and committed. Never edit to make a test
+     pass; a mismatch means an existing sigil has changed. */
+     const GOLDEN_FIXED = {
+    KRSTVM: '1cd7672a027313418bebf25ba42f4e8b',
+    THWLBDNS: '11eaecba6fa2529492fd30a694f4acdf',
+    BCD: '691cb2469b2ae67bb37f2cec7e476ab2',
+    PLMNKJHGFDSTRVWXYZBC: '03ca9bd62ffa5c792ee2a83f0bee7587',
+  };
+  const GOLDEN = GOLDEN_FIXED.KRSTVM !== 'PASTE_ME' ? GOLDEN_FIXED : store.get('spec.golden', null);
 
-if (!GOLDEN) {
-  const rec = Object.fromEntries(GOLDEN_INPUTS.map((x) => [x, fingerprint(x)]));
-  Prefs.set('spec.golden', rec);
-  out.insertAdjacentHTML('beforeend',
-    `<div class="row detail">no snapshots found — recorded baseline:<br>` +
-    Object.entries(rec).map(([k, v]) => `  ${k} → ${v}`).join('<br>') +
-    `<br>paste these into the GOLDEN constant to make them permanent.</div>`);
-  ok(true, 'baseline snapshots recorded (re-run to verify)');
-} else {
-  for (const input of GOLDEN_INPUTS) {
-    const got = fingerprint(input);
-    ok(got === GOLDEN[input], `golden: ${input}`,
-       `expected ${GOLDEN[input]}\n  got      ${got}\n  ⚠ an existing sigil has CHANGED`);
+  if (!GOLDEN) {
+    const rec = {};
+    for (const x of GOLDEN_INPUTS) rec[x] = fingerprint(x);
+    store.set('spec.golden', rec);
+    detail('no snapshots found — recorded baseline:<br>' +
+      Object.keys(rec).map((k) => `  ${k} → ${rec[k]}`).join('<br>') +
+      '<br>paste these into the GOLDEN_FIXED constant below to make them permanent.');
+    ok(true, 'baseline snapshots recorded (re-run to verify)');
+  } else {
+    for (const input of GOLDEN_INPUTS) {
+      const got = fingerprint(input);
+      ok(got === GOLDEN[input], `golden: ${input}`,
+         `expected ${GOLDEN[input]}\n  got      ${got}\n  ⚠ an existing sigil has CHANGED`);
+    }
   }
-}
 
-/* Cross-check that the fingerprint is actually sensitive */
-ok(fingerprint('KRSTVM') !== fingerprint('KRSTVN'),
-   'the fingerprint distinguishes different sigils');
+  ok(fingerprint('KRSTVM') !== fingerprint('KRSTVN'),
+     'the fingerprint distinguishes different sigils');
+});
 
 /* ═══════════════════════════════════════════════════════════════════════ */
 document.getElementById('summary').innerHTML =
-  fail === 0
+  (fail === 0
     ? `<span class="ok">✓ ${pass} passing</span>`
-    : `<span class="fail">✗ ${fail} failing</span> · <span class="ok">${pass} passing</span>`;
+    : `<span class="fail">✗ ${fail} failing</span> · <span class="ok">${pass} passing</span>`) +
+  (warned ? ` · <span class="warn">${warned} warning${warned === 1 ? '' : 's'}</span>` : '');
 document.title = (fail ? `✗ ${fail} FAIL` : `✓ ${pass} ok`) + ' — sigil core spec';
 </script>
 </body>

@@ -16,6 +16,15 @@
 const Form = (() => {
   'use strict';
   const { h } = UI;
+    /* M4 replaces Engine.pump and Engine.beatNow wholesale and wraps start/seek.
+     If the Engine's surface changes, fail loudly here rather than silently
+     scheduling against an API that no longer exists. */
+     for (const m of ['start', 'seek', 'pump', 'beatNow', 'play', 'load', 'stop']) {
+        if (typeof Engine.prototype[m] !== 'function') {
+          console.error(`[M4 Form] Engine.prototype.${m} is missing. ` +
+            'M4 patches the transport and cannot function. See the patch-point block in 06-engine.js.');
+        }
+      }
 
   /** Binary search: index of the first event with beat ≥ b. */
   function firstAt(events, b) {

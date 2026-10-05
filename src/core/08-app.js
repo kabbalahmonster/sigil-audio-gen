@@ -14,6 +14,101 @@
    (cast, forget, newDesire, toggleCharge, UI.recompose).
    ══════════════════════════════════════════════════════════════════════════ */
 
+
+/* ══════════════════════════════════════════════════════════════════════════
+   §8.-1  PREFLIGHT
+   --------------------------------------------------------------------------
+   Classic scripts fail silently. If a core file does not load or does not
+   parse, its top-level declarations simply never exist, and the FIRST thing
+   that touches one of them throws - usually deep inside a constructor, three
+   files later, producing a cascade of misleading errors.
+
+   This check runs before anything else in the application and reports the
+   truth: which file is missing, by name. It then halts, so the console is not
+   flooded with downstream noise.
+
+   MAINTENANCE: when you add a core file, add it to REQUIRED. When you add a
+   major exported symbol to an existing file, add it here too. The cost is one
+   line; the benefit is never debugging a phantom again.
+   ══════════════════════════════════════════════════════════════════════════ */
+   (function preflight() {
+    const REQUIRED = {
+      'src/core/00-utils.js':     ['$', 'wait', 'TAU', 'mod', 'clamp', 'lerp', 'ease', 'rgba', 'te', 'SERIF', 'Hooks', 'Prefs'],
+      'src/core/01-crypto.js':    ['SHA256', 'toHex', 'hashStr', 'sfc32', 'mulberry32', 'Rng', 'stream'],
+      'src/core/02-reduction.js': ['VOWELS', 'reduceDesire'],
+      'src/core/03-geometry.js':  ['SLOTS', 'CONSONANTS', 'RINGS', 'ID_T', 'UNIT_F', 'PALETTES',
+                                   'buildSigil', 'polar', 'nodeXY', 'segmentPoints', 'tracePoints', 'polyLength'],
+      'src/core/04-theory.js':    ['MODES', 'MODE_NAMES', 'MODE_WEIGHTS', 'NOTE_NAMES', 'mtof', 'degToMidi', 'fold', 'euclid'],
+      'src/core/05-composer.js':  ['makePlan', 'allocate', 'buildPhrase', 'addPassing', 'harmonize',
+                                   'validChords', 'bassPitch', 'arpTones', 'padVoicing', 'ARP_PATTERNS',
+                                   'composeSong', 'sectionIndexAt', 'phraseIndexAt', 'penProgress',
+                                   'pulse', 'displayTransform'],
+      'src/core/06-engine.js':    ['Engine'],
+      'src/core/07-renderer.js':  ['Renderer'],
+    };
+  
+    /* `typeof X` on an UNDECLARED identifier is safe and yields "undefined".
+       `typeof X` on a DECLARED-but-uninitialised (TDZ) identifier throws. Both
+       mean "not usable", so we treat a throw as missing. The Function
+       constructor evaluates in global scope, where the global lexical bindings
+       created by earlier classic scripts are visible. */
+    const probe = (name) => {
+      try { return new Function('return typeof ' + name)() !== 'undefined'; }
+      catch (e) { return false; }
+    };
+  
+    const broken = [];
+    for (const file of Object.keys(REQUIRED)) {
+      const missing = REQUIRED[file].filter((s) => !probe(s));
+      if (missing.length) broken.push({ file, missing });
+    }
+    if (!broken.length) return;
+  
+    /* Report loudly: console, document title, and a full-screen overlay that
+       cannot be missed or scrolled past. */
+    const lines = broken.map((b) =>
+      `  ${b.file}\n      missing: ${b.missing.join(', ')}`).join('\n');
+  
+    console.error(
+      '%cSIGIL BOOT FAILURE', 'color:#ff5a4a;font-size:16px;font-weight:bold',
+      `\n\n${broken.length} core file(s) did not load or did not parse:\n\n${lines}\n\n` +
+      'Every other error in this console is a consequence of the above. Fix these first.\n' +
+      'Most common causes:\n' +
+      '  1. The page is opened with file:// - some browsers refuse to load sibling\n' +
+      '     scripts from an opaque file origin. Serve over HTTP instead.\n' +
+      '  2. The file is missing, misnamed, or saved to the wrong directory.\n' +
+      '  3. The file has a syntax error. Open it directly in the browser\n' +
+      '     (e.g. http://localhost:8080/src/core/03-geometry.js) to confirm it\n' +
+      '     exists, then check the Sources panel for a parse error.');
+  
+    document.title = 'SIGIL — boot failure';
+  
+    const pre = document.createElement('pre');
+    pre.textContent =
+      'SIGIL — BOOT FAILURE\n\n' +
+      broken.length + ' core file(s) did not load or did not parse:\n\n' + lines + '\n\n' +
+      'Every other error in the console is a consequence of this one.\n\n' +
+      'Checklist:\n' +
+      '  1. Are you opening the page with file:// ?  Serve over HTTP:\n' +
+      '       python3 -m http.server 8080\n' +
+      '     then open http://localhost:8080/\n' +
+      '  2. Does the file exist at exactly that path, with that exact name?\n' +
+      '  3. Open the file directly in the browser to check it is complete\n' +
+      '     and free of syntax errors.\n';
+    pre.setAttribute('style',
+      'position:fixed;inset:0;z-index:99999;margin:0;padding:6vh 6vw;' +
+      'background:#0a0807;color:#ff9650;font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;' +
+      'white-space:pre-wrap;overflow:auto');
+    (document.body || document.documentElement).appendChild(pre);
+  
+    // Halt this file. Later module scripts may still throw; the overlay above is
+    // the only message that matters.
+    throw new Error('SIGIL preflight failed: ' + broken.map((b) => b.file).join(', '));
+  })();
+
+
+
+
 /* ── §8.0 STATE ────────────────────────────────────────────────────────── */
 
 const app = {
@@ -545,14 +640,21 @@ const SigilCore = {
    kit handles the EXTENDED link format #A+B~mood, which supersedes this when
    the modules are present.)
    ─────────────────────────────────────────────────────────────────────────── */
-(function boot() {
-  const h = decodeURIComponent(location.hash.slice(1)).toUpperCase();
-  if (/^[BCDFGHJKLMNPQRSTVWXYZ]{3,21}$/.test(h) && new Set(h).size === h.length) {
-    $('#desire').value = h;
-    $('#desireLabel').textContent = 'A sigil has been shared with you. Cast it to hear it sing.';
-  }
-
-  setTimeout(() => $('#desire').focus({ preventScroll: true }), 900);
+   (function boot() {
+    /* Shared-link prefill.
+       The UI kit's parser (UI.parseKey) understands the EXTENDED format
+       (#A+B~mood) and is the single source of truth once it has loaded. This
+       core handler exists only as a fallback for the degenerate case where the
+       UI kit is absent — so it marks what it did, and the UI kit skips if the
+       work is already done and nothing richer is on offer. */
+    const h = decodeURIComponent(location.hash.slice(1)).toUpperCase();
+    if (/^[BCDFGHJKLMNPQRSTVWXYZ]{3,21}$/.test(h) && new Set(h).size === h.length) {
+      $('#desire').value = h;
+      $('#desireLabel').textContent = 'A sigil has been shared with you. Cast it to hear it sing.';
+      app.linkPrefilled = h;
+    }
+  
+    setTimeout(() => $('#desire').focus({ preventScroll: true }), 900);
 
   // The single render loop. Everything visual is driven from here.
   (function loop() {

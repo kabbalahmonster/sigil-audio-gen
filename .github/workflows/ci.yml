@@ -1,0 +1,13 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  golden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Syntax check every source file
+        run: find src -name '*.js' -not -path '*/vendor/*' -exec node --check {} \;
+      - name: Golden snapshot
+        run: npm test

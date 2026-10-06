@@ -358,6 +358,9 @@ class Engine {
     let s = Math.round(ev.beat * 960) | 0;
     for (let i = 0; i < ev.type.length; i++) s = (s * 31 + ev.type.charCodeAt(i)) | 0;
     this._nr = mulberry32(s ^ ((ev.midi || 0) * 2654435761));
+        // Extension point: the Sound module (m11) may render this event itself.
+    // It returns true when it has handled the event. Legacy voices run otherwise.
+    if (Hooks.filter('voice', null, ev, t, this) === true) return;
 
     switch (ev.type) {
       case 'lead':   return this.lead(ev, t);

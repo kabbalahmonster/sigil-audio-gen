@@ -104,6 +104,7 @@ const Render = (() => {
 
     const len = e - w0, off = new OAC(2, Math.ceil(len * sr), sr);
     const eng = new Engine(off);
+    if (window.Sound) await Sound.prepare(off);   // every offline context needs its own worklet
     eng.load(song);
     eng.spb = spb;
     eng.delay.delayTime.setValueAtTime(spb * 0.75, 0);

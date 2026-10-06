@@ -235,13 +235,26 @@ const UI = (() => {
   const MEMBER = /^[BCDFGHJKLMNPQRSTVWXYZ]{3,21}$/;
   const validMember = (s) => MEMBER.test(s) && new Set(s).size === s.length;
 
+  /**
+   * Parse a link: #MEMBERS[~mood][!patch]
+   *   #KRSTV                  one sigil
+   *   #KRSTV+MNLP             a fusion
+   *   #KRSTV~ambient          with a mood
+   *   #KRSTV!eyJ3IjoyLjV9     with a tuned patch (see 05b encodePatch)
+   * Returns null for anything malformed.
+   */
   function parseKey(str) {
     let raw = String(str || '').replace(/^#/, '');
     try { raw = decodeURIComponent(raw); } catch { return null; }
-    const [bodyPart, preset] = raw.split('~');
+    const [main, sound] = raw.split('!');
+    const [bodyPart, preset] = (main || '').split('~');
     const members = (bodyPart || '').toUpperCase().split('+').filter(Boolean);
     if (!members.length || members.length > 3 || !members.every(validMember)) return null;
-    return { members, preset: preset ? preset.toLowerCase() : null };
+    return {
+      members,
+      preset: preset ? preset.toLowerCase() : null,
+      sound: sound || null,
+    };
   }
 
   const formatKey = ({ members, preset }) =>

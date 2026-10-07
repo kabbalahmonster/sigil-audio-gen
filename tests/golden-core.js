@@ -27,16 +27,16 @@ function fingerprint(reduced) {
   return toHex(hashStr(parts)).slice(0, 32);
 }
 
-/** Sound fingerprint: wavetable coefficients (quantised to 1e-4) plus the derived patch. */
+/** Sound fingerprint: the whole cube (quantised to 1e-4) plus the derived patch. */
 function soundFingerprint(reduced, variant) {
   const sig = buildSigil(reduced);
   const tb = SoundDesign.tables(sig, variant);
   const q = (x) => Math.round(x * 1e4);
   const parts = [JSON.stringify(SoundDesign.derive(sig.hash, variant))];
-  for (const fr of tb.frames) {
-    parts.push(Array.from(fr.re, q).join(','), Array.from(fr.im, q).join(','));
+  for (const row of tb.grid) {
+    for (const fr of row) parts.push(Array.from(fr.re, q).join(','), Array.from(fr.im, q).join(','));
   }
-  const mid = SoundDesign.waveSamples(tb.frames[0], tb.frames[tb.frames.length - 1], 0.5, 64);
+  const mid = SoundDesign.waveSamples(tb.grid[0][0], tb.grid[4][8], 0.5, 64);
   parts.push(Array.from(mid, q).join(','));
   return toHex(hashStr(parts.join('#'))).slice(0, 32);
 }

@@ -127,7 +127,7 @@ async function cast(opts = {}) {
     const song = composeSong(sigil);
     Object.assign(app, { sigil, song, lit: 0, reduceStart: performance.now() / 1000 });
     applyPalette(sigil.palette);
-    if (window.Sound) await Sound.prepare(app.engine.ctx);   // bit-crusher worklet (no-op if already loaded)
+    if (typeof Sound !== 'undefined') await Sound.prepare(app.engine.ctx);
     app.engine.load(song);
 
     $('#invoke').classList.add('away');

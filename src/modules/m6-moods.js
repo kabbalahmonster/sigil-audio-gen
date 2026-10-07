@@ -112,6 +112,91 @@ const Moods = (() => {
         }
       },
     },
+    glacier: {
+      label: 'Glacier', blurb: 'Vast and slow. Sub-heavy pads, deep chorus, no drums, nothing in a hurry.',
+      compose(cfg) {
+        cfg.bpm = Math.round(cfg.bpm * 0.55);
+        cfg.modeName = cfg.modeName === 'Phrygian' ? 'Aeolian' : cfg.modeName;
+        cfg.voicing = { seventh: true, ninth: true };
+        cfg.P.swing = 0;
+        cfg.levels = { drums: 0, bass: 0.9, pad: 1.3, drone: 1.35, arp: 0.4 };
+        cfg.sound = { sub: 0.9, chorus: 0.8, grit: 0, bright: 0.35, sweep: 0.25, drift: 0.15, echo: 0.7 };
+      },
+      plan(plan) {
+        for (const s of plan) { s.intensity = 0; s.drone = true; s.halfTime = false; s.density = 0; if (s.arp) s.arp = 'light'; }
+      },
+    },
+
+    swarm: {
+      label: 'Swarm', blurb: 'Rolling arpeggios everywhere, metallic and restless, like something counting.',
+      compose(cfg, R) {
+        cfg.modeName = R.pick(['Dorian', 'Phrygian']);
+        cfg.bpm = Math.round(cfg.bpm * 1.18);
+        cfg.P.arp = 'broken';
+        cfg.P.swing = 0;
+        cfg.levels = { arp: 1.25, pad: 0.8, drums: 0.95 };
+        cfg.sound = { layer: 3, drift: 0.7, sweep: 0.8, grit: 0.45, bits: 6, hold: 2, chorus: 0.5, sub: 0.2 };
+      },
+      plan(plan) {
+        for (const s of plan) {
+          if (s.id === 'intro' || s.id === 'outro') { s.intensity = 1; s.arp = 'light'; continue; }
+          s.intensity = Math.max(2, s.intensity); s.arp = 'full'; s.density = 1; s.halfTime = false;
+        }
+      },
+    },
+
+    abyss: {
+      label: 'Abyss', blurb: 'Down in the dark. Harmonic minor, half-time, a folded sub that will not let go.',
+      compose(cfg, R) {
+        cfg.modeName = R.pick(['Phrygian', 'Harmonic minor']);
+        cfg.bpm = Math.round(cfg.bpm * 0.65);
+        cfg.leadTimbre = 'reed';
+        cfg.levels = { bass: 1.3, drone: 1.4, drums: 0.85, bell: 0.7 };
+        cfg.sound = { layer: 4, sub: 1, fold: 0.45, drive: 0.5, grit: 0.55, bits: 8, bright: 0.25, throat: -0.45 };
+      },
+      plan(plan) {
+        for (const s of plan) {
+          s.drone = true; s.intensity = Math.min(2, s.intensity);
+          if (s.intensity > 0) s.halfTime = true;
+        }
+      },
+    },
+
+    aurora: {
+      label: 'Aurora', blurb: 'Lydian and luminous. Wide chorus, bright bells, drums far away.',
+      compose(cfg) {
+        const LIFT = { Aeolian: 'Lydian', Phrygian: 'Lydian', Dorian: 'Mixolydian', 'Harmonic minor': 'Ionian' };
+        cfg.modeName = LIFT[cfg.modeName] || 'Lydian';
+        cfg.bpm = Math.round(cfg.bpm * 0.88);
+        cfg.leadTimbre = 'glass';
+        cfg.voicing = { seventh: false, ninth: true };
+        cfg.levels = { drums: 0.5, arp: 1.1, pad: 1.15, bell: 1.1 };
+        cfg.sound = { chorus: 0.85, bright: 0.95, layer: 2, sweep: 0.6, drift: 0.45, grit: 0, echo: 0.65, sub: 0.25 };
+      },
+      plan(plan) {
+        for (const s of plan) {
+          s.intensity = Math.min(2, s.intensity); s.halfTime = false;
+          if (s.intensity >= 2) s.arp = 'light';
+        }
+      },
+    },
+
+    procession: {
+      label: 'Procession', blurb: 'Something is being carried. Heavy half-time drums, a drone beneath it all.',
+      compose(cfg) {
+        cfg.bpm = Math.round(cfg.bpm * 0.78);
+        cfg.P.kick = euclid(3, 16, 0);
+        cfg.P.swing = Math.max(cfg.P.swing, 0.12);
+        cfg.levels = { drums: 1.15, drone: 1.25, bass: 1.1, arp: 0.6 };
+        cfg.sound = { drums: 1.3, sub: 0.6, drive: 0.35, grit: 0.3, bits: 10, chorus: 0.3, bright: 0.5 };
+      },
+      plan(plan) {
+        for (const s of plan) {
+          if (s.id === 'intro' || s.id === 'outro') { s.intensity = 1; continue; }
+          s.intensity = Math.max(2, s.intensity); s.halfTime = true; s.drone = true;
+        }
+      },
+    },
   };
 
   let current = MOODS[Prefs.get('mood', 'ritual')] ? Prefs.get('mood', 'ritual') : 'ritual';
@@ -165,3 +250,5 @@ const Moods = (() => {
 
   return { set, get: () => current, MOODS };
 })();
+
+window.Moods = Moods;

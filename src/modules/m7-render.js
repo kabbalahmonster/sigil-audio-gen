@@ -94,7 +94,7 @@ const Render = (() => {
    * Render song time [a, e) in its own OfflineAudioContext.
    * @returns {[Float32Array, Float32Array]} L and R, starting exactly at `a`
    */
-  async function renderSegment(song, spb, sr, tl, a, e, onFrac) {
+  async function renderSong(song, sr, onProgress, opts = {}) {
     const inc = tl.filter((x) => x.t < e && x.end > a - PRE_FX);   // everything audible in the window
 
     // Reach back far enough to catch long voices (drones) that started earlier.
@@ -104,7 +104,7 @@ const Render = (() => {
 
     const len = e - w0, off = new OAC(2, Math.ceil(len * sr), sr);
     const eng = new Engine(off);
-    if (window.Sound) await Sound.prepare(off);   // every offline context needs its own worklet
+    if (typeof Sound !== 'undefined') await Sound.prepare(off);
     eng.load(song);
     eng.spb = spb;
     eng.delay.delayTime.setValueAtTime(spb * 0.75, 0);
@@ -144,7 +144,7 @@ const Render = (() => {
     // spb, so that N passes are exactly N × passN samples with no drift.
     const passN = Math.round(song.total * spb * sr);
     spb = passN / (song.total * sr);
-    const pass = passN / sr, L = S.loops;
+    const pass = passN / sr, L = opts.loops || S.loops;   // m14 (Evolve) renders one pass at a time
 
     const useLens = S.lens && typeof LiveLens !== 'undefined' && LiveLens.active();
     const cores = navigator.hardwareConcurrency || 4;
@@ -634,5 +634,7 @@ self.onmessage = function (e) {
   Hooks.on('song', refresh);
   Hooks.on('forget', () => setTimeout(refresh, 4000));
 
-  return { renderSong, encode, encodeWav, muxOggOpus };
+  return { renderSong, encode, encodeWav, muxOggOpus, normalize };
 })();
+
+window.Render = Render; 

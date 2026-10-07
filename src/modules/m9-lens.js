@@ -219,5 +219,11 @@ const LiveLens = (() => {
         UI.button('Reset', reset)));
   } });
 
-  return { map, mapChord, active, rotate, mirror, reset };
+  return {
+    map, mapChord, active, rotate, mirror, reset,
+    /** Current rotation in slots. Read by m11 when "Lens sweeps the wavetable" is on. */
+    get shift() { return k; },
+  };
 })();
+
+window.LiveLens = LiveLens;

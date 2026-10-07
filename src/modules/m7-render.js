@@ -55,17 +55,20 @@ const Render = (() => {
 
   /* ═════════ 1. RENDERING ═════════ */
 
-  /** Flat, time-sorted event list for `passes` passes (the lens is applied once, here). */
-  function timeline(song, spb, passes, useLens) {
-    const out = [];
-    for (let p = 0; p < passes; p++) {
-      for (const ev of song.events) {
-        const t = (p * song.total + ev.beat) * spb;
-        out.push({ t, end: t + (ev.dur || 0.25) * spb + RING, ev: useLens ? LiveLens.map(ev, song) : ev });
-      }
-    }
-    return out;
-  }
+                                /** Flat, time-sorted event list for `passes` passes (the lens is applied once, here).
+                                    Each event carries its pass index, so evolve can drift the sound across passes. */
+                                    function timeline(song, spb, passes, useLens) {
+                                      const out = [];
+                                      for (let p = 0; p < passes; p++) for (const ev of song.events) {
+                                        const t = (p * song.total + ev.beat) * spb;
+                                        out.push({
+                                          t,
+                                          end: t + (ev.dur || 0.25) * spb + RING,
+                                          ev: { ...(useLens ? LiveLens.map(ev, song) : ev), pass: p, passes: S.loops },
+                                        });
+                                      }
+                                      return out;
+                                    }
 
   /**
    * Cut points (seconds, sample-aligned) at SECTION STARTS close to equal
@@ -104,7 +107,7 @@ const Render = (() => {
 
     const len = e - w0, off = new OAC(2, Math.ceil(len * sr), sr);
     const eng = new Engine(off);
-    if (window.Sound) await Sound.prepare(off);   // every offline context needs its own worklet
+    if (typeof Sound !== 'undefined') await Sound.prepare(off);
     eng.load(song);
     eng.spb = spb;
     eng.delay.delayTime.setValueAtTime(spb * 0.75, 0);
@@ -148,7 +151,10 @@ const Render = (() => {
 
     const useLens = S.lens && typeof LiveLens !== 'undefined' && LiveLens.active();
     const cores = navigator.hardwareConcurrency || 4;
-    const cuts = S.fast ? planCuts(song, spb, clamp(Math.round(cores / 2), 2, 6), sr) : [0, pass];
+                                      // Evolve changes the sound per pass, so parallel segments (which reuse pass-0
+                                  // events for later passes) would be wrong. Use the serial, correct path instead.
+                                  const evolving = typeof Sound !== 'undefined' && L > 1 && (Sound.view().P?.evolve || 0) > 0;
+                                  const cuts = S.fast && !evolving ? planCuts(song, spb, clamp(Math.round(cores / 2), 2, 6), sr) : [0, pass];
     const K = cuts.length - 1;
 
     if (K < 2) {   // serial path: one context for the whole thing

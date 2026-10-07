@@ -1,27 +1,33 @@
 'use strict';
 /* ══════════════════════════════════════════════════════════════════════════
-   m11 · VOICES — the sigil's own synthesis
+   m11 · VOICES — the sigil's synthesis engine (v2)
    --------------------------------------------------------------------------
    ROUTING
-     Engine.play() offers every event to the 'voice' hook first (see the
-     extension point in 06-engine.js). If this module handles it, it returns
-     true and the legacy voice is skipped. Legacy mode returns null at once.
+     Engine.play() offers every event to the 'voice' hook. Handled events
+     return true. Legacy mode, and events this module does not own (bell,
+     arp, choir in legacy), fall through.
 
    VOICES
-     wave   two PeriodicWave oscillators crossfading across the note (the morph)
-     vox    glottal source through four formant bandpasses, vowel morphing
-     pad    several detuned single-frame wave voices
-     bass   single-frame wave through a pluck filter
+     lead   wavetable (3D cell, morphing across the note) or vox (formants)
+     harm   vox, quieter
+     bass   single-frame wavetable, pluck filter
+     pad    detuned single-frame wavetables, budgeted
+     every pitched voice may carry a sub oscillator one octave down
+
+   CHORUS & CRUSHER
+     One stereo chorus and one AudioWorklet bit-crusher on the master
+     chain, shared by every song. Their cost is constant, not per note.
 
    PERFORMANCE
-     • Wavetables are built once per sigil (9 frames). PeriodicWave objects are
-       built once per AudioContext.
-     • Lite mode (automatic on ≤2 cores) uses single-frame oscillators and no
-       vibrato, and the visuals skip the spectrum halo.
+     • MAX_VOICES budget. Pads drop first at 80%, then harms at 100%.
+     • 3D cells are built lazily: at most nine PeriodicWave sets per context.
+     • Lite mode (automatic on ≤2 cores): single-frame oscillators, no
+       vibrato, no sub, no spectrum halo.
+     • Evolve changes the worklet with scheduled automation, so each pass
+       is timed to the score rather than to the clock.
 
-   PATCH STATE
-     cur.P = derived DNA (05b) merged with the user's overrides for this sigil.
-     Overrides are saved per sigil in the bank, and travel in share links.
+   STATUS
+     Sound.statusInfo() reports whether the crusher is live, and why not.
    ══════════════════════════════════════════════════════════════════════════ */
 
 const Sound = (() => {
@@ -29,24 +35,30 @@ const Sound = (() => {
   const SD = SoundDesign;
   const WORKLET_URL = 'src/audio/sigil-fx.worklet.js';
   const GLOTTAL = SD.glottal();
-  const fxReady = new WeakSet();                 // AudioContexts where the worklet loaded
+  const fxReady = new WeakSet();         // AudioContexts where the worklet module loaded
+  const MAX_VOICES = 22;
+  const NOTE_RING = 16;
 
   const prefs = {
-    mode: Prefs.get('sound.mode', 'sigil'),      // 'sigil' | 'legacy'
+    mode: Prefs.get('sound.mode', 'sigil'),
     lite: Prefs.get('sound.lite', (navigator.hardwareConcurrency || 4) <= 2),
     keys: false,
   };
-  let bank = Prefs.get('soundbank', {});         // sigil key → { variant, o }
-  let library = Prefs.get('soundlib', []);       // named override sets
-  const cur = { key: null, variant: 0, o: {}, derived: null, P: null, tables: null, mags: null };
-  let pending = null;                            // a patch from a shared link, awaiting its cast
+  let bank = Prefs.get('soundbank', {});          // sigil key → { variant, o }
+  let library = Prefs.get('soundlib', []);        // named override sets
+
+  const cur = { key: null, variant: 0, o: {}, derived: null, P: null, tables: null, vol: null, mags: null, ring: null };
+  const fxState = { fx: 'pending', reason: 'not loaded yet' };
+  const notes = [];                               // recent onsets, for the visuals
+  let pending = null;                             // a link's patch, waiting for its cast
   let lastVowel = null;
   const subs = new Set();
   const notify = () => subs.forEach((fn) => { try { fn(); } catch (e) { console.error('[sound:ui]', e); } });
   const keyOf = (sig) => sig.fusionKey || sig.reduced;
   const lite = () => prefs.lite;
+  const isLiveCtx = (ctx) => !(typeof OfflineAudioContext !== 'undefined' && ctx instanceof OfflineAudioContext);
 
-  /* ── State ───────────────────────────────────────────────────────────── */
+  /* ── State ─────────────────────────────────────────────────────────────── */
 
   function persist() {
     if (!cur.key) return;
@@ -57,7 +69,7 @@ const Sound = (() => {
 
   function saveLibrary() { Prefs.set('soundlib', library); }
 
-  /** Blend the two morph frames around `pos` into a magnitude spectrum for the crown. */
+  /** The morph-position magnitude spectrum, for the crown. */
   function magnitudes(tb, pos) {
     const fr = tb.frames, n = fr.length;
     const p = clamp(pos, 0, n - 1), a = Math.floor(p), b = Math.min(n - 1, a + 1), w = p - a;
@@ -72,17 +84,23 @@ const Sound = (() => {
     return out;
   }
 
-  /** Recompute the effective patch from the sigil, dream variant and overrides. */
+  /** Recompute the effective patch: DNA < Aura < overrides. Called on cast, on knob change, and on dream. */
   function recompute() {
     const sig = app.sigil;
     if (!sig) return;
-    cur.derived = SD.derive(sig.hash, cur.variant);
-    cur.P = { ...cur.derived, ...cur.o };
+    cur.derived = { ...SD.derive(sig.hash, cur.variant), ...SD.derive2(sig.hash, cur.variant) };
+    cur.P = { evolve: 0, ...cur.derived, ...(SD.AURAS[cur.o.aura] || {}), ...cur.o };
     cur.tables = SD.tables(sig, cur.variant);
+    cur.vol = SD.volume(sig, cur.variant);
     cur.mags = magnitudes(cur.tables, cur.P.wave);
+
+    // The display ring: the base morph position, shaped by this patch's fold and crush.
+    const fr = cur.tables.frames, p = clamp(cur.P.wave, 0, fr.length - 1), a = Math.floor(p);
+    const clean = SD.waveSamples(fr[a], fr[Math.min(fr.length - 1, a + 1)], p - a, 128);
+    cur.ring = SD.shapeWave(clean, cur.P);
   }
 
-  /** Bring the patch in line with the sigil being cast. Applies a pending link patch if one matches. */
+  /** Adopt the patch for the sigil being cast, applying a waiting link patch if it matches. */
   function syncFrom(sig) {
     if (!sig) return;
     const key = keyOf(sig);
@@ -101,7 +119,64 @@ const Sound = (() => {
     recompute();
   }
 
-  /** Push the current patch into the live worklet and the echo return. Click-free via setTargetAtTime. */
+  /* ── Worklet and master chain ──────────────────────────────────────────── */
+
+  /** Load the bit-crusher module into a context. Must be awaited before Engine.load() in each context. */
+  async function prepare(ctx) {
+    if (fxReady.has(ctx)) return true;
+    if (!ctx.audioWorklet || !window.AudioWorkletNode) {
+      fxState.fx = 'bypassed';
+      fxState.reason = window.isSecureContext
+        ? 'this browser has no AudioWorklet'
+        : 'AudioWorklet needs http://localhost or https (not file://)';
+      return false;
+    }
+    try {
+      await ctx.audioWorklet.addModule(WORKLET_URL);
+      fxReady.add(ctx);
+      return true;
+    } catch (e) {
+      fxState.fx = 'bypassed';
+      fxState.reason = `could not load ${WORKLET_URL}: ${e.message}`;
+      console.warn('[sound]', fxState.reason);
+      return false;
+    }
+  }
+
+  /**
+   * Chain: mix → chorus (dry + stereo delayed wet) → target (crusher or tone).
+   * The wet path has two delay lines with slow, slightly different LFOs, which
+   * gives a lush, moving stereo width at almost no cost.
+   */
+  function buildChain(eng, target) {
+    const c = eng.ctx;
+    const chIn = c.createGain(), dry = c.createGain(), wet = c.createGain(), sum = c.createGain();
+    const split = c.createChannelSplitter(2), merge = c.createChannelMerger(2);
+    const dl = c.createDelay(0.05), dr = c.createDelay(0.05);
+    dl.delayTime.value = 0.018;
+    dr.delayTime.value = 0.024;
+
+    const lfoL = c.createOscillator(), lfoR = c.createOscillator();
+    const gL = c.createGain(), gR = c.createGain();
+    lfoL.frequency.value = 0.31;
+    lfoR.frequency.value = 0.43;
+    gL.gain.value = 0.0035;
+    gR.gain.value = 0.0035;
+    lfoL.connect(gL); gL.connect(dl.delayTime);
+    lfoR.connect(gR); gR.connect(dr.delayTime);
+    lfoL.start(); lfoR.start();
+
+    eng.mix.connect(chIn);
+    chIn.connect(dry); dry.connect(sum);
+    chIn.connect(split);
+    split.connect(dl, 0); split.connect(dr, 1);
+    dl.connect(merge, 0, 0); dr.connect(merge, 0, 1);
+    merge.connect(wet); wet.connect(sum);
+    sum.connect(target);
+    eng.chorus = { dry, wet };
+  }
+
+  /** Apply the current patch to the worklet and chorus now (click-free). */
   function pushFx(eng) {
     if (!eng || !cur.P) return;
     const P = cur.P, now = eng.ctx.currentTime;
@@ -113,63 +188,78 @@ const Sound = (() => {
       to('fold', P.fold);
       to('mix', P.grit);
     }
+    if (eng.chorus) {
+      eng.chorus.wet.gain.setTargetAtTime(P.chorus * 0.7, now, 0.05);
+      eng.chorus.dry.gain.setTargetAtTime(1 - P.chorus * 0.35, now, 0.05);
+    }
     if (eng.delayReturn) eng.delayReturn.gain.setTargetAtTime(0.2 + P.echo * 0.6, now, 0.05);
   }
 
-  /* ── Engine attachment ───────────────────────────────────────────────── */
+  /**
+   * The same fx values, but scheduled at a given time. This is how evolve
+   * changes the crusher in sync with the score, because events are booked
+   * ahead of their sound.
+   */
+  function scheduleFx(eng, P, t) {
+    if (eng.sfx) {
+      const p = eng.sfx.parameters;
+      p.get('bits').setValueAtTime(P.grit > 0 ? P.bits : 16, t);
+      p.get('hold').setValueAtTime(P.hold, t);
+      p.get('fold').setValueAtTime(P.fold, t);
+      p.get('mix').setValueAtTime(P.grit, t);
+    }
+    if (eng.chorus) {
+      eng.chorus.wet.gain.setValueAtTime(P.chorus * 0.7, t);
+      eng.chorus.dry.gain.setValueAtTime(1 - P.chorus * 0.35, t);
+    }
+  }
 
   /**
-   * Called from the Engine's 'buses' hook on every load. Creates the analyser
-   * and the bit-crusher once per engine, splices the crusher into the master
-   * chain, and builds PeriodicWaves for the current tables.
+   * Called from the Engine's 'buses' hook on every load. Builds the analyser,
+   * the chorus, and the crusher, once per engine. Rebuilds the 3D wave cache
+   * when the sigil or dream changes.
    */
   function attach(eng) {
     syncFrom(app.sigil);
+    const live = isLiveCtx(eng.ctx);
+
     if (!eng.sound) {
       eng.sound = true;
       eng.analyser = eng.ctx.createAnalyser();
-      eng.analyser.fftSize = 512;                // 256 bins: enough for the halo, cheap to read
+      eng.analyser.fftSize = 512;
       eng.analyser.smoothingTimeConstant = 0.72;
       eng.out.connect(eng.analyser);
 
+      eng.mix.disconnect(eng.tone);
+      let target = eng.tone;
       if (fxReady.has(eng.ctx)) {
         try {
-          eng.sfx = new AudioWorkletNode(eng.ctx, 'sigil-fx', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
-          eng.mix.disconnect(eng.tone);          // mix → crusher → tone
-          eng.mix.connect(eng.sfx);
-          eng.sfx.connect(eng.tone);
-        } catch (e) { console.warn('[sound] crusher not attached:', e.message); }
+          const sfx = new AudioWorkletNode(eng.ctx, 'sigil-fx', {
+            numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+          });
+          sfx.connect(eng.tone);
+          eng.sfx = sfx;
+          target = sfx;
+          if (live) { fxState.fx = 'live'; fxState.reason = ''; }
+        } catch (e) {
+          if (live) { fxState.fx = 'bypassed'; fxState.reason = e.message; }
+        }
+      } else if (live && fxState.fx === 'pending') {
+        fxState.fx = 'bypassed';
+        fxState.reason = 'worklet not loaded for this context';
       }
+      buildChain(eng, target);
     }
-    if (eng.wavesOf !== cur.tables) {
-      eng.waves = cur.tables.frames.map((f) => eng.ctx.createPeriodicWave(f.re, f.im));
-      eng.glottalWave = eng.glottalWave || eng.ctx.createPeriodicWave(GLOTTAL.re, GLOTTAL.im);
-      eng.wavesOf = cur.tables;
-    }
+
+    if (eng.volOf !== cur.vol) { eng.volWaves = {}; eng.volOf = cur.vol; }
+    if (!eng.glottalWave) eng.glottalWave = eng.ctx.createPeriodicWave(GLOTTAL.re, GLOTTAL.im);
+    eng.fxPass = undefined;
     pushFx(eng);
   }
 
-  /**
-   * Load the worklet into a context. Must be awaited before Engine.load() in
-   * every context (live, and each offline render segment). Failure is graceful:
-   * the crusher is bypassed and everything else still works.
-   */
-  async function prepare(ctx) {
-    if (fxReady.has(ctx)) return true;
-    if (!ctx.audioWorklet || !window.AudioWorkletNode) return false;
-    try {
-      await ctx.audioWorklet.addModule(WORKLET_URL);
-      fxReady.add(ctx);
-      return true;
-    } catch (e) {
-      console.warn('[sound] AudioWorklet unavailable (bit-crusher bypassed):', e.message);
-      return false;
-    }
-  }
+  /* ── Voice building blocks ─────────────────────────────────────────────── */
 
-  /* ── Envelope and lifecycle helpers ──────────────────────────────────── */
-
-  /** Shape the amplitude. Scored notes use the ADSR (returns an end time). Held notes sustain until released. */
+  /** Shape the amplitude. Scored notes use an ADSR and return an end time. Held notes sustain. */
   function shape(eng, amp, t, d, peak, hold) {
     if (hold) {
       amp.gain.setValueAtTime(0, t);
@@ -181,8 +271,8 @@ const Sound = (() => {
   }
 
   /**
-   * Start a voice's nodes and schedule their stop. Scored notes stop at `end`.
-   * Held notes return a release() that fades the amplitude and then stops.
+   * Start the nodes and schedule their stop. Scored notes stop at `end`.
+   * Held notes return release(), which fades and stops.
    */
   function schedule(ctx, nodes, t, end, hold, amp) {
     nodes.forEach((n) => n.start(t));
@@ -201,7 +291,7 @@ const Sound = (() => {
     };
   }
 
-  /** A slow LFO into one or more frequency params. Disabled in lite mode. */
+  /** A slow LFO on one or more frequency params. */
   function vibrato(ctx, t, d, targets, depthHz) {
     const lfo = ctx.createOscillator();
     lfo.frequency.value = 5.4;
@@ -213,15 +303,24 @@ const Sound = (() => {
     return lfo;
   }
 
-  /* ── The wavetable core ──────────────────────────────────────────────── */
-
   /**
-   * One pitched wave voice with a lowpass. It crossfades from frame A
-   * (the start of the morph) to frame B across the note. In single-frame or
-   * lite mode it holds one frame.
+   * The PeriodicWave set for the 3D cell a note addresses. Created lazily, so
+   * each context builds only the cells it actually uses.
    */
-  function waveCore(eng, { midi, from, t, d, P, detune = 0, bright = P.bright, single = false }) {
-    const ctx = eng.ctx, f = mtof(midi), N = eng.waves.length;
+  function waveSet(eng, P, deg) {
+    const { yi, zi } = SD.address(P, deg);
+    const k = yi * 3 + zi;
+    if (!eng.volWaves[k]) {
+      eng.volWaves[k] = eng.volOf.cells[yi][zi].map((f) => eng.ctx.createPeriodicWave(f.re, f.im));
+    }
+    lastAddr = { yi, zi };
+    return eng.volWaves[k];
+  }
+  let lastAddr = { yi: 0, zi: 2 };
+
+  /** One pitched wave with a lowpass, crossfading from frame A to B across the note. */
+  function waveCore(eng, W, { midi, from, t, d, P, detune = 0, bright = P.bright, single = false }) {
+    const ctx = eng.ctx, f = mtof(midi), N = W.length;
     const fa = clamp(Math.round(P.wave), 0, N - 1);
     const fb = clamp(Math.round(P.wave + P.sweep * 4), 0, N - 1);
 
@@ -230,19 +329,19 @@ const Sound = (() => {
     lp.Q.value = 0.7;
     const c0 = f * (1.5 + 9 * bright);
     lp.frequency.setValueAtTime(c0, t);
-    lp.frequency.setTargetAtTime(c0 * 0.4, t + 0.02, Math.max(0.05, d * 0.3));   // pluck, then settle
+    lp.frequency.setTargetAtTime(c0 * 0.4, t + 0.02, Math.max(0.05, d * 0.3));
 
     const frames = single || lite() ? [[fa, 1]] : [[fa, 1], [fb, 0]];
     const oscs = [];
     for (const [idx, g0] of frames) {
       const o = ctx.createOscillator();
-      o.setPeriodicWave(eng.waves[idx]);
+      o.setPeriodicWave(W[idx]);
       o.detune.value = detune;
       o.frequency.setValueAtTime(from != null ? mtof(from) : f, t);
-      if (from != null) o.frequency.exponentialRampToValueAtTime(f, t + 0.08);   // legato glide
+      if (from != null) o.frequency.exponentialRampToValueAtTime(f, t + 0.08);
       const g = ctx.createGain();
       g.gain.setValueAtTime(g0, t);
-      if (frames.length > 1) g.gain.linearRampToValueAtTime(1 - g0, t + d);      // the morph
+      if (frames.length > 1) g.gain.linearRampToValueAtTime(1 - g0, t + d);
       o.connect(g);
       g.connect(lp);
       oscs.push(o);
@@ -250,12 +349,26 @@ const Sound = (() => {
     return { out: lp, oscs };
   }
 
-  /* ── Voices ──────────────────────────────────────────────────────────── */
+  /** The sub: a sine one octave below, following the note's glide. Skipped in lite mode. */
+  function addSub(eng, ev, t, P, amp, nodes) {
+    if (lite() || !(P.sub > 0.01)) return;
+    const ctx = eng.ctx, o = ctx.createOscillator(), g = ctx.createGain();
+    const f = mtof(ev.midi) / 2;
+    o.type = 'sine';
+    o.frequency.setValueAtTime(ev.from != null ? mtof(ev.from) / 2 : f, t);
+    if (ev.from != null) o.frequency.exponentialRampToValueAtTime(f, t + 0.08);
+    g.gain.value = P.sub * 0.6;
+    o.connect(g);
+    g.connect(amp);
+    nodes.push(o);
+  }
 
-  /** Lead or bass wavetable voice. */
+  /* ── Voices ────────────────────────────────────────────────────────────── */
+
   function voiceWave(eng, ev, t, P, bus, hold, opt = {}) {
     const ctx = eng.ctx, d = hold ? 3 : ev.dur * eng.spb;
-    const core = waveCore(eng, {
+    const W = waveSet(eng, P, ev.deg);
+    const core = waveCore(eng, W, {
       midi: ev.midi, from: ev.from, t, d, P,
       bright: opt.bright ?? P.bright, single: opt.single,
     });
@@ -267,16 +380,14 @@ const Sound = (() => {
     if (!hold && ev.type === 'lead' && d > 0.45 && !lite()) {
       nodes.push(vibrato(ctx, t, d, core.oscs, mtof(ev.midi) * 0.004));
     }
+    if (opt.sub !== false) addSub(eng, ev, t, P, amp, nodes);
+
     const end = shape(eng, amp, t, d, ev.vel * (opt.peak ?? 0.34), hold);
     return schedule(ctx, nodes, t, end, hold, amp);
   }
 
-  /**
-   * Formant voice. A glottal pulse train passes through four bandpass formants
-   * that morph from the vowel chosen by the note's degree to the next vowel.
-   * Breath noise sits beneath it.
-   */
-  function voiceVox(eng, ev, t, P, bus, hold) {
+  /** Formant voice: glottal source, four formants morphing between vowels, breath under it. */
+  function voiceVox(eng, ev, t, P, bus, hold, opt = {}) {
     const ctx = eng.ctx, f = mtof(ev.midi), d = hold ? 3 : ev.dur * eng.spb;
 
     const src = ctx.createOscillator();
@@ -287,12 +398,12 @@ const Sound = (() => {
     const nodes = [src];
     if (!hold && !lite()) nodes.push(vibrato(ctx, t, d, [src], f * 0.006));
 
-    // The melody chooses the vowel. Higher degrees drift through the vowel chart.
+    // The melody chooses the vowel, and higher degrees drift through the chart.
     const deg = ev.deg ?? 0;
     const i0 = mod(deg + P.vowel, 5);
     const i1 = d > 0.6 ? mod(i0 + 1, 5) : i0;
     const V0 = SD.VOWELS[i0], V1 = SD.VOWELS[i1];
-    const tk = Math.pow(2, P.throat * 0.35);       // throat: roughly ±¼ octave of formant shift
+    const tk = Math.pow(2, P.throat * 0.35);
     const morph = t + Math.min(d * 0.9, 0.7);
 
     const sum = ctx.createGain();
@@ -333,14 +444,17 @@ const Sound = (() => {
       nodes.push(br);
     }
 
-    lastVowel = { name: V0.name, at: performance.now() };   // read by the visuals
+    if (opt.sub !== false) addSub(eng, ev, t, P, amp, nodes);
+
+    lastVowel = { name: V0.name, at: performance.now() };
     const end = shape(eng, amp, t, d, ev.vel * 0.42 * (ev.type === 'harm' ? 0.7 : 1), hold);
     return schedule(ctx, nodes, t, end, hold, amp);
   }
 
-  /** Pad: several detuned single-frame waves for a slow, wide chord. */
+  /** Pad: detuned single-frame waves. Budgeted in the hook. */
   function voicePad(eng, ev, t, P, bus, hold) {
     const ctx = eng.ctx, d = hold ? 3 : ev.dur * eng.spb;
+    const W = waveSet(eng, P, ev.deg);
     const mix = ctx.createGain(), amp = ctx.createGain();
     mix.connect(amp);
     amp.connect(bus);
@@ -348,7 +462,7 @@ const Sound = (() => {
     const nodes = [];
     for (const m of ev.midis) {
       for (const dt of [-6, 6]) {
-        const core = waveCore(eng, { midi: m, t, d, P, detune: dt, bright: P.bright * 0.6, single: true });
+        const core = waveCore(eng, W, { midi: m, t, d, P, detune: dt, bright: P.bright * 0.6, single: true });
         core.out.connect(mix);
         nodes.push(...core.oscs);
       }
@@ -357,35 +471,71 @@ const Sound = (() => {
     return schedule(ctx, nodes, t, end, hold, amp);
   }
 
-  /* ── Hooks and public entry points ───────────────────────────────────── */
+  /* ── Budget ─────────────────────────────────────────────────────────────── */
+
+  /** Voices still sounding at time `now`. Pruned as it counts. */
+  function countVoices(eng, now) {
+    const list = eng.voiceEnds || (eng.voiceEnds = []);
+    let n = 0;
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i] < now) list.splice(i, 1);
+      else n++;
+    }
+    return n;
+  }
+
+  function noteEvent(ev) {
+    notes.push({ beat: ev.beat, deg: ev.deg ?? 0, kind: ev.type, at: performance.now() });
+    if (notes.length > NOTE_RING) notes.shift();
+  }
+
+  /* ── The hook ──────────────────────────────────────────────────────────── */
 
   /**
-   * The 'voice' hook. Engine.play() calls it for every event. Returns true when
-   * this module rendered the event, and null to fall through to the legacy voice.
+   * Engine.play() calls this for every event.
+   * Resolves the pass (offline events carry it; live uses the loop index),
+   * evolves the patch, schedules any per-pass fx change, applies the budget,
+   * then renders the event.
    */
   function voiceHook(_, ev, t, eng) {
-    if (prefs.mode !== 'sigil' || !eng.waves || !eng.buses || !cur.P) return null;
-    const P = cur.P;
+    if (prefs.mode !== 'sigil' || !eng.buses || !eng.volOf || !cur.P) return null;
+    if (!(ev.type === 'lead' || ev.type === 'harm' || ev.type === 'bass' || ev.type === 'pad')) return null;
+
+    const pass = ev.pass ?? eng.loopIndex ?? 0;
+    const passes = ev.passes ?? 4;
+    const progress = eng.song ? ev.beat / eng.song.total : 0;
+    const P = SD.evolve(cur.P, pass, passes, progress, cur.P.evolve || 0);
+
+    if (eng.fxPass !== pass) {                 // once per pass, scheduled in score time
+      eng.fxPass = pass;
+      scheduleFx(eng, P, t);
+    }
+
+    const dur = (ev.dur || 0.5) * eng.spb;
+    const active = countVoices(eng, t);
+    if (ev.type === 'pad' && active > MAX_VOICES * 0.8) return true;
+    if (ev.type === 'harm' && active > MAX_VOICES) return true;
+    (eng.voiceEnds || (eng.voiceEnds = [])).push(t + dur + 0.35);
+    noteEvent(ev);
 
     if (ev.type === 'lead') {
       const vox = P.voice === 'vox' || (P.voice === 'auto' && ev.timbre === 'reed');
-      (vox ? voiceVox : voiceWave)(eng, ev, t, P, eng.buses.lead, false);
+      if (vox) { voiceVox(eng, ev, t, P, eng.buses.lead, false); lastVowel.at = performance.now(); }
+      else voiceWave(eng, ev, t, P, eng.buses.lead, false);
     } else if (ev.type === 'harm') {
-      voiceVox(eng, ev, t, P, eng.buses.harm, false);
+      voiceVox(eng, ev, t, P, eng.buses.harm, false, { sub: false });
     } else if (ev.type === 'bass') {
-      voiceWave(eng, ev, t, P, eng.buses.bass, false, { bright: 0.18, single: true, peak: 0.42 });
-    } else if (ev.type === 'pad') {
-      voicePad(eng, ev, t, P, eng.buses.pad, false);
+      voiceWave(eng, ev, t, P, eng.buses.bass, false, { bright: 0.18, single: true, peak: 0.42, sub: false });
     } else {
-      return null;
+      voicePad(eng, ev, t, P, eng.buses.pad, false);
     }
     return true;
   }
 
-  /** Live engine only, and only when a sigil is loaded. Returns null otherwise. */
-  const live = () => (app.engine && app.sigil && app.engine.waves ? app.engine : null);
+  /* ── Keyboard and letter playing ───────────────────────────────────────── */
 
-  /** A small bus for played notes, so they bypass the score's mixer but keep the room. */
+  const live = () => (app.engine && app.sigil && app.engine.volOf ? app.engine : null);
+
   function playBus(eng) {
     if (!eng.playBus) {
       const g = eng.gain(0.9), send = eng.gain(0.35);
@@ -397,77 +547,82 @@ const Sound = (() => {
     return eng.playBus;
   }
 
-  /**
-   * Play a note now, held until released. Used by the keyboard and by clicks on
-   * the wheel's letters. Returns { release() }, or null if nothing is playing.
-   */
+  /** Hold a note until release(). Returns null if the engine is not running. */
   function noteOn({ midi, deg = 0, vel = 0.8 }) {
     const eng = live();
     if (!eng || !cur.P || eng.ctx.state !== 'running') return null;
     const P = cur.P, t = eng.ctx.currentTime, bus = playBus(eng);
     const ev = { type: 'lead', midi, deg, vel, timbre: 'glass' };
-    return P.voice === 'vox'
-      ? voiceVox(eng, ev, t, P, bus, true)
-      : voiceWave(eng, ev, t, P, bus, true);
+    if (!eng.volWaves) return null;
+    if (P.voice === 'vox') return voiceVox(eng, ev, t, P, bus, true);
+    return voiceWave(eng, ev, t, P, bus, true);
   }
+
+  /* ── Hooks ─────────────────────────────────────────────────────────────── */
 
   Hooks.on('buses', (_buses, eng) => attach(eng));
   Hooks.on('voice', voiceHook, 0);
 
-  // A link may carry a patch code after '!'. Hold it until its sigil is cast.
   Hooks.on('link', (link) => {
     const d = link.sound ? SD.decodePatch(link.sound) : null;
     pending = d ? { key: link.members.join('+'), ...d } : null;
   });
 
-  // Share links: key ~mood !patch. Priority 20 runs after the mood suffix.
   Hooks.on('shareKey', (key, sig) => {
     if (!sig || keyOf(sig) !== cur.key) return undefined;
     const code = SD.encodePatch(cur.o, cur.variant);
     return code ? key + '!' + code : undefined;
   }, 20);
 
-  // Forgetting a sigil forgets its tuning too.
   Hooks.on('forget', (sig) => {
     if (!sig) return;
     delete bank[keyOf(sig)];
     Prefs.set('soundbank', bank);
   });
 
-  /* ── Public API (used by m12 and m13) ────────────────────────────────── */
+  /* ── Public API ────────────────────────────────────────────────────────── */
 
-  return {
+  const api = {
     SD,
     prepare, attach, noteOn,
-    /** Read-only view for the visuals, which run every frame. No allocation. */
-    view: () => cur,
-    state: () => ({ key: cur.key, variant: cur.variant, o: cur.o, P: cur.P, derived: cur.derived, tables: cur.tables, mags: cur.mags }),
+    view: () => cur,                                        // read-only, for per-frame visuals
+    state: () => ({ key: cur.key, variant: cur.variant, o: cur.o, P: cur.P, derived: cur.derived, tables: cur.tables, mags: cur.mags, ring: cur.ring }),
+    statusInfo: () => ({
+      fx: fxState.fx, reason: fxState.reason, mode: prefs.mode, lite: prefs.lite,
+      voices: app.engine && app.engine.voiceEnds ? app.engine.voiceEnds.length : 0,
+      max: MAX_VOICES, aura: cur.o.aura || 'none', chorus: cur.P ? cur.P.chorus : 0,
+    }),
+    recentNotes: () => notes,
+    lastVowel: () => lastVowel,
+    lastCell: () => lastAddr,
+    subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
     get mode() { return prefs.mode; },
     get lite() { return prefs.lite; },
     get keysOn() { return prefs.keys; },
     live,
-    lastVowel: () => lastVowel,
-    subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
 
     setMode(m) { prefs.mode = m; Prefs.set('sound.mode', m); notify(); },
     setLite(v) { prefs.lite = !!v; Prefs.set('sound.lite', prefs.lite); notify(); },
     toggleKeys(force) { prefs.keys = force ?? !prefs.keys; notify(); return prefs.keys; },
 
-    /** Set one knob. Overrides are kept per sigil and saved. */
+    /** Set one knob or choice. Overrides are saved per sigil. */
     set(name, v) {
       if (!app.sigil) return;
       cur.o[name] = v;
       persist(); recompute(); pushFx(app.engine); notify();
     },
-    reset() {
-      cur.o = {}; persist(); recompute(); pushFx(app.engine); notify();
+    setAura(name) {
+      if (!app.sigil) return;
+      if (name === 'none') delete cur.o.aura; else cur.o.aura = name;
+      persist(); recompute(); pushFx(app.engine); notify();
     },
-    /** Step through deterministic dream variants. Tuned knobs are kept. */
+    reset() { cur.o = {}; persist(); recompute(); pushFx(app.engine); notify(); },
+    /** Step through deterministic dream variants. Tuned overrides are kept. */
     dream(delta) {
       if (!app.sigil) return;
       cur.variant = mod(cur.variant + delta, 100);
       persist(); recompute();
-      if (app.engine && app.engine.waves) attach(app.engine);
+      if (app.engine && app.engine.volOf) attach(app.engine);
       notify();
     },
     code: () => SD.encodePatch(cur.o, cur.variant),
@@ -485,7 +640,6 @@ const Sound = (() => {
       persist(); recompute(); pushFx(app.engine); notify();
     },
     removeLibrary(i) { library.splice(i, 1); saveLibrary(); notify(); },
-    /** Imported entries are re-encoded and decoded, which clamps them to safe ranges. */
     importLibrary(data) {
       const list = Array.isArray(data) ? data : (data && data.patches) || [];
       let n = 0;
@@ -497,4 +651,8 @@ const Sound = (() => {
       return n;
     },
   };
+
+  return api;
 })();
+
+window.Sound = Sound;   // for the console and for debugging; code uses the global binding directly

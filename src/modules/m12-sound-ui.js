@@ -1,46 +1,59 @@
 'use strict';
 /* ══════════════════════════════════════════════════════════════════════════
-   m12 · SOUND UI — the instrument you actually play
+   m12 · SOUND UI — the instrument surface (v2)
    --------------------------------------------------------------------------
-   • Ten drag-knobs: drag vertically (Shift for fine), wheel, arrows, and
-     double-click to reset to this sigil's own value.
-   • A live scope that draws the morphing wavetable.
-   • Dream ◀ ▶: deterministic variants of the sigil's sound.
-   • Patch library: save, apply, delete, import and export.
-   • Play the sigil from the keyboard (X to toggle):
-       home row  A S D F H J K ;   →  scale degrees 0–7
-       top row   Q W E R U I O P   →  scale degrees 8–15
-     Held notes sustain and release on key-up.
-   • Click any letter on the wheel's HUD line to sound its note.
+   • Twelve knobs: drag (Shift for fine), wheel, arrow keys, double-click
+     resets to this sigil's DNA value.
+   • Auras: seven timbral moods as chips.
+   • Kit: the drum kit, by name.
+   • Three-lane scope: clean · folded · crushed (the real output transform).
+   • Status line: whether the crusher is live, and how many voices sound.
+   • Keyboard: X toggles play mode. A S D F H J K ; play degrees 0–7, and
+     Q W E R U I O P play 8–15.
+   • Click a letter on the HUD line to sound its node.
+
+   PERFORMANCE
+     Repaints are batched into one requestAnimationFrame. The status line
+     refreshes once a second, and only while the Tools drawer is open.
    ══════════════════════════════════════════════════════════════════════════ */
 
 const SoundUI = (() => {
   'use strict';
   const { h } = UI;
 
-  function fmtNum(v) { return Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2); }
+  const fmtNum = (v) => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2));
+  const fmtInt = (v) => String(Math.round(v));
 
   const KNOBS = [
-    { name: 'wave',   label: 'Wave',   min: 0,  max: 8,  step: 0.01, fmt: fmtNum },
-    { name: 'sweep',  label: 'Sweep',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'throat', label: 'Throat', min: -1, max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'breath', label: 'Breath', min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'bright', label: 'Bright', min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'grit',   label: 'Grit',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'bits',   label: 'Bits',   min: 2,  max: 16, step: 1,    fmt: (v) => String(Math.round(v)) },
-    { name: 'hold',   label: 'Hold',   min: 1,  max: 16, step: 1,    fmt: (v) => String(Math.round(v)) },
-    { name: 'fold',   label: 'Fold',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'echo',   label: 'Echo',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'wave', label: 'Wave', min: 0, max: 8, step: 0.01, fmt: fmtNum },
+    { name: 'sweep', label: 'Sweep', min: 0, max: 1, step: 0.01, fmt: fmtNum },
+    { name: 'bright', label: 'Bright', min: 0, max: 1, step: 0.01, fmt: fmtNum },
+    { name: 'throat', label: 'Throat', min: -1, max: 1, step: 0.01, fmt: fmtNum },
+    { name: 'breath', label: 'Breath', min: 0, max: 1, step: 0.01, fmt: fmtNum },
+    { name: 'sub', label: 'Sub', min: 0, max: 1, step: 0.01, fmt: fmtNum },
+    { name: 'chorus', label: 'Chorus', min: 0, max: 1, step: 0.01, fmt: fmtNum },
+    { name: 'echo', label: 'Echo', min: 0, max: 1, step: 0.01, fmt: fmtNum },
+    { name: 'grit', label: 'Grit', min: 0, max: 1, step: 0.01, fmt: fmtNum },
+    { name: 'bits', label: 'Bits', min: 2, max: 16, step: 1, fmt: fmtInt },
+    { name: 'hold', label: 'Hold', min: 1, max: 16, step: 1, fmt: fmtInt },
+    { name: 'fold', label: 'Fold', min: 0, max: 1, step: 0.01, fmt: fmtNum },
   ];
 
-  /** Keyboard → scale degree. */
+  const AURA_LABELS = {
+    none: 'None', ember: 'Ember', undertow: 'Undertow', glass: 'Glass', choir: 'Choir',
+    reliquary: 'Reliquary', static: 'Static', dusk: 'Dusk',
+  };
+  const KIT_LABELS = { bone: 'Bone · deep', velvet: 'Velvet · soft', glass: 'Glass · bright', ember: 'Ember · driven' };
   const KEYMAP = { a: 0, s: 1, d: 2, f: 3, h: 4, j: 5, k: 6, ';': 7, q: 8, w: 9, e: 10, r: 11, u: 12, i: 13, o: 14, p: 15 };
 
   const knobs = {};
   const held = new Map();
-  let scope, voiceSel, modeSel, liteBox, dreamLbl, keyBtn, libList;
+  const auraBtns = [];
+  let voiceSel, modeSel, kitSel, liteBox, dreamLbl, keyBtn, libList, statusOut;
+  let lanes = {};
+  let painting = false;
 
-  /* ── Knob ───────────────────────────────────────────────────────────── */
+  /* ── Knob ──────────────────────────────────────────────────────────────── */
 
   function knob(def) {
     const { name, label, min, max, step, fmt } = def;
@@ -53,7 +66,7 @@ const SoundUI = (() => {
     const el = h('div', {
       class: 'kb', tabindex: '0', role: 'slider', 'aria-label': label,
       'aria-valuemin': min, 'aria-valuemax': max,
-      title: `${label}: drag, wheel or arrows · Shift for fine · double-click resets`,
+      title: `${label}: drag (Shift fine) · wheel · arrows · double-click resets`,
     }, ring, cap);
     const wrap = h('div', { class: 'kb-wrap' }, el, h('span', { class: 'kb-label' }, label), out);
 
@@ -69,7 +82,8 @@ const SoundUI = (() => {
     const commit = (v) => {
       const nv = snap(v);
       if (nv === val) return;
-      val = nv; paint();
+      val = nv;
+      paint();
       Sound.set(name, val);
     };
 
@@ -80,10 +94,9 @@ const SoundUI = (() => {
     });
     el.addEventListener('pointermove', (e) => {
       if (!drag) return;
-      const k = e.shiftKey ? 0.2 : 1;
-      commit(drag.v + ((drag.y - e.clientY) / 160) * (max - min) * k);
+      commit(drag.v + ((drag.y - e.clientY) / 160) * (max - min) * (e.shiftKey ? 0.2 : 1));
     });
-    const endDrag = () => (drag = null);
+    const endDrag = () => { drag = null; };
     el.addEventListener('pointerup', endDrag);
     el.addEventListener('pointercancel', endDrag);
     el.addEventListener('wheel', (e) => {
@@ -98,52 +111,74 @@ const SoundUI = (() => {
       const dir = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[e.key];
       if (!dir) return;
       e.preventDefault();
-      e.stopPropagation();                        // keep the Live Lens arrows out of it
+      e.stopPropagation();                               // keep the Live Lens arrows out of it
       commit(val + dir * unit * (e.shiftKey ? 0.2 : 1));
     });
 
     return { el: wrap, set: (v) => { val = snap(v); paint(); } };
   }
 
-  /* ── Scope: the morphing wavetable, drawn in the accent colour ──────── */
+  /* ── Scope: three lanes ─────────────────────────────────────────────────── */
 
-  function paintScope() {
-    if (!scope) return;
-    const st = Sound.state(), g = scope.getContext('2d');
-    const W = scope.width, H = scope.height;
+  function drawLane(cv, arr, col, alpha) {
+    const g = cv.getContext('2d'), W = cv.width, H = cv.height;
     g.clearRect(0, 0, W, H);
-    g.strokeStyle = rgba(renderer.pal.line, 0.12);
+    g.strokeStyle = rgba(renderer.pal.line, 0.1);
     g.lineWidth = 1;
     g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
-    if (!st.tables || !st.P) return;
-
-    const fr = st.tables.frames, p = clamp(st.P.wave, 0, fr.length - 1);
-    const a = Math.floor(p), b = Math.min(fr.length - 1, a + 1);
-    const wave = SoundDesign.waveSamples(fr[a], fr[b], p - a, W);
+    if (!arr) return;
     g.beginPath();
     for (let x = 0; x < W; x++) {
-      const y = H / 2 - wave[x] * H * 0.42;
-      x ? g.lineTo(x, y) : g.moveTo(x, y);
+      const i = Math.floor((x * arr.length) / W);
+      const y = H / 2 - arr[i] * H * 0.42;
+      if (x) g.lineTo(x, y); else g.moveTo(x, y);
     }
-    g.strokeStyle = rgba(renderer.pal.accent, 0.95);
-    g.lineWidth = 1.4;
+    g.strokeStyle = rgba(col, alpha);
+    g.lineWidth = 1.3;
     g.stroke();
   }
 
-  /* ── Refresh and actions ────────────────────────────────────────────── */
+  /** Batch repaints: many knob moves in one frame cost one paint. */
+  function scheduleLanes() {
+    if (painting) return;
+    painting = true;
+    requestAnimationFrame(() => {
+      painting = false;
+      const ring = Sound.state().ring;
+      if (!ring) return;
+      drawLane(lanes.clean, ring.clean, renderer.pal.line, 0.35);
+      drawLane(lanes.fold, ring.folded, renderer.pal.line, 0.75);
+      drawLane(lanes.crush, ring.crushed, renderer.pal.accent, 0.95);
+    });
+  }
+
+  /* ── Status ────────────────────────────────────────────────────────────── */
+
+  function refreshStatus() {
+    if (!statusOut) return;
+    const s = Sound.statusInfo();
+    const fx = s.fx === 'live' ? 'crusher live' : `crusher off (${s.reason})`;
+    statusOut.textContent = `${fx} · voices ${s.voices}/${s.max} · ${s.lite ? 'lite' : 'full'}`;
+    statusOut.title = s.fx === 'live' ? '' : 'Open the app over http://localhost to enable the crusher';
+  }
+
+  /* ── Refresh and actions ───────────────────────────────────────────────── */
 
   function refresh() {
     if (!voiceSel) return;
     const st = Sound.state();
     for (const d of KNOBS) if (knobs[d.name]) knobs[d.name].set(st.P ? st.P[d.name] : d.min);
     voiceSel.input.value = st.P ? st.P.voice : 'auto';
+    kitSel.input.value = st.P ? st.P.kit : 'bone';
     modeSel.input.value = Sound.mode;
     liteBox.input.checked = Sound.lite;
+    for (const b of auraBtns) b.setAttribute('aria-pressed', String(b.dataset.aura === (st.o.aura || 'none')));
     keyBtn.textContent = `Keys: ${Sound.keysOn ? 'on' : 'off'}`;
     dreamLbl.textContent = app.sigil && st.derived
       ? `dream ${st.variant} · ${st.derived.mult}×+${st.derived.off}`
       : 'cast to dream';
-    paintScope();
+    refreshStatus();
+    scheduleLanes();
   }
 
   function toggleKeys(force) {
@@ -167,13 +202,14 @@ const SoundUI = (() => {
     items.forEach((it, i) => libList.append(h('div', { class: 'lib-row' },
       h('span', { class: 'lib-name' }, it.name),
       UI.button('Apply', () => { Sound.applyLibrary(i); toast(`“${it.name}” applied`, true); }),
-      UI.button('×', () => { Sound.removeLibrary(i); renderLibrary(); }, { class: 'sm ghost', 'aria-label': `Delete ${it.name}` }))));
+      UI.button('×', () => { Sound.removeLibrary(i); renderLibrary(); },
+        { class: 'sm ghost', 'aria-label': `Delete ${it.name}` }))));
   }
 
-  /* ── Panel ──────────────────────────────────────────────────────────── */
+  /* ── Panel ─────────────────────────────────────────────────────────────── */
 
   UI.css(`
-    .kb-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px 6px;margin:10px 0}
+    .kb-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px 6px;margin:10px 0}
     .kb-wrap{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;user-select:none}
     .kb{position:relative;width:46px;height:46px;border-radius:50%;cursor:ns-resize;touch-action:none;outline:none}
     .kb:focus-visible{box-shadow:0 0 0 1px rgba(var(--accent),.7)}
@@ -182,8 +218,13 @@ const SoundUI = (() => {
     .kb-cap i{position:absolute;left:50%;top:3px;width:1.5px;height:9px;margin-left:-.75px;background:rgb(var(--accent))}
     .kb-label{opacity:.6;letter-spacing:.08em;text-transform:uppercase}
     .kb-val{font-variant-numeric:tabular-nums;opacity:.55}
-    .snd-scope{width:100%;height:56px;display:block;margin:6px 0 4px}
+    .snd-lane{width:100%;height:34px;display:block;margin:2px 0}
+    .snd-lane-row{display:grid;grid-template-columns:54px 1fr;align-items:center;gap:6px;font-size:10px;opacity:.75}
+    .chips{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0}
+    .chip{padding:4px 8px;font-size:9px;letter-spacing:.15em}
+    .chip[aria-pressed="true"]{color:rgb(var(--accent));border-color:rgba(var(--accent),.7)}
     .dream{align-items:center}.dream-lbl{font-style:italic;opacity:.7;font-size:12.5px;min-width:9em;text-align:center}
+    .snd-status{display:block;font-size:11px;opacity:.6;letter-spacing:.04em;margin:4px 0 8px}
     .lib-row{display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid rgba(var(--line),.06)}
     .lib-name{flex:1;font-style:italic}
     .snd-h{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;opacity:.6;margin:16px 0 4px}`);
@@ -195,25 +236,43 @@ const SoundUI = (() => {
       return k.el;
     }));
 
-    scope = h('canvas', { class: 'snd-scope', width: 240, height: 56, 'aria-hidden': 'true' });
+    const laneRow = (key, label) => {
+      const cv = h('canvas', { class: 'snd-lane', width: 240, height: 34, 'aria-hidden': 'true' });
+      lanes[key] = cv;
+      return h('div', { class: 'snd-lane-row' }, h('span', {}, label), cv);
+    };
 
-    modeSel = UI.select({
-      label: 'Engine', value: Sound.mode,
-      options: [['sigil', 'Sigil · wavetable & vox'], ['legacy', 'Legacy · original voices']],
-      onChange: (v) => Sound.setMode(v),
-    });
+    const auraRow = h('div', { class: 'chips', role: 'group', 'aria-label': 'Aura' },
+      Object.keys(AURA_LABELS).map((id) => {
+        const b = h('button', { class: 'chip', type: 'button', 'data-aura': id, 'aria-pressed': 'false',
+                                title: 'Apply this aura (tuned knobs still win)', onclick: () => Sound.setAura(id) }, AURA_LABELS[id]);
+        auraBtns.push(b);
+        return b;
+      }));
+
     voiceSel = UI.select({
       label: 'Lead voice', value: 'auto',
       options: [['auto', 'Auto · per timbre'], ['vox', 'Vox · formant'], ['wave', 'Wavetable']],
       onChange: (v) => Sound.set('voice', v),
     });
+    kitSel = UI.select({
+      label: 'Drum kit', value: 'bone',
+      options: Object.entries(KIT_LABELS),
+      onChange: (v) => Sound.set('kit', v),
+    });
+    modeSel = UI.select({
+      label: 'Engine', value: Sound.mode,
+      options: [['sigil', 'Sigil · wavetable & vox'], ['legacy', 'Legacy · original voices']],
+      onChange: (v) => Sound.setMode(v),
+    });
     liteBox = UI.check({
-      label: 'Lite mode (fewer oscillators, no spectrum halo)', checked: Sound.lite,
+      label: 'Lite mode (fewer oscillators, no halo)', checked: Sound.lite,
       onChange: (v) => Sound.setLite(v),
     });
 
     dreamLbl = h('output', { class: 'dream-lbl' });
     keyBtn = UI.button('Keys: off', () => toggleKeys(), { title: 'Play the sigil from the keyboard (X)' });
+    statusOut = h('output', { class: 'snd-status', role: 'status' });
     libList = h('div', { class: 'lib' });
 
     const fileIn = h('input', {
@@ -222,15 +281,19 @@ const SoundUI = (() => {
     });
 
     el.append(
-      UI.note('Every sound here is derived from the sigil. Dream cycles deterministic variants. Knobs are remembered per sigil, and they travel in share links.'),
+      UI.note('Every sound is derived from the sigil. Auras are timbral moods, dreams are deterministic variants, and tuned knobs are remembered per sigil and travel in share links.'),
+      statusOut,
+      h('div', { class: 'snd-h' }, 'Aura'),
+      auraRow,
       grid,
-      scope,
+      h('div', { class: 'snd-h' }, 'Transforms'),
+      laneRow('clean', 'clean'), laneRow('fold', 'folded'), laneRow('crush', 'crushed'),
       h('div', { class: 'sgrow dream' },
         UI.button('◀ dream', () => Sound.dream(-1)),
         dreamLbl,
         UI.button('dream ▶', () => Sound.dream(1)),
         UI.button('Reset knobs', () => Sound.reset())),
-      modeSel, voiceSel, liteBox,
+      voiceSel, kitSel, modeSel, liteBox,
       h('div', { class: 'sgrow' }, keyBtn, UI.button('Copy patch code', () => copy(Sound.code()))),
       h('div', { class: 'snd-h' }, 'Patch library'),
       h('div', { class: 'sgrow' },
@@ -239,7 +302,7 @@ const SoundUI = (() => {
           if (name) { Sound.save(name); renderLibrary(); toast(`saved “${name}”`, true); }
         }),
         UI.button('Export', () => download(
-          new Blob([JSON.stringify({ sigilSounds: 1, patches: Sound.library() }, null, 1)], { type: 'application/json' }),
+          new Blob([JSON.stringify({ sigilSounds: 2, patches: Sound.library() }, null, 1)], { type: 'application/json' }),
           'sigil-patches.json')),
         UI.button('Import', () => fileIn.click())),
       libList, fileIn);
@@ -264,7 +327,13 @@ const SoundUI = (() => {
   Hooks.on('song', refresh);
   UI.whenReady(refresh);
 
-  /* ── Keyboard: play the sigil ──────────────────────────────────────── */
+  // The status line refreshes only while the drawer is visible.
+  setInterval(() => {
+    const d = document.getElementById('drawer');
+    if (d && d.classList.contains('open')) refreshStatus();
+  }, 1000);
+
+  /* ── Keyboard: play the sigil ──────────────────────────────────────────── */
 
   UI.key('x', 'Play the sigil from the keyboard', () => toggleKeys(), { group: 'Sound', display: 'X' });
   UI.key(Object.keys(KEYMAP), 'Play scale degrees (keys on)', null,
@@ -287,12 +356,11 @@ const SoundUI = (() => {
     if (v) { v.release(); held.delete(k); }
   });
 
-  /* ── Click a letter on the HUD to sound its node ───────────────────── */
+  /* ── Click a letter on the HUD to sound its node ───────────────────────── */
 
   document.getElementById('letters').addEventListener('click', (e) => {
     const el = e.target.closest('span');
     if (!el || !app.song) return;
-    // Only the primary word is playable. Partner letters carry p1/p2 or sep classes.
     if (el.classList.contains('sep') || el.classList.contains('p1') || el.classList.contains('p2')) return;
     const i = [...el.parentElement.children].indexOf(el);
     if (i < 0 || i >= app.song.chimes.length) return;

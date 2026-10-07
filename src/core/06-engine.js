@@ -32,6 +32,34 @@
    discoverable: `region`, `prevAnchor`, `reanchorAt`, `buses[k]._base`.
    ══════════════════════════════════════════════════════════════════════════ */
 
+/* ── Clock: a Worker timer is not throttled in background tabs ─────────────
+   One live engine at a time, so one channel is enough. Falls back to
+   setInterval if Workers are unavailable (for example on file://). */
+   const Clock = (() => {
+    let worker = null, fallbackId = null, tick = null;
+    const SRC = 'let id=null;self.onmessage=e=>{const d=e.data;' +
+      'if(d.cmd==="start"){clearInterval(id);id=setInterval(()=>self.postMessage(1),d.ms);}' +
+      'else if(d.cmd==="stop"){clearInterval(id);id=null;}};';
+    try {
+      worker = new Worker(URL.createObjectURL(new Blob([SRC], { type: 'text/javascript' })));
+      worker.onmessage = () => { if (tick) tick(); };
+    } catch { worker = null; }
+    return {
+      start(cb, ms) {
+        tick = cb;
+        if (worker) worker.postMessage({ cmd: 'start', ms });
+        else { clearInterval(fallbackId); fallbackId = setInterval(cb, ms); }
+      },
+      stop() {
+        tick = null;
+        if (worker) worker.postMessage({ cmd: 'stop' });
+        clearInterval(fallbackId);
+        fallbackId = null;
+      },
+    };
+  })();
+
+
 class Engine {
   /**
    * @param {BaseAudioContext} [ctx] optional — pass an OfflineAudioContext to
@@ -39,7 +67,8 @@ class Engine {
    */
   constructor(ctx) {
     const AC = window.AudioContext || window.webkitAudioContext;
-    const c = (this.ctx = ctx || new AC({ latencyHint: 'interactive' }));
+    // 'playback' trades ~50 ms of key latency for far fewer dropouts under load.
+    const c = (this.ctx = ctx || new AC({ latencyHint: 'playback' }));
 
     /* ── Master chain ──────────────────────────────────────────────────── */
     this.out = this.gain(0.85);
@@ -266,15 +295,14 @@ class Engine {
     Hooks.emit('buses', this.buses, this);   // M2 Mixer records _base and applies user levels
   }
 
-  /** PATCH POINT — wrapped by M4 Form. */
+  /** PATCH POINT (wrapped by M4). Starts the scheduler on the Worker clock. */
   start(lead = 0.12) {
     this.reanchorAt = 0;
     this.anchor = this.ctx.currentTime + lead;
     this.loopIndex = 0;
     this.ptr = 0;
     this.running = true;
-    clearInterval(this.timer);
-    this.timer = setInterval(() => this.pump(), 25);
+    Clock.start(() => this.pump(), 25);
     this.pump();
   }
 
@@ -282,12 +310,10 @@ class Engine {
   stop(fade = 0.8) {
     this.reanchorAt = 0;
     this.running = false;
-    clearInterval(this.timer);
-
+    Clock.stop();
     const b = this.buses;
     if (!b) return;
-    this.buses = null;                     // further play() calls become no-ops
-
+    this.buses = null;
     const now = this.ctx.currentTime;
     Object.values(b).forEach((n) => {
       n.gain.cancelScheduledValues(now);
@@ -295,6 +321,43 @@ class Engine {
       n.gain.linearRampToValueAtTime(0, now + fade);
     });
     setTimeout(() => Object.values(b).forEach((n) => n.disconnect()), fade * 1000 + 300);
+  }
+
+  /**
+   * Dispatch one event. Errors are caught here, so the scheduler's pointer always
+   * advances. One bad event costs one note, not the whole performance.
+   */
+  play(ev, t) {
+    try {
+      let s = Math.round(ev.beat * 960) | 0;
+      for (let i = 0; i < ev.type.length; i++) s = (s * 31 + ev.type.charCodeAt(i)) | 0;
+      this._nr = mulberry32(s ^ ((ev.midi || 0) * 2654435761));
+
+      // Extension point: voice modules may render this event. Return true to claim it.
+      if (Hooks.filter('voice', null, ev, t, this) === true) return;
+
+      switch (ev.type) {
+        case 'lead':   return this.lead(ev, t);
+        case 'bell':   return this.bell(ev.midi, t, ev.vel, this.buses.bell);
+        case 'harm':   return this.harm(ev, t);
+        case 'pad':    return this.pad(ev, t);
+        case 'bass':   return this.bass(ev, t);
+        case 'arp':    return this.arp(ev, t);
+        case 'kick':   return this.kick(ev, t);
+        case 'snare':  return this.snare(ev, t);
+        case 'hat':    return this.hat(ev, t);
+        case 'shaker': return this.shaker(ev, t);
+        case 'crash':  return this.crash(ev, t);
+        case 'swell':  return this.swell(ev, t);
+        case 'drone':  return this.drone(ev, t);
+      }
+    } catch (e) {
+      const now = performance.now();
+      if (!this._playErrAt || now - this._playErrAt > 2000) {
+        this._playErrAt = now;
+        console.error('[play]', ev.type, e);
+      }
+    }
   }
 
   /**
@@ -346,38 +409,7 @@ class Engine {
     }
   }
 
-  /**
-   * Dispatch one event.
-   * PATCH POINT — wrapped by M9 Live Lens, which maps the event's pitch first.
-   */
-  play(ev, t) {
-    /* Seed this event's noise from its MUSICAL identity (beat, type, pitch).
-       Context time is deliberately not used: that is what makes an offline
-       render byte-identical to the live performance, and what lets M7 stitch
-       independently rendered segments together without a seam. */
-    let s = Math.round(ev.beat * 960) | 0;
-    for (let i = 0; i < ev.type.length; i++) s = (s * 31 + ev.type.charCodeAt(i)) | 0;
-    this._nr = mulberry32(s ^ ((ev.midi || 0) * 2654435761));
-        // Extension point: the Sound module (m11) may render this event itself.
-    // It returns true when it has handled the event. Legacy voices run otherwise.
-    if (Hooks.filter('voice', null, ev, t, this) === true) return;
-
-    switch (ev.type) {
-      case 'lead':   return this.lead(ev, t);
-      case 'bell':   return this.bell(ev.midi, t, ev.vel, this.buses.bell);
-      case 'harm':   return this.harm(ev, t);
-      case 'pad':    return this.pad(ev, t);
-      case 'bass':   return this.bass(ev, t);
-      case 'arp':    return this.arp(ev, t);
-      case 'kick':   return this.kick(ev, t);
-      case 'snare':  return this.snare(ev, t);
-      case 'hat':    return this.hat(ev, t);
-      case 'shaker': return this.shaker(ev, t);
-      case 'crash':  return this.crash(ev, t);
-      case 'swell':  return this.swell(ev, t);
-      case 'drone':  return this.drone(ev, t);
-    }
-  }
+ 
 
   /* ── §6.5 VOICES ───────────────────────────────────────────────────────
      Three lead timbres give each sigil a distinct "voice":

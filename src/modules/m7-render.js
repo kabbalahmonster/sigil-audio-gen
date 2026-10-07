@@ -144,7 +144,7 @@ const Render = (() => {
     // spb, so that N passes are exactly N × passN samples with no drift.
     const passN = Math.round(song.total * spb * sr);
     spb = passN / (song.total * sr);
-    const pass = passN / sr, L = opts.loops || S.loops;   // m14 (Evolve) renders one pass at a time
+    const pass = passN / sr, L = opts.loops || S.loops;
 
     const useLens = S.lens && typeof LiveLens !== 'undefined' && LiveLens.active();
     const cores = navigator.hardwareConcurrency || 4;

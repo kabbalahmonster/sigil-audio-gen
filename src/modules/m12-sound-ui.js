@@ -38,6 +38,8 @@ const SoundUI = (() => {
     { name: 'hold',   label: 'Hold',   min: 1,  max: 16,  step: 1,    fmt: fmtInt },
     { name: 'echo',   label: 'Echo',   min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
     { name: 'drums',  label: 'Drums',  min: 0,  max: 1.5, step: 0.01, fmt: fmtNum },
+    { name: 'drumX', label: 'Size',   min: 0, max: 1, step: 0.01, fmt: fmtNum },
+    { name: 'drumY', label: 'Colour', min: 0, max: 1, step: 0.01, fmt: fmtNum },
   ];
 
   const KEYMAP = { a: 0, s: 1, d: 2, f: 3, h: 4, j: 5, k: 6, ';': 7, q: 8, w: 9, e: 10, r: 11, u: 12, i: 13, o: 14, p: 15 };
@@ -268,6 +270,7 @@ const SoundUI = (() => {
       h('div', { class: 'sgrow' },
         UI.button('Mutate', () => Sound.mutate()), freezeBtn, UI.button('Reset knobs', () => Sound.reset())),
       modeSel, voiceSel, liteBox, lensBox, vowBox,
+      UI.slider({ label: 'Story', min: 0, max: 1, step: 0.01, value: Sound.story, format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => Sound.setStory(v) }),
       h('div', { class: 'sgrow' }, keyBtn, UI.button('Copy patch code', () => copy(Sound.code()))),
       h('div', { class: 'snd-h' }, 'Patch library'),
       h('div', { class: 'sgrow' },

@@ -45,7 +45,7 @@ const Form = (() => {
   Engine.prototype.pump = function () {
     if (!this.running || !this.buses) return;
 
-    const c = this.ctx, horizon = c.currentTime + (document.hidden ? 1.6 : 0.18);
+    const c = this.ctx, horizon = c.currentTime + (document.hidden ? 1.6 : 0.3);
     const total = this.song.total, totalSec = total * this.spb;
 
     for (let guard = 0; guard < 4000; guard++) {

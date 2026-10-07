@@ -235,17 +235,23 @@ const UI = (() => {
   const MEMBER = /^[BCDFGHJKLMNPQRSTVWXYZ]{3,21}$/;
   const validMember = (s) => MEMBER.test(s) && new Set(s).size === s.length;
 
-  function parseKey(str) {
-    let raw = String(str || '').replace(/^#/, '');
-    try { raw = decodeURIComponent(raw); } catch { return null; }
-    const [bodyPart, preset] = raw.split('~');
-    const members = (bodyPart || '').toUpperCase().split('+').filter(Boolean);
-    if (!members.length || members.length > 3 || !members.every(validMember)) return null;
-    return { members, preset: preset ? preset.toLowerCase() : null };
-  }
-
-  const formatKey = ({ members, preset }) =>
-    members.join('+') + (preset && preset !== 'ritual' ? '~' + preset : '');
+  /* Link format: members joined by '+', optional '~mood', optional '!patch'.
+     Only consonants and synthesis numbers are ever encoded. Example:
+        #KRSTV+MNLP~ambient!PAQk2…                                          */
+        function parseKey(str) {
+          let raw = String(str || '').replace(/^#/, '');
+          try { raw = decodeURIComponent(raw); } catch { return null; }
+          const [head, patch] = raw.split('!');
+          const [bodyPart, preset] = (head || '').split('~');
+          const members = (bodyPart || '').toUpperCase().split('+').filter(Boolean);
+          if (!members.length || members.length > 3 || !members.every(validMember)) return null;
+          return { members, preset: preset ? preset.toLowerCase() : null, patch: patch || null };
+        }
+      
+        const formatKey = ({ members, preset, patch }) =>
+          members.join('+') +
+          (preset && preset !== 'ritual' ? '~' + preset : '') +
+          (patch ? '!' + patch : '');
 
   /* ── §M0.7 Live re-composition ─────────────────────────────────────────
      Rebuild the current song in place (after a mood or attunement change),

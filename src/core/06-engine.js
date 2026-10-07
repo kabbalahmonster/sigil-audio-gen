@@ -707,4 +707,10 @@ class Engine {
      beatNow: 'M4 Form',
      play: 'M9 Live Lens',
      setTempo: 'M2 Mixer',
+     load: 'M11 Instrument',
+     lead: 'M11 Instrument',
+     pad: 'M11 Instrument',
+     bass: 'M11 Instrument',
+     arp: 'M11 Instrument',
+     harm: 'M11 Instrument',
    };

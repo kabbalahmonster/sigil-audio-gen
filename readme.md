@@ -144,7 +144,10 @@ small hash-derived per-chord "personality".
 | **M8 Fusion** | Up to three desires on one wheel as counterpoint; partners weigh into harmony at passing-tone strength |
 | **M9 Live Lens** | Drag the wheel to transpose, double-tap to mirror — in real time, affecting melody, harmony, bass and arpeggios, and propagating to MIDI/audio export |
 | **M10 Hours & Moon** | Planetary hours (true sunrise equation if you share location), moon phase, optional attunement of mode/timbre/tempo/palette to the hour, and timed charging sessions |
-
+| **M11 Instrument** | Sigil-derived wavetables (the path's silhouette as one cycle), formant vocal synthesis singing the vowels the reduction struck, a master rack of drive / bit-crush (AudioWorklet) / chorus / air, a voice budget and quality tiers with an FPS watchdog |
+| **M12 Voice Lab** | Live waveform display, XY pad, macros, patch save per sigil, patch links (`#KRSTV~ambient!P…`) |
+| **M13 Play** | The wheel as a keyboard: three keyboard rows = three rings, tap or drag the wheel, quantise and latch |
+| **M14 Scope** | Rim spectrum, the single cycle drawn at the hub, loudness glow, and a literally bit-crushed line at high crush |
 ---
 
 ## Keyboard shortcuts

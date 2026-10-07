@@ -1,0 +1,12 @@
+{
+    "name": "sigil",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "description": "SIGIL — a desire engine",
+    "scripts": {
+      "test": "node tests/golden.mjs",
+      "test:update": "node tests/golden.mjs --update",
+      "lint": "for f in src/**/*.js; do node --check \"$f\" || exit 1; done"
+    }
+  }

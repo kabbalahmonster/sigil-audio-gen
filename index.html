@@ -163,6 +163,7 @@
     <script src="src/core/06-engine.js"   onerror="SIGIL_FAIL(this)"></script>
     <script src="src/core/07-renderer.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/core/08-app.js"      onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/core/09-dsp.js" onerror="SIGIL_FAIL(this)"></script>
     
     <!-- Shared module infrastructure -->
     <script src="src/ui/ui-kit.js" onerror="SIGIL_FAIL(this)"></script>
@@ -182,6 +183,10 @@
     <script src="src/modules/m8-fusion.js"  onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m9-lens.js"    onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m10-astral.js" onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m11-instrument.js" onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m12-voicelab.js"   onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m13-play.js"       onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m14-scope.js"      onerror="SIGIL_FAIL(this)"></script>
     
     <!-- ═══════════════════════════════════════════════════════════════════════
          PREFLIGHT. Runs after everything above, even if some of it threw.
@@ -203,6 +208,7 @@
         ['src/core/06-engine.js',    ['Engine']],
         ['src/core/07-renderer.js',  ['Renderer']],
         ['src/core/08-app.js',       ['app', 'renderer', 'hud', 'TIMBRE_NAMES', 'cast', 'forget', 'newDesire', 'toast', 'SigilCore']],
+        ['src/core/09-dsp.js',          ['DSP']],
         ['src/ui/ui-kit.js',         ['UI']],
         ['src/modules/m1-midi.js',   ['MidiExport']],
         ['src/modules/m2-mixer.js',  ['Mixer']],
@@ -214,6 +220,10 @@
         ['src/modules/m8-fusion.js', ['Fusion']],
         ['src/modules/m9-lens.js',   ['LiveLens']],
         ['src/modules/m10-astral.js', ['Astral']],
+        ['src/modules/m11-instrument.js', ['Instrument']],
+        ['src/modules/m12-voicelab.js',   ['VoiceLab']],
+        ['src/modules/m13-play.js',       ['Play']],
+        ['src/modules/m14-scope.js',      ['Scope']],
       ];
     
       /** 'ok' | 'missing' | 'not-initialised' (declared, but its script threw before it was set). */

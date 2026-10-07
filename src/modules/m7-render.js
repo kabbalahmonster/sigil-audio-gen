@@ -104,9 +104,11 @@ const Render = (() => {
 
     const len = e - w0, off = new OAC(2, Math.ceil(len * sr), sr);
     const eng = new Engine(off);
+    eng.originTime = w0;                  // aligns the chorus LFO phase across segments
     eng.load(song);
     eng.spb = spb;
     eng.delay.delayTime.setValueAtTime(spb * 0.75, 0);
+    if (eng.rackReady) await eng.rackReady;   // wait for the bit-crush worklet
 
     let i = 0;
     const until = (t) => { while (i < inc.length && inc[i].t - w0 < t) { const x = inc[i++]; eng.play(x.ev, x.t - w0); } };

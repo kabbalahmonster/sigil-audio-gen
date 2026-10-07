@@ -36,7 +36,7 @@ function soundFingerprint(reduced, variant) {
   for (const row of tb.grid) {
     for (const fr of row) parts.push(Array.from(fr.re, q).join(','), Array.from(fr.im, q).join(','));
   }
-  const mid = SoundDesign.waveSamples(tb.grid[0][0], tb.grid[4][8], 0.5, 64);
+  const mid = SoundDesign.waveSamples(tb.grid[0][0], tb.grid[tb.grid.length >> 1][tb.grid[0].length - 1], 0.5, 64);
   parts.push(Array.from(mid, q).join(','));
   return toHex(hashStr(parts.join('#'))).slice(0, 32);
 }

@@ -53,181 +53,172 @@ const Render = (() => {
   const frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
   const secs = (ms) => `${(ms / 1000).toFixed(1)} s`;
 
-  /* ═════════ 1. RENDERING ═════════ */
+  
+    /* ═════════ 1. RENDERING ═════════ */
 
-  /** Flat, time-sorted event list for `passes` passes (the lens is applied once, here). */
-  function timeline(song, spb, passes, useLens) {
-    const out = [];
-    for (let p = 0; p < passes; p++) {
-      for (const ev of song.events) {
-        const t = (p * song.total + ev.beat) * spb;
-        out.push({ t, end: t + (ev.dur || 0.25) * spb + RING, ev: useLens ? LiveLens.map(ev, song) : ev });
-      }
+/** Flat, time-sorted event list for `passes` passes (the lens is applied once, here). */
+function timeline(song, spb, passes, useLens) {
+  const out = [];
+  for (let p = 0; p < passes; p++) {
+    for (const ev of song.events) {
+      const t = (p * song.total + ev.beat) * spb;
+      out.push({ t, end: t + (ev.dur || 0.25) * spb + RING, ev: useLens ? LiveLens.map(ev, song) : ev });
     }
-    return out;
+  }
+  return out;
+}
+
+/** Cut points at section starts, close to equal divisions of one pass. */
+function planCuts(song, spb, K, sr) {
+  const pass = song.total * spb, q = (t) => Math.round(t * sr) / sr;
+  const starts = song.sections.map((s) => q(s.start * spb)).filter((t) => t >= MIN_SEG && t <= pass - MIN_SEG);
+  const cuts = [0];
+  for (let i = 1; i < K; i++) {
+    const target = (pass * i) / K, last = cuts[cuts.length - 1];
+    let best = null;
+    for (const t of starts) {
+      if (t - last >= MIN_SEG && (best === null || Math.abs(t - target) < Math.abs(best - target))) best = t;
+    }
+    if (best !== null) cuts.push(best);
+  }
+  cuts.push(pass);
+  return cuts;
+}
+
+/**
+ * Render song time [a, e) in its own OfflineAudioContext.
+ * @returns {[Float32Array, Float32Array]} L and R, starting exactly at `a`
+ */
+async function renderSegment(song, spb, sr, tl, a, e, onFrac) {
+  // Everything audible in the window, plus a pre-roll so reverb and delay are warm.
+  const inc = tl.filter((x) => x.t < e && x.end > a - PRE_FX);
+  let w0 = a - PRE_FX;
+  for (const x of inc) if (x.t < w0) w0 = x.t;           // reach back for long voices
+  w0 = Math.max(0, Math.floor(w0 * sr) / sr);
+
+  const len = e - w0;
+  const off = new OAC(2, Math.ceil(len * sr), sr);
+  if (typeof Sound !== 'undefined') await Sound.prepare(off);   // worklet per context
+
+  const eng = new Engine(off);
+  eng.load(song);
+  eng.spb = spb;
+  eng.delay.delayTime.setValueAtTime(spb * 0.75, 0);
+
+  let i = 0;
+  const until = (t) => {
+    while (i < inc.length && inc[i].t - w0 < t) {
+      const x = inc[i++];
+      eng.play(x.ev, x.t - w0);
+    }
+  };
+
+  // Schedule in chunks via suspend/resume, so the graph never holds the whole song at once.
+  let chunked = false;
+  if (typeof off.suspend === 'function') {
+    try {
+      until(CH * 2);
+      for (let c = CH; c < len - 1; c += CH) {
+        off.suspend(c)
+          .then(() => { until(c + CH * 2); onFrac(c / len); return off.resume(); })
+          .catch((err) => console.error('[render] chunk failed', err));
+      }
+      chunked = true;
+    } catch { /* suspend unsupported: schedule everything below */ }
+  }
+  if (!chunked) until(Infinity);
+
+  const buf = await off.startRendering();
+  onFrac(1);
+  const from = Math.round((a - w0) * sr);
+  return [buf.getChannelData(0).subarray(from), buf.getChannelData(1).subarray(from)];
+}
+
+/** Run async jobs with a fixed number of lanes, yielding to the page between them. */
+async function pool(jobs, lanes) {
+  let i = 0;
+  const workers = Array.from({ length: Math.max(1, lanes) }, async () => {
+    while (i < jobs.length) {
+      const j = jobs[i++];
+      await j();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  });
+  await Promise.all(workers);
+}
+
+/**
+ * Render the whole export.
+ * @param {object} [opts] { loops } · m14 (Evolve) renders one pass at a time.
+ * @returns {{L: Float32Array, R: Float32Array, sr: number, segments: number}}
+ */
+async function renderSong(song, sr, onProgress, opts) {
+  opts = opts || {};
+  let spb = S.tempo && app.engine && app.engine.song === song ? app.engine.spb : song.spb;
+  const passN = Math.round(song.total * spb * sr);
+  spb = passN / (song.total * sr);
+  const pass = passN / sr;
+  const L = opts.loops || S.loops;
+
+  const useLens = S.lens && typeof LiveLens !== 'undefined' && LiveLens.active();
+  const cores = navigator.hardwareConcurrency || 4;
+  const lanes = S.fast ? clamp(Math.round(cores / 2), 1, 4) : 1;
+  const cuts = S.fast ? planCuts(song, spb, clamp(lanes + 1, 2, 6), sr) : [0, pass];
+  const K = cuts.length - 1;
+
+  if (K < 2) {
+    const [l, r] = await renderSegment(song, spb, sr, timeline(song, spb, L, useLens), 0, L * pass + TAIL, onProgress);
+    return { L: l, R: r, sr, segments: 1 };
   }
 
-  /**
-   * Cut points (seconds, sample-aligned) at SECTION STARTS close to equal
-   * divisions of one pass. Cutting on a section boundary means the seam lands
-   * where the music changes anyway, which hides it twice over.
-   */
-  function planCuts(song, spb, K, sr) {
-    const pass = song.total * spb, q = (t) => Math.round(t * sr) / sr;
-    const starts = song.sections.map((s) => q(s.start * spb))
-      .filter((t) => t >= MIN_SEG && t <= pass - MIN_SEG);
+  const tl1 = timeline(song, spb, 1, useLens);
+  const tl2 = L > 1 ? timeline(song, spb, 2, useLens) : tl1;
 
-    const cuts = [0];
-    for (let i = 1; i < K; i++) {
-      const target = (pass * i) / K, last = cuts[cuts.length - 1];
-      let best = null;
-      for (const t of starts) {
-        if (t - last >= MIN_SEG && (best === null || Math.abs(t - target) < Math.abs(best - target))) best = t;
-      }
-      if (best !== null) cuts.push(best);
+  const jobs = [];
+  const job = (tl, a, e) => { const j = { tl, a, e, frac: 0, w: e - a + PRE_FX }; jobs.push(j); return j; };
+  const mids = [];
+  for (let j = 0; j < K - 1; j++) mids.push(job(tl1, cuts[j], cuts[j + 1] + XF));
+  const lastFinal = job(tl1, cuts[K - 1], pass + TAIL);
+  const lastMid = L > 1 ? job(tl2, cuts[K - 1], pass + XF) : null;
+  const seam = L > 1 ? job(tl2, pass, pass + cuts[1] + XF) : null;
+
+  const wsum = jobs.reduce((s, j) => s + j.w, 0);
+  let lastReport = 0;
+  const report = () => {
+    const now = performance.now();
+    if (now - lastReport < 60) return;
+    lastReport = now;
+    onProgress(jobs.reduce((s, j) => s + j.frac * j.w, 0) / wsum);
+  };
+
+  await pool(jobs.map((j) => async () => {
+    j.data = await renderSegment(song, spb, sr, j.tl, j.a, j.e, (f) => { j.frac = f; report(); });
+  }), lanes);
+  onProgress(1);
+
+  const total = Math.round((L * pass + TAIL) * sr), xfN = Math.round(XF * sr);
+  const outL = new Float32Array(total), outR = new Float32Array(total);
+  const place = (j, startSec, first) => {
+    const pos = Math.round(startSec * sr), [l, r] = j.data, n = Math.min(l.length, total - pos);
+    for (let k = 0; k < n; k++) {
+      if (!first && k < xfN) {
+        const w = k / xfN;
+        outL[pos + k] = outL[pos + k] * (1 - w) + l[k] * w;
+        outR[pos + k] = outR[pos + k] * (1 - w) + r[k] * w;
+      } else { outL[pos + k] = l[k]; outR[pos + k] = r[k]; }
     }
-    cuts.push(pass);
-    return cuts;
+  };
+  for (let p = 0; p < L; p++) {
+    const o = p * pass;
+    place(p === 0 ? mids[0] : seam, o, p === 0);
+    for (let j = 1; j < K - 1; j++) place(mids[j], o + cuts[j], false);
+    place(p === L - 1 ? lastFinal : lastMid, o + cuts[K - 1], false);
   }
+  for (const j of jobs) j.data = null;   // free segment buffers before encoding
+  return { L: outL, R: outR, sr, segments: jobs.length };
+}
 
-  /**
-   * Render song time [a, e) in its own OfflineAudioContext.
-   * @returns {[Float32Array, Float32Array]} L and R, starting exactly at `a`
-   */
-  async function renderSong(song, sr, onProgress, opts = {}) {
-    const inc = tl.filter((x) => x.t < e && x.end > a - PRE_FX);   // everything audible in the window
 
-    // Reach back far enough to catch long voices (drones) that started earlier.
-    let w0 = a - PRE_FX;
-    for (const x of inc) if (x.t < w0) w0 = x.t;
-    w0 = Math.max(0, Math.floor(w0 * sr) / sr);                    // sample-aligned origin
-
-    const len = e - w0, off = new OAC(2, Math.ceil(len * sr), sr);
-    const eng = new Engine(off);
-    if (typeof Sound !== 'undefined') await Sound.prepare(off);
-    eng.load(song);
-    eng.spb = spb;
-    eng.delay.delayTime.setValueAtTime(spb * 0.75, 0);
-
-    let i = 0;
-    const until = (t) => { while (i < inc.length && inc[i].t - w0 < t) { const x = inc[i++]; eng.play(x.ev, x.t - w0); } };
-
-    /* Schedule in 5 s chunks via suspend/resume, so the graph never holds more
-       than ~10 s of nodes at once. Without this, a long render allocates tens
-       of thousands of oscillators up front and dies. */
-    let chunked = false;
-    if (typeof off.suspend === 'function') {
-      try {
-        until(CH * 2);
-        for (let c = CH; c < len - 1; c += CH) {
-          off.suspend(c).then(() => { until(c + CH * 2); onFrac(c / len); return off.resume(); });
-        }
-        chunked = true;
-      } catch { /* suspend unsupported: fall through and schedule everything */ }
-    }
-    if (!chunked) until(Infinity);
-
-    const buf = await off.startRendering();
-    onFrac(1);
-    const from = Math.round((a - w0) * sr);
-    return [buf.getChannelData(0).subarray(from), buf.getChannelData(1).subarray(from)];
-  }
-
-  /**
-   * Render the whole export.
-   * @returns {{L: Float32Array, R: Float32Array, sr: number, segments: number}}
-   */
-    /** Run async jobs with a fixed number of lanes, yielding to the UI between them. */
-    async function pool(jobs, lanes) {
-      let i = 0;
-      const workers = Array.from({ length: Math.max(1, lanes) }, async () => {
-        while (i < jobs.length) {
-          const j = jobs[i++];
-          await j();
-          await new Promise((r) => setTimeout(r, 0));   // let the page breathe
-        }
-      });
-      await Promise.all(workers);
-    }
-  
-    /**
-     * Render the whole export.
-     * @param {object} [opts] { loops } — m14 (Evolve) renders one pass at a time.
-     * @returns {{L: Float32Array, R: Float32Array, sr: number, segments: number}}
-     */
-    async function renderSong(song, sr, onProgress, opts) {
-      opts = opts || {};
-      let spb = S.tempo && app.engine && app.engine.song === song ? app.engine.spb : song.spb;
-  
-      const passN = Math.round(song.total * spb * sr);
-      spb = passN / (song.total * sr);
-      const pass = passN / sr;
-      const L = opts.loops || S.loops;
-  
-      const useLens = S.lens && typeof LiveLens !== 'undefined' && LiveLens.active();
-      const cores = navigator.hardwareConcurrency || 4;
-  
-      // Lanes, not jobs, bound the peak memory and the main-thread contention.
-      // Too many parallel OfflineAudioContexts is the usual cause of stutter.
-      const lanes = S.fast ? clamp(Math.round(cores / 2), 1, 4) : 1;
-      const cuts = S.fast ? planCuts(song, spb, clamp(lanes + 1, 2, 6), sr) : [0, pass];
-      const K = cuts.length - 1;
-  
-      if (K < 2) {
-        const [l, r] = await renderSegment(song, spb, sr, timeline(song, spb, L, useLens), 0, L * pass + TAIL, onProgress);
-        return { L: l, R: r, sr, segments: 1 };
-      }
-  
-      const tl1 = timeline(song, spb, 1, useLens);
-      const tl2 = L > 1 ? timeline(song, spb, 2, useLens) : tl1;
-  
-      const jobs = [];
-      const job = (tl, a, e) => { const j = { tl, a, e, frac: 0, w: e - a + PRE_FX }; jobs.push(j); return j; };
-  
-      const mids = [];
-      for (let j = 0; j < K - 1; j++) mids.push(job(tl1, cuts[j], cuts[j + 1] + XF));
-      const lastFinal = job(tl1, cuts[K - 1], pass + TAIL);
-      const lastMid = L > 1 ? job(tl2, cuts[K - 1], pass + XF) : null;
-      const seam = L > 1 ? job(tl2, pass, pass + cuts[1] + XF) : null;
-  
-      const wsum = jobs.reduce((s, j) => s + j.w, 0);
-      let lastReport = 0;
-      const report = () => {
-        const now = performance.now();
-        if (now - lastReport < 60) return;          // throttle: progress was thrashing layout
-        lastReport = now;
-        onProgress(jobs.reduce((s, j) => s + j.frac * j.w, 0) / wsum);
-      };
-  
-      await pool(jobs.map((j) => async () => {
-        j.data = await renderSegment(song, spb, sr, j.tl, j.a, j.e, (f) => { j.frac = f; report(); });
-      }), lanes);
-      onProgress(1);
-  
-      const total = Math.round((L * pass + TAIL) * sr), xfN = Math.round(XF * sr);
-      const outL = new Float32Array(total), outR = new Float32Array(total);
-  
-      const place = (j, startSec, first) => {
-        const pos = Math.round(startSec * sr), [l, r] = j.data, n = Math.min(l.length, total - pos);
-        for (let k = 0; k < n; k++) {
-          if (!first && k < xfN) {
-            const w = k / xfN;
-            outL[pos + k] = outL[pos + k] * (1 - w) + l[k] * w;
-            outR[pos + k] = outR[pos + k] * (1 - w) + r[k] * w;
-          } else { outL[pos + k] = l[k]; outR[pos + k] = r[k]; }
-        }
-      };
-  
-      for (let p = 0; p < L; p++) {
-        const o = p * pass;
-        place(p === 0 ? mids[0] : seam, o, p === 0);
-        for (let j = 1; j < K - 1; j++) place(mids[j], o + cuts[j], false);
-        place(p === L - 1 ? lastFinal : lastMid, o + cuts[K - 1], false);
-      }
-      // Release the segment buffers before encoding, which is the other memory peak.
-      for (const j of jobs) j.data = null;
-      return { L: outL, R: outR, sr, segments: jobs.length };
-    }
 
   /* ═════════ 2. MASTERING ═════════ */
 

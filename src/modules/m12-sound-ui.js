@@ -22,22 +22,24 @@ const SoundUI = (() => {
   const fmtInt = (v) => String(Math.round(v));
 
   const KNOBS = [
-    { name: 'wave',   label: 'Wave',   min: 0,  max: 8,   step: 0.01, fmt: fmtNum },
-    { name: 'layer',  label: 'Layer',  min: 0,  max: 4,   step: 0.01, fmt: fmtNum },
-    { name: 'sweep',  label: 'Sweep',  min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'drift',  label: 'Drift',  min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'sub',    label: 'Sub',    min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'chorus', label: 'Chorus', min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'throat', label: 'Throat', min: -1, max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'breath', label: 'Breath', min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'bright', label: 'Bright', min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'grit',   label: 'Grit',   min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'drive',  label: 'Drive',  min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'fold',   label: 'Fold',   min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'bits',   label: 'Bits',   min: 2,  max: 16,  step: 1,    fmt: fmtInt },
-    { name: 'hold',   label: 'Hold',   min: 1,  max: 16,  step: 1,    fmt: fmtInt },
-    { name: 'echo',   label: 'Echo',   min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'drums',  label: 'Drums',  min: 0,  max: 1.5, step: 0.01, fmt: fmtNum },
+    { name: 'wave',    label: 'Wave',    min: 0,  max: 12, step: 0.01, fmt: fmtNum },
+    { name: 'layer',   label: 'Layer',   min: 0,  max: 8,  step: 0.01, fmt: fmtNum },
+    { name: 'tilt',    label: 'Tilt',    min: -1, max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'density', label: 'Density', min: 0,  max: 2,  step: 0.01, fmt: fmtNum },
+    { name: 'sweep',   label: 'Sweep',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'drift',   label: 'Drift',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'sub',     label: 'Sub',     min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'chorus',  label: 'Chorus',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'throat',  label: 'Throat',  min: -1, max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'breath',  label: 'Breath',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'bright',  label: 'Bright',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'grit',    label: 'Grit',    min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'drive',   label: 'Drive',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'fold',    label: 'Fold',    min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'bits',    label: 'Bits',    min: 2,  max: 16, step: 1,    fmt: fmtInt },
+    { name: 'hold',    label: 'Hold',    min: 1,  max: 16, step: 1,    fmt: fmtInt },
+    { name: 'echo',    label: 'Echo',    min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { name: 'drums',   label: 'Drums',   min: 0,  max: 1.5, step: 0.01, fmt: fmtNum },
   ];
 
   const KEYMAP = { a: 0, s: 1, d: 2, f: 3, h: 4, j: 5, k: 6, ';': 7, q: 8, w: 9, e: 10, r: 11, u: 12, i: 13, o: 14, p: 15 };
@@ -170,22 +172,22 @@ const SoundUI = (() => {
 
   /* ── Cube map: 9 × 5 cells, current position and travel vector ──────── */
 
+  /** The cube map: 13 × 9 cells, the current cell, the travel vector, and the layer's name. */
   function paintCube() {
     if (!cube) return;
     const st = Sound.state(), g = cube.getContext('2d');
-    const W = cube.width, H = cube.height;
+    const W = cube.width, H = cube.height, NX = SoundDesign.FX, NY = SoundDesign.FY;
+    const px = (x) => 8 + (x / (NX - 1)) * (W - 16);
+    const py = (y) => H - 8 - (y / (NY - 1)) * (H - 16);
     g.clearRect(0, 0, W, H);
     if (!st.P) return;
     const P = st.P;
-    const px = (x) => 8 + (x / (SoundDesign.FX - 1)) * (W - 16);
-    const py = (y) => H - 8 - (y / (SoundDesign.FY - 1)) * (H - 16);
 
-    g.fillStyle = rgba(renderer.pal.line, 0.18);
-    for (let y = 0; y < SoundDesign.FY; y++) {
-      for (let x = 0; x < SoundDesign.FX; x++) g.fillRect(px(x) - 1, py(y) - 1, 2, 2);
-    }
-    const x0 = clamp(P.wave, 0, 8), y0 = clamp(P.layer, 0, 4);
-    const x1 = clamp(x0 + P.sweep * 4, 0, 8), y1 = clamp(y0 + P.drift * 2.5, 0, 4);
+    g.fillStyle = rgba(renderer.pal.line, 0.2);
+    for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++) g.fillRect(px(x) - 1, py(y) - 1, 2, 2);
+
+    const x0 = clamp(P.wave, 0, NX - 1), y0 = clamp(P.layer, 0, NY - 1);
+    const x1 = clamp(x0 + P.sweep * 4, 0, NX - 1), y1 = clamp(y0 + P.drift * 2.5, 0, NY - 1);
     g.strokeStyle = rgba(renderer.pal.accent, 0.55);
     g.lineWidth = 1.2;
     g.beginPath(); g.moveTo(px(x0), py(y0)); g.lineTo(px(x1), py(y1)); g.stroke();
@@ -193,11 +195,41 @@ const SoundUI = (() => {
     g.beginPath(); g.arc(px(x0), py(y0), 3, 0, TAU); g.fill();
     g.fillStyle = rgba(renderer.pal.accent, 0.4);
     g.beginPath(); g.arc(px(x1), py(y1), 2, 0, TAU); g.fill();
+
+    g.font = `italic 10px ${SERIF}`;
+    g.textAlign = 'left';
+    g.fillStyle = rgba(renderer.pal.line, 0.6);
+    g.fillText(SoundDesign.LAYER_NAMES[Math.round(y0)] || '', 6, 10);
   }
 
   /* ── Refresh ─────────────────────────────────────────────────────────── */
 
   let raf = 0;
+
+  /** Drag on the cube map to move through it. Moves are coalesced to one update per frame. */
+  function attachCube(c) {
+    let down = false, raf = 0, pt = null;
+    const flush = () => {
+      raf = 0;
+      if (pt) Sound.setMany({ wave: +pt.x.toFixed(2), layer: +pt.y.toFixed(2) });
+    };
+    const read = (e) => {
+      const r = c.getBoundingClientRect(), W = c.width, H = c.height;
+      const nx = ((e.clientX - r.left) / r.width) * W, ny = ((e.clientY - r.top) / r.height) * H;
+      pt = {
+        x: clamp(((nx - 8) / (W - 16)) * (SoundDesign.FX - 1), 0, SoundDesign.FX - 1),
+        y: clamp((1 - (ny - 8) / (H - 16)) * (SoundDesign.FY - 1), 0, SoundDesign.FY - 1),
+      };
+      if (!raf) raf = requestAnimationFrame(flush);
+    };
+    c.style.cursor = 'crosshair';
+    c.addEventListener('pointerdown', (e) => { down = true; c.setPointerCapture(e.pointerId); read(e); });
+    c.addEventListener('pointermove', (e) => { if (down) read(e); });
+    const up = () => { down = false; };
+    c.addEventListener('pointerup', up);
+    c.addEventListener('pointercancel', up);
+  }
+
   function refresh() {
     cancelAnimationFrame(raf);
     raf = requestAnimationFrame(() => {
@@ -258,7 +290,7 @@ const SoundUI = (() => {
     .kb-label{opacity:.6;letter-spacing:.08em;text-transform:uppercase}
     .kb-val{font-variant-numeric:tabular-nums;opacity:.55}
     .snd-scope{width:100%;height:110px;display:block;margin:6px 0 2px}
-    .snd-cube{width:100%;height:46px;display:block;margin:0 0 6px;opacity:.9}
+    .snd-cube{width:100%;height:84px;display:block;margin:0 0 6px;opacity:.9}
     .dream{align-items:center}
     .dream-lbl{font-style:italic;opacity:.7;font-size:12.5px;min-width:8em;text-align:center}
     .lib-row{display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid rgba(var(--line),.06)}
@@ -269,6 +301,8 @@ const SoundUI = (() => {
     const grid = h('div', { class: 'kb-grid' }, KNOBS.map((d) => { const k = knob(d); knobs[d.name] = k; return k.el; }));
     scope = h('canvas', { class: 'snd-scope', width: 280, height: 110, 'aria-hidden': 'true' });
     cube = h('canvas', { class: 'snd-cube', width: 280, height: 46, 'aria-hidden': 'true' });
+
+    attachCube(cube);
 
     modeSel = UI.select({ label: 'Engine', value: Sound.mode,
       options: [['sigil', 'Sigil · cube & vox'], ['legacy', 'Legacy · original voices']],

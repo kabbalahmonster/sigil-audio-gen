@@ -77,7 +77,7 @@ const Sound = (() => {
   function composePatch(sig, variant, overrides) {
     const derived = SD.derive(sig.hash, variant);
     const mood = (app.song && app.song.cfg && app.song.cfg.sound) || {};
-    const base = { ...derived, ...mood };
+    const base = { tilt: 0, density: 1, ...derived, ...mood };
     return { base, P: { ...base, ...overrides }, tables: SD.tables(sig, variant) };
   }
 
@@ -87,6 +87,7 @@ const Sound = (() => {
     const c = composePatch(sig, cur.variant, cur.o);
     cur.base = c.base; cur.P = c.P; cur.tables = c.tables;
     cur.mags = magnitudes(cur.tables, cur.P.wave, cur.P.layer);
+    cur.ring = ringFor(cur.tables, cur.P);
   }
 
   function syncFrom(sig) {
@@ -206,18 +207,28 @@ const Sound = (() => {
     return buf;
   }
 
-  function cellWave(eng, x, y) {
-    const cx = clamp(Math.round(x), 0, SD.FX - 1);
-    const cy = clamp(Math.round(y), 0, SD.FY - 1);
-    const k = cy * 16 + cx;
-    let w = eng.sig.cells.get(k);
-    if (!w) {
-      const c = eng.sig.tables.grid[cy][cx];
-      w = eng.ctx.createPeriodicWave(c.re, c.im);
-      eng.sig.cells.set(k, w);
+    /** Build one cube cell, shaped by Tilt (spectral slope) and Density (upper tier). Cached by bucket. */
+    function cellWave(eng, x, y, P) {
+      const cx = clamp(Math.round(x), 0, SD.FX - 1);
+      const cy = clamp(Math.round(y), 0, SD.FY - 1);
+      const tilt = P.tilt ?? 0, dm = P.density ?? 1;
+      const key = `${cy},${cx},${Math.round(tilt * 20)},${Math.round(dm * 20)}`;
+      let w = eng.sig.cells.get(key);
+      if (!w) {
+        const c = eng.sig.tables.grid[cy][cx];
+        const n = c.re.length;
+        const re = new Float32Array(n), im = new Float32Array(n);
+        for (let h = 1; h < n; h++) {
+          const g = Math.pow(h, -tilt) * (h >= SD.UPPER ? dm : 1);
+          re[h] = c.re[h] * g;
+          im[h] = c.im[h] * g;
+        }
+        w = eng.ctx.createPeriodicWave(re, im);
+        if (eng.sig.cells.size > 240) eng.sig.cells.clear();
+        eng.sig.cells.set(key, w);
+      }
+      return w;
     }
-    return w;
-  }
 
   /** A shared drum-bus shaper curve, built once per engine. */
   function drumCurve(eng) {
@@ -377,7 +388,7 @@ const Sound = (() => {
     const oscs = [];
     for (const [x, y, g0] of pair) {
       const o = ctx.createOscillator();
-      o.setPeriodicWave(cellWave(eng, x, y));
+      o.setPeriodicWave(cellWave(eng, x, y, P));
       o.detune.value = detune;
       o.frequency.setValueAtTime(from != null ? mtof(from) : f, t);
       if (from != null) o.frequency.exponentialRampToValueAtTime(f, t + 0.08);
@@ -665,10 +676,37 @@ const Sound = (() => {
 
   /* ── Hook ────────────────────────────────────────────────────────────── */
 
+  /* ── Visual feeds ────────────────────────────────────────────────────── */
+
+  /** The wheel's waveform: a clean cycle and its crushed version, 128 points each. */
+  function ringFor(tb, P) {
+    const a = tb.cell(P.wave, P.layer), b = tb.cell(P.wave + P.sweep * 4, P.layer + P.drift * 2.5);
+    const N = 128, raw = SD.waveSamples(a, b, 0.5, N), clean = new Float32Array(N);
+    let mx = 1e-9;
+    for (let i = 0; i < N; i++) {
+      clean[i] = raw[i] + P.sub * 0.6 * Math.sin((Math.PI * i) / N);
+      if (Math.abs(clean[i]) > mx) mx = Math.abs(clean[i]);
+    }
+    for (let i = 0; i < N; i++) clean[i] /= mx;
+    const crushed = SD.applyFx(clean, {
+      bits: P.grit > 0 ? P.bits : 16, hold: P.hold, fold: P.fold, drive: P.drive, mix: P.grit,
+    });
+    return { clean, crushed };
+  }
+
+  /** Recent onsets, for the ripples. Wall-clock time for keys, beats for the score. */
+  const LOGGED = new Set(['lead', 'harm', 'pad', 'kick', 'snare']);
+  const notes = [];
+  function logNote(ev) {
+    notes.push({ beat: ev.beat ?? null, at: performance.now(), kind: ev.type });
+    if (notes.length > 48) notes.shift();
+  }
+
+  /** Route each event to a voice. Drums belong to the DrumEngine (m15), so we pass them by. */
   function voiceHook(_, ev, t, eng) {
     if (prefs.mode !== 'sigil' || !eng.sig || !eng.buses) return null;
-    const { P, K } = patchFor(eng, ev);
-
+    if (LOGGED.has(ev.type)) logNote(ev);
+    const { P } = patchFor(eng, ev);
     switch (ev.type) {
       case 'lead': {
         const vox = P.voice === 'vox' || (P.voice === 'auto' && ev.timbre === 'reed');
@@ -678,9 +716,6 @@ const Sound = (() => {
       case 'harm': voiceVox(eng, ev, t, P, eng.buses.harm, false); return true;
       case 'bass': voiceWave(eng, ev, t, P, eng.buses.bass, false, { bright: 0.18, single: true, sub: Math.max(P.sub, 0.3), peak: 0.4 }); return true;
       case 'pad': voicePad(eng, ev, t, P, eng.buses.pad, false); return true;
-      case 'kick': case 'snare': case 'hat': case 'shaker': case 'crash':
-        if (P.drums > 0) drumVoice(eng, ev, t, P, K);
-        return true;
       default: return null;
     }
   }
@@ -750,6 +785,17 @@ const Sound = (() => {
 
   const api = {
     SD, prepare, attach, noteOn, live,
+    paramsAt(eng, beat) {
+      if (!eng || !eng.sig) return null;
+      const { P, K } = patchFor(eng, { beat });
+      return { ...P, kit: K };
+    },
+    recentNotes: () => notes,
+    setMany(obj) {
+      if (!app.sigil) return;
+      Object.assign(cur.o, obj);
+      persist(); recompute(); refreshEngine(); notify();
+    },
     view: () => cur,
     state: () => ({ key: cur.key, variant: cur.variant, o: cur.o, P: cur.P, base: cur.base, tables: cur.tables, mags: cur.mags }),
     get mode() { return prefs.mode; },

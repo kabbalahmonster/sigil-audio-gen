@@ -44,7 +44,7 @@ const SoundUI = (() => {
 
   const knobs = {};
   const held = new Map();
-  let scope, cube, voiceSel, modeSel, liteBox, lensBox, vowBox, dreamLbl, keyBtn, freezeBtn, libList;
+  let scope, cube, voiceSel, modeSel, liteBox, lensBox, vowBox, arcBox, verbBox, dreamLbl, keyBtn, freezeBtn, libList;
 
   /* ── Knob ───────────────────────────────────────────────────────────── */
 
@@ -101,47 +101,71 @@ const SoundUI = (() => {
 
   /* ── Scope: the true signal path ─────────────────────────────────────── */
 
+  /** The wavetable as a 3D surface: columns are frames, rows are layers, and
+      the front edge is the actual signal, bit-crushing and all. */
   function paintScope() {
     if (!scope) return;
     const st = Sound.state(), g = scope.getContext('2d');
     const W = scope.width, H = scope.height;
     g.clearRect(0, 0, W, H);
-    g.strokeStyle = rgba(renderer.pal.line, 0.12);
-    g.lineWidth = 1;
-    g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
     if (!st.tables || !st.P) return;
+    const P = st.P, tb = st.tables, L = renderer.pal.line, A = renderer.pal.accent;
 
-    const P = st.P, tb = st.tables;
-    const a = tb.cell(P.wave, P.layer);
-    const b = tb.cell(P.wave + P.sweep * 4, P.layer + P.drift * 2.5);
-    const clean = SoundDesign.waveSamples(a, b, 0.0, W);
-    const target = SoundDesign.waveSamples(a, b, 1.0, W);
+    const NX = SoundDesign.FX, NY = SoundDesign.FY, SAMP = 48;
+    const ox = W * 0.5, oy = H * 0.72;
+    const sx = (W * 0.62) / NX, sy = (H * 0.42) / NY, skew = W * 0.055;
+    const px = (x, y) => ox + (x - (NX - 1) / 2) * sx + (y - (NY - 1) / 2) * skew;
+    const py = (x, y) => oy - (y - (NY - 1) / 2) * sy;
 
-    // Sub-oscillator: an octave down is half a cycle across this window.
+    // Far layers first, so nearer ones occlude them.
+    for (let y = NY - 1; y >= 0; y--) {
+      const wave = SoundDesign.waveSamples(tb.grid[y][clamp(Math.round(P.wave), 0, NX - 1)], tb.grid[y][clamp(Math.round(P.wave), 0, NX - 1)], 0, SAMP);
+      const near = 1 - y / (NY - 1);
+      g.beginPath();
+      for (let i = 0; i < SAMP; i++) {
+        const x = (i / (SAMP - 1)) * (NX - 1);
+        const h = wave[i] * sy * 0.55;
+        const X = px(x, y), Y = py(x, y) - h;
+        i ? g.lineTo(X, Y) : g.moveTo(X, Y);
+      }
+      const isCurrent = Math.round(clamp(P.layer, 0, NY - 1)) === y;
+      g.strokeStyle = rgba(isCurrent ? A : L, isCurrent ? 0.9 : 0.1 + near * 0.18);
+      g.lineWidth = isCurrent ? 1.5 : 1;
+      g.stroke();
+    }
+
+    // Struts across the layers, which make the surface read as a solid.
+    g.beginPath();
+    for (let i = 0; i <= 8; i++) {
+      const x = (i / 8) * (NX - 1);
+      for (let y = 0; y < NY; y++) {
+        const X = px(x, y), Y = py(x, y);
+        y ? g.lineTo(X, Y) : g.moveTo(X, Y);
+      }
+    }
+    g.strokeStyle = rgba(L, 0.12);
+    g.lineWidth = 1;
+    g.stroke();
+
+    // Front edge: the real signal, with sub, drive, fold, bits and hold.
+    const a = tb.cell(P.wave, P.layer), b = tb.cell(P.wave + P.sweep * 4, P.layer + P.drift * 2.5);
+    const clean = SoundDesign.waveSamples(a, b, 0, W);
     const withSub = new Float32Array(W);
     let mx = 1e-9;
     for (let i = 0; i < W; i++) {
-      const x = (2 * Math.PI * i) / W;
-      withSub[i] = clean[i] + P.sub * 0.6 * Math.sin(x / 2);
+      withSub[i] = clean[i] + P.sub * 0.6 * Math.sin((2 * Math.PI * i) / W / 2);
       if (Math.abs(withSub[i]) > mx) mx = Math.abs(withSub[i]);
     }
     for (let i = 0; i < W; i++) withSub[i] /= mx;
-
-    const wet = SoundDesign.applyFx(withSub, {
-      bits: P.grit > 0 ? P.bits : 16, hold: P.hold, fold: P.fold, drive: P.drive, mix: P.grit,
-    });
-
-    const line = (arr, style, width) => {
-      g.beginPath();
-      for (let x = 0; x < W; x++) {
-        const y = H / 2 - arr[x] * H * 0.42;
-        x ? g.lineTo(x, y) : g.moveTo(x, y);
-      }
-      g.strokeStyle = style; g.lineWidth = width; g.stroke();
-    };
-    line(target, rgba(renderer.pal.line, 0.18), 1);     // where the travel is heading
-    line(withSub, rgba(renderer.pal.line, 0.3), 1);     // clean, before the crusher
-    line(wet, rgba(renderer.pal.accent, 0.95), 1.5);    // what you actually hear
+    const wet = SoundDesign.applyFx(withSub, { bits: P.grit > 0 ? P.bits : 16, hold: P.hold, fold: P.fold, drive: P.drive, mix: P.grit });
+    g.beginPath();
+    for (let i = 0; i < W; i++) {
+      const Y = H - 9 - wet[i] * 8;
+      i ? g.lineTo(i, Y) : g.moveTo(i, Y);
+    }
+    g.strokeStyle = rgba(A, 0.8);
+    g.lineWidth = 1.2;
+    g.stroke();
   }
 
   /* ── Cube map: 9 × 5 cells, current position and travel vector ──────── */
@@ -185,6 +209,8 @@ const SoundUI = (() => {
       liteBox.input.checked = Sound.lite;
       lensBox.input.checked = Sound.lensWave;
       vowBox.input.checked = Sound.vowelMemoryOn;
+      arcBox.input.checked = Sound.arcOn;
+      verbBox.input.checked = Sound.sigilVerbOn;
       keyBtn.textContent = `Keys: ${Sound.keysOn ? 'on' : 'off'}`;
       freezeBtn.textContent = Sound.frozen ? 'Unfreeze' : 'Freeze';
       freezeBtn.setAttribute('aria-pressed', String(Sound.frozen));
@@ -231,7 +257,7 @@ const SoundUI = (() => {
     .kb-cap i{position:absolute;left:50%;top:3px;width:1.5px;height:9px;margin-left:-.75px;background:rgb(var(--accent))}
     .kb-label{opacity:.6;letter-spacing:.08em;text-transform:uppercase}
     .kb-val{font-variant-numeric:tabular-nums;opacity:.55}
-    .snd-scope{width:100%;height:62px;display:block;margin:6px 0 2px}
+    .snd-scope{width:100%;height:110px;display:block;margin:6px 0 2px}
     .snd-cube{width:100%;height:46px;display:block;margin:0 0 6px;opacity:.9}
     .dream{align-items:center}
     .dream-lbl{font-style:italic;opacity:.7;font-size:12.5px;min-width:8em;text-align:center}
@@ -241,7 +267,7 @@ const SoundUI = (() => {
 
   UI.section({ id: 'sound', title: 'Sound & Patch', order: 12, build(el) {
     const grid = h('div', { class: 'kb-grid' }, KNOBS.map((d) => { const k = knob(d); knobs[d.name] = k; return k.el; }));
-    scope = h('canvas', { class: 'snd-scope', width: 280, height: 62, 'aria-hidden': 'true' });
+    scope = h('canvas', { class: 'snd-scope', width: 280, height: 110, 'aria-hidden': 'true' });
     cube = h('canvas', { class: 'snd-cube', width: 280, height: 46, 'aria-hidden': 'true' });
 
     modeSel = UI.select({ label: 'Engine', value: Sound.mode,
@@ -253,6 +279,8 @@ const SoundUI = (() => {
     liteBox = UI.check({ label: 'Lite mode (fewer oscillators, simpler visuals)', checked: Sound.lite, onChange: (v) => Sound.setLite(v) });
     lensBox = UI.check({ label: 'Live Lens also sweeps the wavetable', checked: Sound.lensWave, onChange: (v) => Sound.setLensWave(v) });
     vowBox = UI.check({ label: 'Sing the vowels you struck out (this device only)', checked: Sound.vowelMemoryOn, onChange: (v) => Sound.setVowelMemory(v) });
+    arcBox = UI.check({ label: 'Sound arc: the timbre follows the rite', checked: Sound.arcOn, onChange: (v) => Sound.setArc(v) });
+    verbBox = UI.check({ label: 'Reverb built from the sigil’s own strokes', checked: Sound.sigilVerbOn, onChange: (v) => Sound.setSigilVerb(v) });
 
     dreamLbl = h('output', { class: 'dream-lbl' });
     keyBtn = UI.button('Keys: off', () => toggleKeys(), { title: 'Play the sigil from the keyboard (X)' });
@@ -267,7 +295,7 @@ const SoundUI = (() => {
         UI.button('◀ dream', () => Sound.dream(-1)), dreamLbl, UI.button('dream ▶', () => Sound.dream(1))),
       h('div', { class: 'sgrow' },
         UI.button('Mutate', () => Sound.mutate()), freezeBtn, UI.button('Reset knobs', () => Sound.reset())),
-      modeSel, voiceSel, liteBox, lensBox, vowBox,
+      modeSel, voiceSel, liteBox, lensBox, vowBox,      modeSel, voiceSel, liteBox, lensBox, vowBox, arcBox, verbBox,
       h('div', { class: 'sgrow' }, keyBtn, UI.button('Copy patch code', () => copy(Sound.code()))),
       h('div', { class: 'snd-h' }, 'Patch library'),
       h('div', { class: 'sgrow' },

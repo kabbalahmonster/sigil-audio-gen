@@ -137,71 +137,97 @@ const Render = (() => {
    * Render the whole export.
    * @returns {{L: Float32Array, R: Float32Array, sr: number, segments: number}}
    */
-  async function renderSong(song, sr, onProgress) {
-    let spb = S.tempo && app.engine && app.engine.song === song ? app.engine.spb : song.spb;
-
-    // Quantise the pass length to a whole number of samples, then back-derive
-    // spb, so that N passes are exactly N × passN samples with no drift.
-    const passN = Math.round(song.total * spb * sr);
-    spb = passN / (song.total * sr);
-    const pass = passN / sr, L = opts.loops || S.loops;   // m14 (Evolve) renders one pass at a time
-
-    const useLens = S.lens && typeof LiveLens !== 'undefined' && LiveLens.active();
-    const cores = navigator.hardwareConcurrency || 4;
-    const cuts = S.fast ? planCuts(song, spb, clamp(Math.round(cores / 2), 2, 6), sr) : [0, pass];
-    const K = cuts.length - 1;
-
-    if (K < 2) {   // serial path: one context for the whole thing
-      const [l, r] = await renderSegment(song, spb, sr, timeline(song, spb, L, useLens), 0, L * pass + TAIL, onProgress);
-      return { L: l, R: r, sr, segments: 1 };
+    /** Run async jobs with a fixed number of lanes, yielding to the UI between them. */
+    async function pool(jobs, lanes) {
+      let i = 0;
+      const workers = Array.from({ length: Math.max(1, lanes) }, async () => {
+        while (i < jobs.length) {
+          const j = jobs[i++];
+          await j();
+          await new Promise((r) => setTimeout(r, 0));   // let the page breathe
+        }
+      });
+      await Promise.all(workers);
     }
-
-    /* Two timelines: a one-pass timeline for pieces that never see a loop
-       boundary, and a two-pass timeline for the pieces that straddle one. */
-    const tl1 = timeline(song, spb, 1, useLens);
-    const tl2 = L > 1 ? timeline(song, spb, 2, useLens) : tl1;
-
-    const jobs = [];
-    const job = (tl, a, e) => { const j = { tl, a, e, frac: 0, w: e - a + PRE_FX }; jobs.push(j); return j; };
-
-    const mids = [];
-    for (let j = 0; j < K - 1; j++) mids.push(job(tl1, cuts[j], cuts[j + 1] + XF));
-    const lastFinal = job(tl1, cuts[K - 1], pass + TAIL);            // last piece of the FINAL pass (real tail)
-    const lastMid = L > 1 ? job(tl2, cuts[K - 1], pass + XF) : null;  // last piece of earlier passes
-    const seam = L > 1 ? job(tl2, pass, pass + cuts[1] + XF) : null;  // first piece of later passes
-
-    const wsum = jobs.reduce((s, j) => s + j.w, 0);
-    const report = () => onProgress(jobs.reduce((s, j) => s + j.frac * j.w, 0) / wsum);
-
-    await Promise.all(jobs.map(async (j) => {
-      j.data = await renderSegment(song, spb, sr, j.tl, j.a, j.e, (f) => { j.frac = f; report(); });
-    }));
-
-    /* Assemble. Each piece writes its main span plus its overlap; the next
-       piece crossfades over that overlap. */
-    const total = Math.round((L * pass + TAIL) * sr), xfN = Math.round(XF * sr);
-    const outL = new Float32Array(total), outR = new Float32Array(total);
-
-    const place = (j, startSec, first) => {
-      const pos = Math.round(startSec * sr), [l, r] = j.data, n = Math.min(l.length, total - pos);
-      for (let k = 0; k < n; k++) {
-        if (!first && k < xfN) {
-          const w = k / xfN;
-          outL[pos + k] = outL[pos + k] * (1 - w) + l[k] * w;
-          outR[pos + k] = outR[pos + k] * (1 - w) + r[k] * w;
-        } else { outL[pos + k] = l[k]; outR[pos + k] = r[k]; }
+  
+    /**
+     * Render the whole export.
+     * @param {object} [opts] { loops } — m14 (Evolve) renders one pass at a time.
+     * @returns {{L: Float32Array, R: Float32Array, sr: number, segments: number}}
+     */
+    async function renderSong(song, sr, onProgress, opts) {
+      opts = opts || {};
+      let spb = S.tempo && app.engine && app.engine.song === song ? app.engine.spb : song.spb;
+  
+      const passN = Math.round(song.total * spb * sr);
+      spb = passN / (song.total * sr);
+      const pass = passN / sr;
+      const L = opts.loops || S.loops;
+  
+      const useLens = S.lens && typeof LiveLens !== 'undefined' && LiveLens.active();
+      const cores = navigator.hardwareConcurrency || 4;
+  
+      // Lanes, not jobs, bound the peak memory and the main-thread contention.
+      // Too many parallel OfflineAudioContexts is the usual cause of stutter.
+      const lanes = S.fast ? clamp(Math.round(cores / 2), 1, 4) : 1;
+      const cuts = S.fast ? planCuts(song, spb, clamp(lanes + 1, 2, 6), sr) : [0, pass];
+      const K = cuts.length - 1;
+  
+      if (K < 2) {
+        const [l, r] = await renderSegment(song, spb, sr, timeline(song, spb, L, useLens), 0, L * pass + TAIL, onProgress);
+        return { L: l, R: r, sr, segments: 1 };
       }
-    };
-
-    for (let p = 0; p < L; p++) {
-      const o = p * pass;
-      place(p === 0 ? mids[0] : seam, o, p === 0);
-      for (let j = 1; j < K - 1; j++) place(mids[j], o + cuts[j], false);
-      place(p === L - 1 ? lastFinal : lastMid, o + cuts[K - 1], false);
+  
+      const tl1 = timeline(song, spb, 1, useLens);
+      const tl2 = L > 1 ? timeline(song, spb, 2, useLens) : tl1;
+  
+      const jobs = [];
+      const job = (tl, a, e) => { const j = { tl, a, e, frac: 0, w: e - a + PRE_FX }; jobs.push(j); return j; };
+  
+      const mids = [];
+      for (let j = 0; j < K - 1; j++) mids.push(job(tl1, cuts[j], cuts[j + 1] + XF));
+      const lastFinal = job(tl1, cuts[K - 1], pass + TAIL);
+      const lastMid = L > 1 ? job(tl2, cuts[K - 1], pass + XF) : null;
+      const seam = L > 1 ? job(tl2, pass, pass + cuts[1] + XF) : null;
+  
+      const wsum = jobs.reduce((s, j) => s + j.w, 0);
+      let lastReport = 0;
+      const report = () => {
+        const now = performance.now();
+        if (now - lastReport < 60) return;          // throttle: progress was thrashing layout
+        lastReport = now;
+        onProgress(jobs.reduce((s, j) => s + j.frac * j.w, 0) / wsum);
+      };
+  
+      await pool(jobs.map((j) => async () => {
+        j.data = await renderSegment(song, spb, sr, j.tl, j.a, j.e, (f) => { j.frac = f; report(); });
+      }), lanes);
+      onProgress(1);
+  
+      const total = Math.round((L * pass + TAIL) * sr), xfN = Math.round(XF * sr);
+      const outL = new Float32Array(total), outR = new Float32Array(total);
+  
+      const place = (j, startSec, first) => {
+        const pos = Math.round(startSec * sr), [l, r] = j.data, n = Math.min(l.length, total - pos);
+        for (let k = 0; k < n; k++) {
+          if (!first && k < xfN) {
+            const w = k / xfN;
+            outL[pos + k] = outL[pos + k] * (1 - w) + l[k] * w;
+            outR[pos + k] = outR[pos + k] * (1 - w) + r[k] * w;
+          } else { outL[pos + k] = l[k]; outR[pos + k] = r[k]; }
+        }
+      };
+  
+      for (let p = 0; p < L; p++) {
+        const o = p * pass;
+        place(p === 0 ? mids[0] : seam, o, p === 0);
+        for (let j = 1; j < K - 1; j++) place(mids[j], o + cuts[j], false);
+        place(p === L - 1 ? lastFinal : lastMid, o + cuts[K - 1], false);
+      }
+      // Release the segment buffers before encoding, which is the other memory peak.
+      for (const j of jobs) j.data = null;
+      return { L: outL, R: outR, sr, segments: jobs.length };
     }
-
-    return { L: outL, R: outR, sr, segments: jobs.length };
-  }
 
   /* ═════════ 2. MASTERING ═════════ */
 
@@ -564,6 +590,8 @@ self.onmessage = function (e) {
     const song = app.song, f = FORMATS[S.format];
 
     busy = true; refresh();
+    const wasLite = typeof Sound !== 'undefined' ? Sound.lite : false;
+    if (typeof Sound !== 'undefined') Sound.setLite(true);   // thin the live voices while rendering
     btn.textContent = 'Rendering…';
     bar.classList.add('busy'); setBar(0);
     status.textContent = 'Performing the rite offline…';
@@ -588,6 +616,7 @@ self.onmessage = function (e) {
       console.error('[render]', e);
       status.textContent = 'Export failed: ' + (e.message || e);
     } finally {
+      if (typeof Sound !== 'undefined') Sound.setLite(wasLite);
       busy = false;
       btn.textContent = 'Render';
       bar.classList.remove('busy');

@@ -26,7 +26,12 @@
    ];
    
    // The VM has no browser globals, so provide the few it needs.
-   const ctx = createContext({ TextEncoder, btoa, atob, console });
+   /* A minimal browser shim. `window` is self-referential so `window.X = X`
+   publishes into the same global the next file reads from. */
+const sandbox = { TextEncoder, btoa, atob, console };
+sandbox.window = sandbox;
+sandbox.globalThis = sandbox;
+const ctx = createContext(sandbox);
    
    for (const f of FILES) {
      try {

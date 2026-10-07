@@ -41,35 +41,42 @@ const Form = (() => {
     this.reanchorAt = 0;
   };
 
-  /** REPLACEMENT for Engine.prototype.pump, with region-loop awareness. */
+  /**
+   * REPLACEMENT for Engine.prototype.pump, with region looping and an adaptive
+   * horizon. The old 0.18 s lookahead was too tight: one long frame (a render,
+   * a GC, a panel redraw) would let the playhead pass a booked event, which is
+   * what the gaps were. 0.4 s of slack costs nothing and removes them.
+   */
   Engine.prototype.pump = function () {
     if (!this.running || !this.buses) return;
 
-    const c = this.ctx, horizon = c.currentTime + (document.hidden ? 1.6 : 0.18);
+    const c = this.ctx;
+    const horizon = c.currentTime + (document.hidden ? 2.5 : 0.4);
     const total = this.song.total, totalSec = total * this.spb;
 
-    for (let guard = 0; guard < 4000; guard++) {
+    for (let guard = 0; guard < 6000; guard++) {
       const reg = this.region, ev = this.events[this.ptr];
 
       if (reg && (!ev || ev.beat >= reg.end)) {
-        // Reached the loop end: rewind the anchor by exactly the region length.
         const tEnd = this.anchor + (this.loopIndex * total + reg.end) * this.spb;
         if (tEnd > horizon) break;
         this.prevAnchor = this.anchor;
-        this.reanchorAt = tEnd;                 // beatNow() switches anchors here
+        this.reanchorAt = tEnd;
         this.anchor += (reg.end - reg.start) * this.spb;
         this.ptr = firstAt(this.events, reg.start);
         continue;
       }
 
-      if (!ev) {   // natural end of the song → loop the whole song (original behaviour)
+      if (!ev) {
         if (this.anchor + (this.loopIndex + 1) * totalSec > horizon) break;
         this.loopIndex++; this.ptr = 0; continue;
       }
 
       const t = this.anchor + (this.loopIndex * total + ev.beat) * this.spb;
       if (t > horizon) break;
-      if (t >= c.currentTime - 0.03) this.play(ev, Math.max(t, c.currentTime));
+      // A late event is nudged forward rather than dropped, so a stall during
+      // a render causes a small smear instead of a silent bar.
+      if (t >= c.currentTime - 0.12) this.play(ev, Math.max(t, c.currentTime + 0.005));
       this.ptr++;
     }
   };

@@ -204,6 +204,93 @@ const SoundDesign = (() => {
     return out;
   }
 
+
+    /* ── SOUND ARC: per-section automation ────────────────────────────────
+     The rite already has a shape. The sound should follow it: the cube walks
+     forward as the sections pass, the spectrum opens with intensity, and the
+     Banishing closes everything down again. Pure, so offline renders match. */
+
+  /**
+   * @param {object} D   the derived DNA (or the effective patch)
+   * @param {object} sec the plan section
+   * @param {number} si  section index
+   * @param {number} n   section count
+   * @returns {object} a patch overlay for this section
+   */
+  function arc(D, sec, si, n) {
+    const k = n > 1 ? si / (n - 1) : 0;          // position through the rite
+    const I = (sec.intensity || 0) / 3;          // 0 … 1
+    const out = {
+      wave: clampTo(D.wave + k * 2.4, 0, 8),                 // the cube walks forward
+      layer: clampTo(D.layer + I * 0.9 + k * 0.5, 0, 4),     // and climbs as it lifts
+      sweep: clampTo(D.sweep * (0.5 + 0.7 * I), 0, 1),
+      drift: clampTo(D.drift * (0.4 + 1.0 * k), 0, 1),
+      bright: clampTo(D.bright * (0.55 + 0.5 * I + 0.2 * k), 0, 1),
+      grit: clampTo(D.grit * (0.25 + 1.0 * I), 0, 1),
+      chorus: clampTo(D.chorus * (0.55 + 0.7 * k), 0, 1),
+      sub: clampTo(D.sub * (0.75 + 0.45 * (1 - Math.abs(k - 0.5) * 2)), 0, 1),
+      drums: D.drums * (0.8 + 0.4 * I),
+    };
+    if (sec.final) {                              // the Banishing withdraws
+      out.bright *= 0.45; out.grit *= 0.3; out.chorus = clampTo(out.chorus * 1.2, 0, 1);
+      out.wave = clampTo(D.wave * 0.5, 0, 8); out.drums *= 0.4;
+    }
+    if (si === 0) { out.grit *= 0.25; out.bright *= 0.8; }   // the Invocation is bare
+    return out;
+  }
+
+  /* ── DRUM CUBE ────────────────────────────────────────────────────────
+     The same X/Y idea applied to the kit: X is the rite's progress, Y is the
+     section's intensity. Dreams move the whole cube, so a new dream is a new
+     kit rather than the same kit with different knobs. */
+  function kitAt(D, sec, si, n) {
+    const K = D.kit, k = n > 1 ? si / (n - 1) : 0, I = (sec.intensity || 0) / 3;
+    return {
+      tune: clampTo(K.tune + 0.1 * k, 0, 1),
+      decay: clampTo(K.decay * (sec.halfTime ? 1.45 : 1) * (0.85 + 0.3 * k), 0.1, 1.6),
+      click: clampTo(K.click * (0.6 + 0.7 * I), 0, 1.4),
+      snap: clampTo(K.snap * (0.8 + 0.5 * I), 0.1, 1.4),
+      noiseTone: clampTo(K.noiseTone + 0.25 * I, 0, 1),
+      hatDecay: clampTo(K.hatDecay * (sec.halfTime ? 1.3 : 1), 0.1, 1.4),
+      hatTone: clampTo(K.hatTone + 0.2 * k, 0, 1),
+      body: K.body,
+      punch: clampTo(K.punch * (0.75 + 0.5 * I), 0.1, 1.4),
+      width: 0.3 + 0.5 * I,                       // stereo spread of the kit
+    };
+  }
+
+  /* ── SIGIL IMPULSE RESPONSE ───────────────────────────────────────────
+     The reverb is no longer generic noise: the sigil's own strokes become the
+     early reflections. Long strokes are late, distant taps; curved strokes are
+     diffuse; the ring decides which side of the stereo field they land on. */
+  function irSpec(sig, variant = 0) {
+    const D = derive(sig.hash, variant);
+    const n = sig.nodes.length;
+    const taps = [];
+    let acc = 0;
+    for (let i = 0; i < n - 1; i++) {
+      const a = sig.nodes[i], b = sig.nodes[i + 1];
+      // Chord length between two wheel positions, in units of the wheel radius.
+      const th = (2 * Math.PI * (b.slot - a.slot)) / 21;
+      const ra = [0.34, 0.6, 0.86][a.ring], rb = [0.34, 0.6, 0.86][b.ring];
+      const len = Math.sqrt(ra * ra + rb * rb - 2 * ra * rb * Math.cos(th));
+      acc += len;
+      const curve = Math.abs(sig.curves[i] || 0);
+      taps.push({
+        t: 0.012 + acc * 0.055,                        // arrival time
+        gain: 0.6 / (1 + i * 0.55),                    // later taps are quieter
+        pan: (b.ring - 1) * 0.75,                      // ring chooses the side
+        diffuse: 0.25 + curve,                         // curved strokes smear
+      });
+    }
+    return {
+      seconds: clampTo(2.2 + acc * 0.22, 1.8, 5.5),
+      decay: 1.6 + (1 - D.bright) * 2.4,
+      damp: 0.35 + D.bright * 0.45,                    // high-frequency absorption
+      taps,
+    };
+  }
+
   /* ── Patch codec ─────────────────────────────────────────────────────── */
 
   const b64 = (s) => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -261,7 +348,10 @@ const SoundDesign = (() => {
     H, FX, FY, VOWELS, FIELDS, VOICES, CONSONANT_CLASS, CLASS_TONE,
     derive, tables, glottal, waveSamples, applyFx,
     encodePatch, decodePatch, mutate, clampTo,
+    arc, kitAt, irSpec,
   };
 })();
 
-window.SoundDesign = SoundDesign;
+/* Publish the global for browsers. Guarded so the Node golden runner, which has
+   no window, can load this file unchanged. Use this pattern in every core file. */
+   if (typeof window !== 'undefined') window.SoundDesign = SoundDesign;

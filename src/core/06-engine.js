@@ -274,7 +274,7 @@ class Engine {
     this.ptr = 0;
     this.running = true;
     clearInterval(this.timer);
-    this.timer = setInterval(() => this.pump(), 25);
+    this.timer = setInterval(() => this.pump(), 16);   // pairs with the 0.4 s horizon in M4
     this.pump();
   }
 

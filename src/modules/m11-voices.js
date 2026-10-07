@@ -1,26 +1,17 @@
 'use strict';
 /* ══════════════════════════════════════════════════════════════════════════
-   m11 · VOICES v2 — the sigil's synthesis engine
+   m11 · VOICES v3
    --------------------------------------------------------------------------
-   ROUTING        Engine.play() offers every event to the 'voice' hook. We
-                  return true when we render it, null to fall through.
-
-   PATCH LAYERS   effective = derived DNA  ◂  mood suggestion (song.cfg.sound)
-                                           ◂  your knob overrides
-                  A render can bind its own spec (Evolve, m14) without
-                  disturbing the live performance.
-
-   VOICES         wave   two cube cells crossfading along a travel vector,
-                         plus a sub-oscillator that bypasses the filter
-                  vox    glottal source → four morphing formants → breath
-                  pad    detuned single-cell voices
-                  drums  a dedicated kit, coloured by the sigil's consonants
-
-   SHARED FX      One stereo chorus per engine, fed by sends from the lead and
-                  pad buses. Cost is constant regardless of polyphony.
-
-   BUDGET         Active voices are tracked. Above the budget the engine leans
-                  (single cell, no vibrato, no sub) instead of stuttering.
+   NEW IN v3
+     • SOUND ARC     each section gets its own patch overlay (SD.arc), cached
+                     per section so nothing is recomputed per note.
+     • DRUM CUBE     the kit itself moves with the rite (SD.kitAt).
+     • TUNED KICK    the kick's tail lands on the song's tonic, an octave or
+                     two below the bass, with a click, a body and a sub layer
+                     through a shaper. It is a chord tone, not a thud.
+     • SIGIL REVERB  the convolution impulse is built from the sigil's strokes.
+     • SMOOTHNESS    node budget, reused curves, no allocation on the hot path,
+                     and a hard ceiling on simultaneous drum layers.
    ══════════════════════════════════════════════════════════════════════════ */
 
 const Sound = (() => {
@@ -29,24 +20,23 @@ const Sound = (() => {
   const WORKLET_URL = 'src/audio/sigil-fx.worklet.js';
   const GLOTTAL = SD.glottal();
   const fxReady = new WeakSet();
+  const irCache = new Map();                 // `${sampleRate}:${key}` → AudioBuffer
 
-  const VOICE_BUDGET = 34;          // above this, voices lean automatically
+  const VOICE_BUDGET = 34;
   const prefs = {
     mode: Prefs.get('sound.mode', 'sigil'),
     lite: Prefs.get('sound.lite', (navigator.hardwareConcurrency || 4) <= 2),
     lensWave: Prefs.get('sound.lensWave', false),
     vowelMemory: Prefs.get('sound.vowelMemory', true),
+    arc: Prefs.get('sound.arc', true),
+    sigilVerb: Prefs.get('sound.sigilVerb', true),
     keys: false,
   };
 
   let bank = Prefs.get('soundbank', {});
   let library = Prefs.get('soundlib', []);
   const cur = { key: null, variant: 0, o: {}, base: null, P: null, tables: null, mags: null, mut: 0 };
-  let renderSpec = null;            // set by m14 during Evolve / stem renders
-  let pending = null;               // patch from a shared link, awaiting its cast
-  let lastVowel = null;
-  let frozen = false;
-  let vowelMemory = null;           // struck vowels, local only, never shared
+  let renderSpec = null, pending = null, lastVowel = null, frozen = false, vowelMemory = null;
   const subs = new Set();
   const notify = () => subs.forEach((fn) => { try { fn(); } catch (e) { console.error('[sound:ui]', e); } });
   const keyOf = (sig) => sig.fusionKey || sig.reduced;
@@ -72,10 +62,8 @@ const Sound = (() => {
   }
   const saveLibrary = () => Prefs.set('soundlib', library);
 
-  /** Blend the cells around the current position into a magnitude spectrum. */
   function magnitudes(tb, x, y) {
-    const c = tb.cell(x, y);
-    const out = new Float32Array(SD.H);
+    const c = tb.cell(x, y), out = new Float32Array(SD.H);
     let mx = 1e-9;
     for (let h = 1; h <= SD.H; h++) {
       const m = Math.hypot(c.re[h], c.im[h]);
@@ -86,8 +74,7 @@ const Sound = (() => {
     return out;
   }
 
-  /** derived DNA ◂ mood suggestion ◂ user overrides. */
-  function compose(sig, variant, overrides) {
+  function composePatch(sig, variant, overrides) {
     const derived = SD.derive(sig.hash, variant);
     const mood = (app.song && app.song.cfg && app.song.cfg.sound) || {};
     const base = { ...derived, ...mood };
@@ -97,7 +84,7 @@ const Sound = (() => {
   function recompute() {
     const sig = app.sigil;
     if (!sig) return;
-    const c = compose(sig, cur.variant, cur.o);
+    const c = composePatch(sig, cur.variant, cur.o);
     cur.base = c.base; cur.P = c.P; cur.tables = c.tables;
     cur.mags = magnitudes(cur.tables, cur.P.wave, cur.P.layer);
   }
@@ -113,18 +100,41 @@ const Sound = (() => {
       cur.mut = 0;
     }
     if (pending && pending.key === key) {
-      cur.variant = pending.variant;
-      cur.o = { ...pending.o };
-      pending = null;
-      persist();
+      cur.variant = pending.variant; cur.o = { ...pending.o };
+      pending = null; persist();
     }
     recompute();
   }
 
-  /** The spec an engine should use: a render's own spec wins over the live one. */
-  function specFor() {
-    if (renderSpec) return renderSpec;
-    return { P: cur.P, tables: cur.tables };
+  const specFor = () => renderSpec || { P: cur.P, tables: cur.tables };
+
+  /* ── Sound arc: one merged patch per section, built once ─────────────── */
+
+  function buildArc(eng) {
+    const song = app.song, P = eng.sig.P;
+    eng.arcOf = P;
+    if (!song || !prefs.arc) { eng.arc = null; eng.kits = null; return; }
+    const n = song.sections.length;
+    eng.arc = song.sections.map((sec, si) => ({ ...P, ...SD.arc(P, sec, si, n) }));
+    eng.kits = song.sections.map((sec, si) => SD.kitAt(P, sec, si, n));
+    eng.secStarts = song.sections.map((s) => s.start);
+  }
+
+  /** Section index for a beat. Linear over seven entries, with a one-slot memo. */
+  function sectionIdx(eng, beat) {
+    const s = eng.secStarts;
+    if (!s) return 0;
+    let j = 0;
+    for (let i = 0; i < s.length; i++) if (beat >= s[i]) j = i;
+    return j;
+  }
+
+  /** The effective patch and kit for an event. */
+  function patchFor(eng, ev) {
+    if (eng.arcOf !== eng.sig.P) buildArc(eng);
+    if (!eng.arc) return { P: eng.sig.P, K: eng.sig.P.kit };
+    const si = sectionIdx(eng, ev.beat || 0);
+    return { P: eng.arc[si], K: eng.kits[si] };
   }
 
   /* ── Engine attachment ───────────────────────────────────────────────── */
@@ -132,16 +142,14 @@ const Sound = (() => {
   function ensureChorus(eng) {
     if (eng.chorusIn) return;
     const ctx = eng.ctx;
-    const input = eng.gain(0);               // wet send level, set from the patch
-    const out = eng.gain(0.9);
+    const input = eng.gain(0), out = eng.gain(0.9);
     const voice = (time, rate, depth, pan) => {
       const d = ctx.createDelay(0.08);
       d.delayTime.value = time;
       const lfo = ctx.createOscillator();
       lfo.frequency.value = rate;
       const lg = eng.gain(depth);
-      lfo.connect(lg); lg.connect(d.delayTime);
-      lfo.start();
+      lfo.connect(lg); lg.connect(d.delayTime); lfo.start();
       input.connect(d);
       if (ctx.createStereoPanner) {
         const p = ctx.createStereoPanner();
@@ -155,7 +163,49 @@ const Sound = (() => {
     eng.chorusIn = input;
   }
 
-  /** Lazily build (and cache) a PeriodicWave for one cube cell. */
+  /** Build the sigil's own impulse response: early reflections from its strokes. */
+  function sigilIR(ctx, sig, variant) {
+    const spec = SD.irSpec(sig, variant);
+    const key = `${ctx.sampleRate}:${sig.hex.slice(0, 12)}:${variant}`;
+    if (irCache.has(key)) return irCache.get(key);
+
+    const sr = ctx.sampleRate;
+    const len = Math.floor(sr * spec.seconds);
+    const buf = ctx.createBuffer(2, len, sr);
+
+
+    // Diffuse bed: decaying, progressively darkened noise.
+    for (let ch = 0; ch < 2; ch++) {
+      const d = buf.getChannelData(ch);
+      const rnd = mulberry32(0x1f2e3d + ch + variant * 7);
+      let lp = 0;
+      const pre = Math.floor(sr * 0.014);
+      for (let i = pre; i < len; i++) {
+        const tt = i / len;
+        lp += (spec.damp * (1 - 0.6 * tt)) * ((rnd() * 2 - 1) - lp);
+        d[i] = lp * Math.pow(1 - tt, spec.decay) * 1.25;
+      }
+    }
+    // The strokes themselves, as discrete taps with a short diffuse smear.
+    for (const tap of spec.taps) {
+      const at = Math.floor(tap.t * sr);
+      if (at >= len - 8) continue;
+      const smear = Math.max(4, Math.floor(tap.diffuse * 0.02 * sr));
+      for (let ch = 0; ch < 2; ch++) {
+        const d = buf.getChannelData(ch);
+        const side = ch === 0 ? 1 - Math.max(0, tap.pan) : 1 + Math.min(0, tap.pan);
+        const rnd = mulberry32(at * 2654435761 + ch);
+        for (let i = 0; i < smear && at + i < len; i++) {
+          const w = 1 - i / smear;
+          d[at + i] += tap.gain * side * w * w * (rnd() * 2 - 1);
+        }
+      }
+    }
+    if (irCache.size > 8) irCache.clear();
+    irCache.set(key, buf);
+    return buf;
+  }
+
   function cellWave(eng, x, y) {
     const cx = clamp(Math.round(x), 0, SD.FX - 1);
     const cy = clamp(Math.round(y), 0, SD.FY - 1);
@@ -169,6 +219,18 @@ const Sound = (() => {
     return w;
   }
 
+  /** A shared drum-bus shaper curve, built once per engine. */
+  function drumCurve(eng) {
+    if (eng.drumCurve) return eng.drumCurve;
+    const c = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) {
+      const x = (i / 1023) * 2 - 1;
+      c[i] = Math.tanh(2.2 * x) / Math.tanh(2.2);
+    }
+    eng.drumCurve = c;
+    return c;
+  }
+
   function attach(eng) {
     syncFrom(app.sigil);
     const spec = specFor();
@@ -177,8 +239,8 @@ const Sound = (() => {
     if (!eng.sound) {
       eng.sound = true;
       eng.analyser = eng.ctx.createAnalyser();
-      eng.analyser.fftSize = 512;
-      eng.analyser.smoothingTimeConstant = 0.72;
+      eng.analyser.fftSize = 1024;                 // 512 time-domain points for the terrain
+      eng.analyser.smoothingTimeConstant = 0.6;
       eng.out.connect(eng.analyser);
       if (fxReady.has(eng.ctx)) {
         try {
@@ -193,18 +255,36 @@ const Sound = (() => {
     if (!eng.sig || eng.sig.tables !== spec.tables) {
       eng.sig = { P: spec.P, tables: spec.tables, cells: new Map() };
       eng.glottalWave = eng.glottalWave || eng.ctx.createPeriodicWave(GLOTTAL.re, GLOTTAL.im);
+      eng.arcOf = null;
     }
     eng.sig.P = spec.P;
+    buildArc(eng);
+
+    if (prefs.sigilVerb && app.sigil) {
+      try { eng.reverb.buffer = sigilIR(eng.ctx, app.sigil, renderSpec ? cur.variant : cur.variant); }
+      catch (e) { console.warn('[sound] sigil reverb failed:', e.message); }
+    }
 
     ensureChorus(eng);
     if (eng.buses) {
       eng.buses.lead.connect(eng.chorusIn);
       eng.buses.pad.connect(eng.chorusIn);
+      // Drum bus gets its own shaper for glue and punch.
+      if (!eng.drumShaped) {
+        const ws = eng.ctx.createWaveShaper();
+        ws.curve = drumCurve(eng);
+        ws.oversample = '2x';
+        eng.drumIn = ws;
+        ws.connect(eng.buses.drums);
+        eng.drumShaped = true;
+      } else {
+        eng.drumIn.disconnect();
+        eng.drumIn.connect(eng.buses.drums);
+      }
     }
     pushFx(eng);
   }
 
-  /** Push live-changeable values. Click-free via setTargetAtTime. */
   function pushFx(eng) {
     if (!eng || !eng.sig) return;
     const P = eng.sig.P, now = eng.ctx.currentTime;
@@ -212,10 +292,7 @@ const Sound = (() => {
       const p = eng.sfx.parameters;
       const to = (n, v) => p.get(n).setTargetAtTime(v, now, 0.03);
       to('bits', P.grit > 0 ? P.bits : 16);
-      to('hold', P.hold);
-      to('fold', P.fold);
-      to('drive', P.drive);
-      to('mix', P.grit);
+      to('hold', P.hold); to('fold', P.fold); to('drive', P.drive); to('mix', P.grit);
     }
     if (eng.chorusIn) eng.chorusIn.gain.setTargetAtTime(P.chorus * 0.85, now, 0.05);
     if (eng.delayReturn) eng.delayReturn.gain.setTargetAtTime(0.2 + P.echo * 0.6, now, 0.05);
@@ -227,14 +304,8 @@ const Sound = (() => {
       console.warn('[sound] AudioWorklet unsupported; bit-crusher bypassed.');
       return false;
     }
-    try {
-      await ctx.audioWorklet.addModule(WORKLET_URL);
-      fxReady.add(ctx);
-      return true;
-    } catch (e) {
-      console.warn('[sound] could not load', WORKLET_URL, '-', e.message);
-      return false;
-    }
+    try { await ctx.audioWorklet.addModule(WORKLET_URL); fxReady.add(ctx); return true; }
+    catch (e) { console.warn('[sound] could not load', WORKLET_URL, '-', e.message); return false; }
   }
 
   /* ── Envelope helpers ────────────────────────────────────────────────── */
@@ -251,10 +322,7 @@ const Sound = (() => {
 
   function schedule(ctx, nodes, t, end, hold, amp) {
     nodes.forEach((n) => n.start(t));
-    if (!hold) {
-      nodes.forEach((n) => n.stop(end));
-      return { release() {} };
-    }
+    if (!hold) { nodes.forEach((n) => n.stop(end)); return { release() {} }; }
     return {
       release() {
         const now = ctx.currentTime;
@@ -277,14 +345,13 @@ const Sound = (() => {
     return lfo;
   }
 
-  /** Where in the cube this note starts and where it is travelling. */
   function travel(P, ev) {
     const lens = prefs.lensWave && typeof LiveLens !== 'undefined' && LiveLens.shift !== undefined
       ? LiveLens.shift * 0.6 : 0;
     const x0 = clamp(P.wave + lens, 0, SD.FX - 1);
     const y0 = clamp(P.layer, 0, SD.FY - 1);
     if (frozen) return { x0, y0, x1: x0, y1: y0 };
-    const dir = ((ev.deg ?? 0) % 2 === 0) ? 1 : -1;     // deterministic drift direction
+    const dir = ((ev.deg ?? 0) % 2 === 0) ? 1 : -1;
     return {
       x0, y0,
       x1: clamp(x0 + P.sweep * 4, 0, SD.FX - 1),
@@ -292,7 +359,7 @@ const Sound = (() => {
     };
   }
 
-  /* ── The wavetable core ──────────────────────────────────────────────── */
+  /* ── Wavetable core ──────────────────────────────────────────────────── */
 
   function waveCore(eng, { ev, midi, from, t, d, P, detune = 0, bright = P.bright, single = false, sub = P.sub, lean }) {
     const ctx = eng.ctx, f = mtof(midi);
@@ -300,17 +367,13 @@ const Sound = (() => {
     const mixNode = ctx.createGain();
 
     const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.Q.value = 0.7;
+    lp.type = 'lowpass'; lp.Q.value = 0.7;
     const c0 = f * (1.5 + 9 * bright);
     lp.frequency.setValueAtTime(c0, t);
     lp.frequency.setTargetAtTime(c0 * 0.4, t + 0.02, Math.max(0.05, d * 0.3));
     lp.connect(mixNode);
 
-    const pair = (single || lean)
-      ? [[tv.x0, tv.y0, 1]]
-      : [[tv.x0, tv.y0, 1], [tv.x1, tv.y1, 0]];
-
+    const pair = (single || lean) ? [[tv.x0, tv.y0, 1]] : [[tv.x0, tv.y0, 1], [tv.x1, tv.y1, 0]];
     const oscs = [];
     for (const [x, y, g0] of pair) {
       const o = ctx.createOscillator();
@@ -320,12 +383,11 @@ const Sound = (() => {
       if (from != null) o.frequency.exponentialRampToValueAtTime(f, t + 0.08);
       const g = ctx.createGain();
       g.gain.setValueAtTime(g0, t);
-      if (pair.length > 1) g.gain.linearRampToValueAtTime(1 - g0, t + d);   // the travel
+      if (pair.length > 1) g.gain.linearRampToValueAtTime(1 - g0, t + d);
       o.connect(g); g.connect(lp);
       oscs.push(o);
     }
 
-    // Sub-oscillator: an octave down, past the filter, for weight without mud.
     if (sub > 0.02 && !lean) {
       const s = ctx.createOscillator();
       s.type = 'sine';
@@ -337,7 +399,6 @@ const Sound = (() => {
       s.connect(sg); sg.connect(mixNode);
       oscs.push(s);
     }
-
     return { out: mixNode, oscs };
   }
 
@@ -345,28 +406,19 @@ const Sound = (() => {
 
   function voiceWave(eng, ev, t, P, bus, hold, opt = {}) {
     const ctx = eng.ctx, d = hold ? 3 : ev.dur * eng.spb;
-    const n = takeVoice(ctx, t + d + 1);
-    const lean = leaning(n);
-    const core = waveCore(eng, {
-      ev, midi: ev.midi, from: ev.from, t, d, P,
-      bright: opt.bright ?? P.bright, single: opt.single, sub: opt.sub ?? P.sub, lean,
-    });
+    const lean = leaning(takeVoice(ctx, t + d + 1));
+    const core = waveCore(eng, { ev, midi: ev.midi, from: ev.from, t, d, P, bright: opt.bright ?? P.bright, single: opt.single, sub: opt.sub ?? P.sub, lean });
     const amp = ctx.createGain();
-    core.out.connect(amp);
-    amp.connect(bus);
-
+    core.out.connect(amp); amp.connect(bus);
     const nodes = core.oscs.slice();
-    if (!hold && !lean && ev.type === 'lead' && d > 0.45) {
-      nodes.push(vibrato(ctx, t, d, core.oscs.slice(0, 2), mtof(ev.midi) * 0.004));
-    }
+    if (!hold && !lean && ev.type === 'lead' && d > 0.45) nodes.push(vibrato(ctx, t, d, core.oscs.slice(0, 2), mtof(ev.midi) * 0.004));
     const end = shape(eng, amp, t, d, ev.vel * (opt.peak ?? 0.32), hold);
     return schedule(ctx, nodes, t, end, hold, amp);
   }
 
   function voiceVox(eng, ev, t, P, bus, hold) {
     const ctx = eng.ctx, f = mtof(ev.midi), d = hold ? 3 : ev.dur * eng.spb;
-    const n = takeVoice(ctx, t + d + 1);
-    const lean = leaning(n);
+    const lean = leaning(takeVoice(ctx, t + d + 1));
 
     const src = ctx.createOscillator();
     src.setPeriodicWave(eng.glottalWave);
@@ -375,7 +427,6 @@ const Sound = (() => {
     const nodes = [src];
     if (!hold && !lean) nodes.push(vibrato(ctx, t, d, [src], f * 0.006));
 
-    // The melody chooses the vowel; vowel memory overrides it when available.
     const deg = ev.deg ?? 0;
     let i0 = mod(deg + P.vowel, 5);
     if (prefs.vowelMemory && vowelMemory && vowelMemory.length) {
@@ -391,8 +442,7 @@ const Sound = (() => {
     const count = lean ? 3 : 4;
     for (let i = 0; i < count; i++) {
       const bp = ctx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.Q.value = 6 + 7 * P.bright;
+      bp.type = 'bandpass'; bp.Q.value = 6 + 7 * P.bright;
       bp.frequency.setValueAtTime(V0.f[i] * tk, t);
       bp.frequency.linearRampToValueAtTime(V1.f[i] * tk, morph);
       const g = ctx.createGain();
@@ -401,10 +451,8 @@ const Sound = (() => {
     }
 
     const amp = ctx.createGain();
-    sum.connect(amp);
-    amp.connect(bus);
+    sum.connect(amp); amp.connect(bus);
 
-    // A sub under the voice gives the choir a chest.
     if (P.sub > 0.02 && !lean) {
       const s = ctx.createOscillator();
       s.type = 'sine';
@@ -414,7 +462,6 @@ const Sound = (() => {
       s.connect(sg); sg.connect(amp);
       nodes.push(s);
     }
-
     if (P.breath > 0.01 && !lean) {
       const br = ctx.createBufferSource();
       br.buffer = eng.noiseBuf; br.loop = true;
@@ -436,15 +483,12 @@ const Sound = (() => {
 
   function voicePad(eng, ev, t, P, bus, hold) {
     const ctx = eng.ctx, d = hold ? 3 : ev.dur * eng.spb;
-    const n = takeVoice(ctx, t + d + 1);
-    const lean = leaning(n);
+    const lean = leaning(takeVoice(ctx, t + d + 1));
     const mix = ctx.createGain(), amp = ctx.createGain();
     mix.connect(amp); amp.connect(bus);
-
     const nodes = [];
-    const spread = lean ? [0] : [-6, 6];
     for (const m of ev.midis) {
-      for (const dt of spread) {
+      for (const dt of (lean ? [0] : [-6, 6])) {
         const core = waveCore(eng, { ev, midi: m, t, d, P, detune: dt, bright: P.bright * 0.6, single: true, sub: 0, lean });
         core.out.connect(mix);
         nodes.push(...core.oscs);
@@ -454,114 +498,176 @@ const Sound = (() => {
     return schedule(ctx, nodes, t, end, hold, amp);
   }
 
-  /* ── Drum engine ─────────────────────────────────────────────────────── */
+  /* ── Drum engine v3 ──────────────────────────────────────────────────── */
 
-  /** The letter whose colour this beat's percussion takes. */
+  /**
+   * The kick's tonic, in Hz. The tail lands on the song's own tonic pitch
+   * class, folded into 41–58 Hz, so the kick is a chord tone.
+   */
+  function kickTonic(eng) {
+    const song = app.song;
+    const pc = song ? song.tonicPc : 0;
+    let m = 24 + pc;                         // C1 … B1
+    let f = mtof(m);
+    while (f < 40.5) { m += 12; f = mtof(m); }
+    while (f > 58) { m -= 12; f = mtof(m); }
+    return f;
+  }
+
   function letterAt(beat) {
     const sig = app.sigil;
     if (!sig) return 'T';
-    const r = sig.reduced;
-    return r[mod(Math.round(beat * 4), r.length)];
+    return sig.reduced[mod(Math.round(beat * 4), sig.reduced.length)];
   }
   function classTone(beat) {
-    const cls = SD.CONSONANT_CLASS[letterAt(beat)] || 'fricative';
-    return SD.CLASS_TONE[cls];
+    return SD.CLASS_TONE[SD.CONSONANT_CLASS[letterAt(beat)] || 'fricative'];
   }
 
-  function drumVoice(eng, ev, t, P) {
-    const ctx = eng.ctx, K = P.kit, bus = eng.buses.drums, lvl = P.drums;
+  /**
+   * Kick: four stacked layers, all tuned.
+   *   1 transient  a 3 ms filtered noise tick (the beater)
+   *   2 click      a fast high sine chirp that gives the attack its edge
+   *   3 body       a sine swept from about four times the tonic down to it
+   *   4 sub        a pure tonic sine that survives the body, for weight
+   * Everything passes through the drum bus shaper, so hard hits compress.
+   */
+  function kick(eng, ev, t, P, K, lvl) {
+    const ctx = eng.ctx, dest = eng.drumIn || eng.buses.drums;
+    const f0 = kickTonic(eng) * (0.94 + 0.12 * K.tune);
     const vel = ev.vel * lvl;
+    const decay = 0.16 + 0.42 * K.decay;
 
-    if (ev.type === 'kick') {
-      const f0 = 105 + 85 * K.tune, f1 = 36 + 16 * K.tune;
-      const o = ctx.createOscillator();
-      o.type = 'sine';
-      o.frequency.setValueAtTime(f0 * 2.4, t);
-      o.frequency.exponentialRampToValueAtTime(f0, t + 0.012);
-      o.frequency.exponentialRampToValueAtTime(f1, t + 0.06 + 0.12 * K.decay);
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(vel * 0.85, t + 0.003);
-      g.gain.exponentialRampToValueAtTime(0.0008, t + 0.2 + 0.5 * K.decay);
-      const ws = ctx.createWaveShaper();
-      ws.curve = eng.satCurve; ws.oversample = '2x';
-      const post = ctx.createGain();
-      post.gain.value = 0.7 + 0.5 * K.punch;
-      o.connect(g); g.connect(ws); ws.connect(post); post.connect(bus);
-      o.start(t); o.stop(t + 0.9 + K.decay);
+    // 3 · body
+    const body = ctx.createOscillator();
+    body.type = 'sine';
+    body.frequency.setValueAtTime(f0 * 5.5, t);
+    body.frequency.exponentialRampToValueAtTime(f0 * 1.9, t + 0.016);
+    body.frequency.exponentialRampToValueAtTime(f0, t + 0.055 + 0.06 * K.decay);
+    const bg = ctx.createGain();
+    bg.gain.setValueAtTime(0, t);
+    bg.gain.linearRampToValueAtTime(vel * 0.95, t + 0.002);
+    bg.gain.exponentialRampToValueAtTime(0.0008, t + decay);
+    body.connect(bg); bg.connect(dest);
+    body.start(t); body.stop(t + decay + 0.12);
 
-      const n = eng.noise(t, 0.02);
-      const nf = eng.filt('lowpass', 2200 + 2500 * K.click);
-      const ng = ctx.createGain();
-      eng.perc(ng.gain, t, vel * 0.22 * K.click, 0.004);
-      n.connect(nf); nf.connect(ng); ng.connect(bus);
-      return;
-    }
+    // 4 · sub, held on the tonic under the body
+    const sub = ctx.createOscillator();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(f0, t);
+    const sg = ctx.createGain();
+    sg.gain.setValueAtTime(0, t);
+    sg.gain.linearRampToValueAtTime(vel * 0.5 * (0.6 + 0.6 * P.sub), t + 0.012);
+    sg.gain.exponentialRampToValueAtTime(0.0006, t + decay * 1.45);
+    sub.connect(sg); sg.connect(dest);
+    sub.start(t); sub.stop(t + decay * 1.5 + 0.1);
 
-    if (ev.type === 'snare') {
-      const tone = classTone(ev.beat);
-      const dec = (0.05 + 0.16 * K.snap) * tone[1];
-      const n = eng.noise(t, 0.5);
-      const bp = eng.filt('bandpass', (1200 + 1400 * K.noiseTone) * tone[0], 0.7);
-      const hp = eng.filt('highpass', 900, 0.5);
-      const g = ctx.createGain();
-      eng.perc(g.gain, t, vel * 0.5 * tone[2], dec);
-      n.connect(bp); bp.connect(hp); hp.connect(g); g.connect(bus);
+    // 2 · click
+    const click = ctx.createOscillator();
+    click.type = 'triangle';
+    click.frequency.setValueAtTime(f0 * 16, t);
+    click.frequency.exponentialRampToValueAtTime(f0 * 4, t + 0.012);
+    const cg = ctx.createGain();
+    eng.perc(cg.gain, t, vel * 0.3 * K.click, 0.0045);
+    click.connect(cg); cg.connect(dest);
+    click.start(t); click.stop(t + 0.08);
 
+    // 1 · transient
+    const n = eng.noise(t, 0.02);
+    const nf = eng.filt('lowpass', 1800 + 3200 * K.click, 0.8);
+    const ng = ctx.createGain();
+    eng.perc(ng.gain, t, vel * 0.26 * K.click, 0.0035);
+    n.connect(nf); nf.connect(ng); ng.connect(dest);
+
+    // Punch: a short dip in the kick's own level right after the peak reads as
+    // compression without the cost of a compressor per hit.
+    const post = ctx.createGain();
+    post.gain.setValueAtTime(1, t);
+    post.gain.setValueAtTime(1 - 0.25 * K.punch, t + 0.008);
+    post.gain.linearRampToValueAtTime(1, t + 0.09);
+    bg.disconnect(); bg.connect(post); post.connect(dest);
+  }
+
+  function snare(eng, ev, t, P, K, lvl) {
+    const ctx = eng.ctx, dest = eng.drumIn || eng.buses.drums;
+    const vel = ev.vel * lvl, tone = classTone(ev.beat || 0);
+    const dec = (0.05 + 0.17 * K.snap) * tone[1];
+    const tonic = kickTonic(eng);
+
+    const n = eng.noise(t, 0.6);
+    const bp = eng.filt('bandpass', (1200 + 1500 * K.noiseTone) * tone[0], 0.65);
+    const hp = eng.filt('highpass', 820, 0.6);
+    const g = ctx.createGain();
+    eng.perc(g.gain, t, vel * 0.48 * tone[2], dec);
+    n.connect(bp); bp.connect(hp); hp.connect(g);
+    if (ctx.createStereoPanner) {
+      const p = ctx.createStereoPanner();
+      p.pan.value = (ev.pan || 0) * 0.4;
+      g.connect(p); p.connect(dest);
+    } else g.connect(dest);
+
+    // Two body partials tuned to the song: a fifth apart, like a real shell.
+    for (const [mul, lev, dk] of [[3, 0.26, 0.03], [4.5, 0.14, 0.022]]) {
       const o = ctx.createOscillator();
       o.type = 'triangle';
-      const bf = 150 + 90 * K.body;
-      o.frequency.setValueAtTime(bf * 1.3, t);
-      o.frequency.exponentialRampToValueAtTime(bf, t + 0.05);
+      const bf = tonic * mul * (0.9 + 0.25 * K.body);
+      o.frequency.setValueAtTime(bf * 1.25, t);
+      o.frequency.exponentialRampToValueAtTime(bf, t + 0.04);
       const og = ctx.createGain();
-      eng.perc(og.gain, t, vel * 0.3, 0.028);
-      o.connect(og); og.connect(bus);
+      eng.perc(og.gain, t, vel * lev, dk);
+      o.connect(og); og.connect(dest);
       o.start(t); o.stop(t + 0.3);
-      return;
-    }
-
-    if (ev.type === 'hat') {
-      const tone = classTone(ev.beat);               // consonant percussion
-      const dec = (ev.open ? 0.1 : 0.012) * (0.6 + 0.9 * K.hatDecay) * tone[1];
-      const n = eng.noise(t, 0.4);
-      const hp = eng.filt('highpass', (6200 + 3200 * K.hatTone) * tone[0], 0.7);
-      const bp = eng.filt('bandpass', (9000 + 3000 * K.hatTone) * tone[0], 0.9);
-      const g = ctx.createGain();
-      eng.perc(g.gain, t, vel * 0.16 * tone[2], dec);
-      n.connect(hp); hp.connect(bp); bp.connect(g);
-      if (ctx.createStereoPanner) {
-        const p = ctx.createStereoPanner();
-        p.pan.value = ev.pan || 0;
-        g.connect(p); p.connect(bus);
-      } else g.connect(bus);
-      return;
-    }
-
-    if (ev.type === 'shaker') {
-      const n = eng.noise(t, 0.2);
-      const bp = eng.filt('bandpass', 5200 + 2600 * K.hatTone, 1.2);
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(vel * 0.12, t + 0.014);
-      g.gain.setTargetAtTime(0, t + 0.014, 0.024);
-      n.connect(bp); bp.connect(g); g.connect(bus);
-      return;
-    }
-
-    if (ev.type === 'crash') {
-      const n = eng.noise(t, 2);
-      const hp = eng.filt('highpass', 3600, 0.5);
-      const g = ctx.createGain();
-      eng.perc(g.gain, t, vel * 0.12, 0.5 + 0.4 * K.hatDecay);
-      n.connect(hp); hp.connect(g); g.connect(eng.buses.bell);
     }
   }
 
-  /* ── The hook ────────────────────────────────────────────────────────── */
+  function hat(eng, ev, t, P, K, lvl) {
+    const ctx = eng.ctx, dest = eng.drumIn || eng.buses.drums;
+    const vel = ev.vel * lvl, tone = classTone(ev.beat || 0);
+    const dec = (ev.open ? 0.11 : 0.012) * (0.6 + 0.9 * K.hatDecay) * tone[1];
+    const n = eng.noise(t, 0.45);
+    const hp = eng.filt('highpass', (6200 + 3200 * K.hatTone) * tone[0], 0.7);
+    const bp = eng.filt('bandpass', (9000 + 3000 * K.hatTone) * tone[0], 0.9);
+    const g = ctx.createGain();
+    eng.perc(g.gain, t, vel * 0.15 * tone[2], dec);
+    n.connect(hp); hp.connect(bp); bp.connect(g);
+    if (ctx.createStereoPanner) {
+      const p = ctx.createStereoPanner();
+      p.pan.value = (ev.pan || 0) * (K.width || 0.5);
+      g.connect(p); p.connect(dest);
+    } else g.connect(dest);
+  }
+
+  function drumVoice(eng, ev, t, P, K) {
+    const lvl = P.drums;
+    switch (ev.type) {
+      case 'kick': return kick(eng, ev, t, P, K, lvl);
+      case 'snare': return snare(eng, ev, t, P, K, lvl);
+      case 'hat': return hat(eng, ev, t, P, K, lvl);
+      case 'shaker': {
+        const ctx = eng.ctx, dest = eng.drumIn || eng.buses.drums;
+        const n = eng.noise(t, 0.2);
+        const bp = eng.filt('bandpass', 5200 + 2600 * K.hatTone, 1.2);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(ev.vel * lvl * 0.11, t + 0.014);
+        g.gain.setTargetAtTime(0, t + 0.014, 0.024);
+        n.connect(bp); bp.connect(g); g.connect(dest);
+        return;
+      }
+      case 'crash': {
+        const n = eng.noise(t, 2);
+        const hp = eng.filt('highpass', 3600, 0.5);
+        const g = eng.ctx.createGain();
+        eng.perc(g.gain, t, ev.vel * lvl * 0.12, 0.5 + 0.4 * K.hatDecay);
+        n.connect(hp); hp.connect(g); g.connect(eng.buses.bell);
+      }
+    }
+  }
+
+  /* ── Hook ────────────────────────────────────────────────────────────── */
 
   function voiceHook(_, ev, t, eng) {
     if (prefs.mode !== 'sigil' || !eng.sig || !eng.buses) return null;
-    const P = eng.sig.P;
+    const { P, K } = patchFor(eng, ev);
 
     switch (ev.type) {
       case 'lead': {
@@ -571,10 +677,9 @@ const Sound = (() => {
       }
       case 'harm': voiceVox(eng, ev, t, P, eng.buses.harm, false); return true;
       case 'bass': voiceWave(eng, ev, t, P, eng.buses.bass, false, { bright: 0.18, single: true, sub: Math.max(P.sub, 0.3), peak: 0.4 }); return true;
-      case 'pad':  voicePad(eng, ev, t, P, eng.buses.pad, false); return true;
+      case 'pad': voicePad(eng, ev, t, P, eng.buses.pad, false); return true;
       case 'kick': case 'snare': case 'hat': case 'shaker': case 'crash':
-        if (P.drums <= 0) return true;
-        drumVoice(eng, ev, t, P);
+        if (P.drums > 0) drumVoice(eng, ev, t, P, K);
         return true;
       default: return null;
     }
@@ -598,10 +703,8 @@ const Sound = (() => {
     const eng = live();
     if (!eng || eng.ctx.state !== 'running') return null;
     const P = eng.sig.P, t = eng.ctx.currentTime, bus = playBus(eng);
-    const ev = { type: 'lead', midi, deg, vel, timbre: 'glass' };
-    return P.voice === 'vox'
-      ? voiceVox(eng, ev, t, P, bus, true)
-      : voiceWave(eng, ev, t, P, bus, true);
+    const ev = { type: 'lead', midi, deg, vel, timbre: 'glass', beat: 0 };
+    return P.voice === 'vox' ? voiceVox(eng, ev, t, P, bus, true) : voiceWave(eng, ev, t, P, bus, true);
   }
 
   /* ── Hooks ───────────────────────────────────────────────────────────── */
@@ -609,12 +712,11 @@ const Sound = (() => {
   Hooks.on('buses', (_b, eng) => attach(eng));
   Hooks.on('voice', voiceHook, 0);
 
-  // Vowel memory: the struck vowels, kept in memory only. Never stored, never shared.
   Hooks.on('beforeCast', (ctx) => {
     const seq = [];
     for (const ch of ctx.text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase()) {
       const i = 'AEIOU'.indexOf(ch);
-      if (i >= 0) seq.push([0, 1, 2, 3, 4][i]);     // A→ah E→eh I→ee O→oh U→oo
+      if (i >= 0) seq.push(i);
     }
     vowelMemory = seq.length ? seq : null;
   });
@@ -622,7 +724,7 @@ const Sound = (() => {
   Hooks.on('link', (link) => {
     const d = link.sound ? SD.decodePatch(link.sound) : null;
     pending = d ? { key: link.members.join('+'), ...d } : null;
-    vowelMemory = null;                              // a shared sigil has no vowels to remember
+    vowelMemory = null;
   });
 
   Hooks.on('shareKey', (key, sig) => {
@@ -638,7 +740,13 @@ const Sound = (() => {
     vowelMemory = null;
   });
 
-  /* ── API ─────────────────────────────────────────────────────────────── */
+  const refreshEngine = () => {
+    if (app.engine && app.engine.sig) {
+      app.engine.sig.P = cur.P;
+      buildArc(app.engine);
+      pushFx(app.engine);
+    }
+  };
 
   const api = {
     SD, prepare, attach, noteOn, live,
@@ -650,6 +758,8 @@ const Sound = (() => {
     get frozen() { return frozen; },
     get lensWave() { return prefs.lensWave; },
     get vowelMemoryOn() { return prefs.vowelMemory; },
+    get arcOn() { return prefs.arc; },
+    get sigilVerbOn() { return prefs.sigilVerb; },
     hasVowelMemory: () => !!(vowelMemory && vowelMemory.length),
     lastVowel: () => lastVowel,
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
@@ -658,29 +768,28 @@ const Sound = (() => {
     setLite(v) { prefs.lite = !!v; Prefs.set('sound.lite', prefs.lite); notify(); },
     setLensWave(v) { prefs.lensWave = !!v; Prefs.set('sound.lensWave', prefs.lensWave); notify(); },
     setVowelMemory(v) { prefs.vowelMemory = !!v; Prefs.set('sound.vowelMemory', prefs.vowelMemory); notify(); },
+    setArc(v) { prefs.arc = !!v; Prefs.set('sound.arc', prefs.arc); if (app.engine) { app.engine.arcOf = null; refreshEngine(); } notify(); },
+    setSigilVerb(v) {
+      prefs.sigilVerb = !!v; Prefs.set('sound.sigilVerb', prefs.sigilVerb);
+      if (app.engine) {
+        try {
+          app.engine.reverb.buffer = prefs.sigilVerb && app.sigil
+            ? sigilIR(app.engine.ctx, app.sigil, cur.variant)
+            : Engine.sharedIR(app.engine.ctx);
+        } catch (e) { console.warn(e); }
+      }
+      notify();
+    },
     toggleKeys(force) { prefs.keys = force ?? !prefs.keys; notify(); return prefs.keys; },
     toggleFreeze(force) { frozen = force ?? !frozen; notify(); return frozen; },
 
-    set(name, v) {
-      if (!app.sigil) return;
-      cur.o[name] = v;
-      persist(); recompute();
-      if (app.engine && app.engine.sig) { app.engine.sig.P = cur.P; pushFx(app.engine); }
-      notify();
-    },
-    reset() {
-      cur.o = {}; cur.mut = 0;
-      persist(); recompute();
-      if (app.engine && app.engine.sig) { app.engine.sig.P = cur.P; pushFx(app.engine); }
-      notify();
-    },
+    set(name, v) { if (!app.sigil) return; cur.o[name] = v; persist(); recompute(); refreshEngine(); notify(); },
+    reset() { cur.o = {}; cur.mut = 0; persist(); recompute(); refreshEngine(); notify(); },
     mutate() {
       if (!app.sigil) return;
       cur.mut++;
       cur.o = SD.mutate(app.sigil.hash, cur.mut, cur.base, cur.o);
-      persist(); recompute();
-      if (app.engine && app.engine.sig) { app.engine.sig.P = cur.P; pushFx(app.engine); }
-      notify();
+      persist(); recompute(); refreshEngine(); notify();
     },
     dream(delta) {
       if (!app.sigil) return;
@@ -691,24 +800,16 @@ const Sound = (() => {
     },
     code: () => SD.encodePatch(cur.o, cur.variant),
 
-    /** Used by m14 so a render can have its own patch without touching playback. */
     setRenderSpec(spec) {
       if (!spec || !app.sigil) { renderSpec = null; return; }
-      const c = compose(app.sigil, spec.variant ?? cur.variant, { ...cur.o, ...(spec.o || {}) });
+      const c = composePatch(app.sigil, spec.variant ?? cur.variant, { ...cur.o, ...(spec.o || {}) });
       renderSpec = { P: c.P, tables: c.tables };
     },
     clearRenderSpec() { renderSpec = null; },
 
     library: () => library.slice(),
     save(name) { library.push({ name: String(name).slice(0, 40), o: { ...cur.o } }); saveLibrary(); notify(); },
-    applyLibrary(i) {
-      const it = library[i];
-      if (!it || !app.sigil) return;
-      cur.o = { ...it.o };
-      persist(); recompute();
-      if (app.engine && app.engine.sig) { app.engine.sig.P = cur.P; pushFx(app.engine); }
-      notify();
-    },
+    applyLibrary(i) { const it = library[i]; if (!it || !app.sigil) return; cur.o = { ...it.o }; persist(); recompute(); refreshEngine(); notify(); },
     removeLibrary(i) { library.splice(i, 1); saveLibrary(); notify(); },
     importLibrary(data) {
       const list = Array.isArray(data) ? data : (data && data.patches) || [];
@@ -725,6 +826,4 @@ const Sound = (() => {
   return api;
 })();
 
-/* Classic scripts declare `const Sound` as a global LEXICAL binding, which is
-   NOT a window property. Publish it so `window.Sound` guards and DevTools see it. */
-window.Sound = Sound;
+if (typeof window !== 'undefined') window.Sound = Sound;

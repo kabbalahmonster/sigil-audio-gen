@@ -248,6 +248,7 @@ const Sound = (() => {
     if (!spec.P || !spec.tables) return;
 
     if (!eng.sound) {
+      eng.offline = typeof eng.ctx.startRendering === 'function';
       eng.sound = true;
       eng.analyser = eng.ctx.createAnalyser();
       eng.analyser.fftSize = 1024;                 // 512 time-domain points for the terrain
@@ -702,11 +703,18 @@ const Sound = (() => {
     if (notes.length > 48) notes.shift();
   }
 
-  /** Route each event to a voice. Drums belong to the DrumEngine (m15), so we pass them by. */
+  /** Route each event to a voice. Drums belong to the DrumEngine (m15). */
   function voiceHook(_, ev, t, eng) {
     if (prefs.mode !== 'sigil' || !eng.sig || !eng.buses) return null;
     if (LOGGED.has(ev.type)) logNote(ev);
     const { P } = patchFor(eng, ev);
+
+    // Voice cap: under load we skip a voice rather than overrun the audio thread.
+    if (typeof Perf !== 'undefined' && ev.type !== 'pad') {
+      const end = t + (ev.dur || 0.5) * eng.spb + 0.6;
+      if (!Perf.take(ev.type, end, eng.ctx.currentTime, eng.offline)) return true;
+    }
+
     switch (ev.type) {
       case 'lead': {
         const vox = P.voice === 'vox' || (P.voice === 'auto' && ev.timbre === 'reed');

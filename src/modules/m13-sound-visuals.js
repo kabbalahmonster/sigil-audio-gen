@@ -1,53 +1,58 @@
 'use strict';
 /* ══════════════════════════════════════════════════════════════════════════
-   m13 · SOUND VISUALS v4
+   m13 · SOUND VISUALS v5
    --------------------------------------------------------------------------
-   STYLES (press N, or pick in Tools → Visuals)
-     terrain   the sound as a receding surface; each row coloured by its
-               brightness (zero-crossing rate); surfaces filled for solidity
-     orbit     the same terrain wrapped around the seal, rings expanding
-               outward like sound leaving the sigil
-     ring      the wheel's crushed waveform, with echoes of the terrain
-   ALWAYS ON   the harmonic crown, note ripples, vowel glyph, grit tears
-   SMOOTHNESS  scans are captured at 20 Hz but drawn with a fractional scroll,
-               so motion is continuous at 60 fps. If frames run slow the grid
-               shrinks automatically, and the style never stutters the page.
+   STYLES   none · terrain · orbit · ring · pillars · strata     (press N)
+   COLOUR   every style is tinted by the SPECTRAL CENTROID of each captured
+            scan, so bright sound reads accent and dark sound reads ink.
+   DATA     one capture at 20 Hz holds both a waveform scan and a spectrum
+            scan. Drawing scrolls by the fraction of a capture period, so
+            motion is continuous at 60 fps from 20 Hz data.
+   BUDGET   preallocated arrays, no allocation in the frame loop, automatic
+            downgrade when frames run long.
    ══════════════════════════════════════════════════════════════════════════ */
 
 const SoundVisuals = (() => {
   'use strict';
 
-  const MODES = ['terrain', 'orbit', 'ring'];
+  const MODES = ['terrain', 'orbit', 'ring', 'pillars', 'strata', 'none'];
   const LABEL = {
-    terrain: 'Terrain · the sound as a receding surface',
-    orbit: 'Orbit · the terrain wrapped around the seal',
-    ring: 'Ring · the wheel’s waveform with terrain echoes',
+    terrain: 'Terrain · a receding surface',
+    orbit: 'Orbit · the terrain around the seal',
+    ring: 'Ring · the wheel’s waveform',
+    pillars: 'Pillars · the spectrum marching into depth',
+    strata: 'Strata · stacked slabs of sound',
+    none: 'None · the sigil alone',
   };
   let mode = Prefs.get('visual.mode', 'terrain');
   let glow = Prefs.get('visual.glow', true);
 
-  const CAP = 50;                                  // ms per captured scan (20 Hz)
+  const CAP = 50;
   const SIZES = { full: [22, 64], small: [10, 32] };
   let rows = 22, cols = 64;
-  let grid = new Float32Array(22 * 64), hue = new Float32Array(22);
-  let head = 0, lastCap = 0, phase = 0, tb = null;
+  let tgrid = new Float32Array(22 * 64);   // waveform peaks
+  let fgrid = new Float32Array(22 * 64);   // spectrum magnitudes
+  let hue = new Float32Array(22);          // spectral centroid, 0…1
+  let head = 0, lastCap = 0, phase = 0;
+  let tb = null, fb = null;
   let ema = 16, last = 0, autoSmall = false;
 
   function resize(small) {
     const [r, c] = small ? SIZES.small : SIZES.full;
     if (r === rows && c === cols) return;
     rows = r; cols = c;
-    grid = new Float32Array(rows * cols);
+    tgrid = new Float32Array(rows * cols);
+    fgrid = new Float32Array(rows * cols);
     hue = new Float32Array(rows);
     head = 0;
   }
-
   const rowIdx = (d) => ((head - d) % rows + rows) % rows;
 
-  /** A colour between the line and accent colours, as a CSS string. */
   function tint(L, A, t, a) {
-    const r = (L[0] + (A[0] - L[0]) * t) | 0, g2 = (L[1] + (A[1] - L[1]) * t) | 0, b = (L[2] + (A[2] - L[2]) * t) | 0;
-    return `rgba(${r},${g2},${b},${a.toFixed(3)})`;
+    const r = (L[0] + (A[0] - L[0]) * t) | 0;
+    const g = (L[1] + (A[1] - L[1]) * t) | 0;
+    const b = (L[2] + (A[2] - L[2]) * t) | 0;
+    return `rgba(${r},${g},${b},${a.toFixed(3)})`;
   }
 
   function read(an) {
@@ -56,13 +61,17 @@ const SoundVisuals = (() => {
     an.getByteTimeDomainData(tb);
   }
 
-  /** Capture one scan: peaks per column, and the zero-crossing rate as its colour. */
-  function capture() {
+  /** One capture: waveform peaks, spectrum columns, and the centroid as colour. */
+  function capture(an) {
+    const bins = an.frequencyBinCount;
+    if (!fb || fb.length !== bins) fb = new Uint8Array(bins);
+    an.getByteFrequencyData(fb);
+
     head = (head + 1) % rows;
-    const n = tb.length, step = n / cols, base = head * cols;
-    let zc = 0;
-    for (let i = 1; i < n; i++) if ((tb[i] >= 128) !== (tb[i - 1] >= 128)) zc++;
-    hue[head] = clamp(zc / 48, 0, 1);
+    const base = head * cols;
+
+    // Waveform, by peak per column.
+    const n = tb.length, step = n / cols;
     for (let c = 0; c < cols; c++) {
       let peak = 0;
       const a = Math.floor(c * step), b = Math.floor((c + 1) * step);
@@ -70,8 +79,19 @@ const SoundVisuals = (() => {
         const v = (tb[i] - 128) / 128;
         if (Math.abs(v) > Math.abs(peak)) peak = v;
       }
-      grid[base + c] = peak;
+      tgrid[base + c] = peak;
     }
+
+    // Spectrum, logarithmically mapped, plus the centroid for colour.
+    let wsum = 0, msum = 0;
+    for (let c = 0; c < cols; c++) {
+      const bin = Math.min(bins - 1, Math.floor(Math.pow(c / cols, 1.8) * bins * 0.6));
+      const v = fb[bin] / 255;
+      fgrid[base + c] = v;
+      wsum += v * c;
+      msum += v;
+    }
+    hue[head] = msum > 0.001 ? clamp((wsum / msum) / (cols * 0.55), 0, 1) : 0;
   }
 
   /* ── Terrain ─────────────────────────────────────────────────────────── */
@@ -79,13 +99,11 @@ const SoundVisuals = (() => {
   function terrain(g, F, A, L, kp, small) {
     const baseY = F.cy + F.R * 1.12, depth = F.R * 0.72, nearW = F.R * 2.3;
     const amp = F.R * 0.2 * (0.85 + 0.4 * kp);
-
-    // Projects (row depth k, column c) to screen space, into PX/PY.
     let PX = 0, PY = 0;
     const proj = (k, c, idx) => {
       const persp = 1 - 0.55 * k;
       PX = F.cx - (nearW * persp) / 2 + (c / (cols - 1)) * nearW * persp;
-      PY = baseY - k * depth - grid[idx * cols + c] * amp * persp;
+      PY = baseY - k * depth - tgrid[idx * cols + c] * amp * persp;
     };
 
     for (let d = rows - 1; d >= 0; d--) {
@@ -110,8 +128,7 @@ const SoundVisuals = (() => {
       for (let c = 0; c < cols; c++) { proj(k, c, idx); c ? g.lineTo(PX, PY) : g.moveTo(PX, PY); }
       if (glow && d < 3) {
         g.strokeStyle = tint(L, A, t, 0.12 * (1 - k));
-        g.lineWidth = 4;
-        g.stroke();
+        g.lineWidth = 4; g.stroke();
         g.beginPath();
         for (let c = 0; c < cols; c++) { proj(k, c, idx); c ? g.lineTo(PX, PY) : g.moveTo(PX, PY); }
       }
@@ -120,7 +137,6 @@ const SoundVisuals = (() => {
       g.stroke();
     }
 
-    // Struts tie each column through depth into a lattice.
     if (!small) {
       g.beginPath();
       for (let c = 0; c < cols; c += 8) {
@@ -148,12 +164,11 @@ const SoundVisuals = (() => {
       if (k >= 1) continue;
       const idx = rowIdx(d), t = hue[idx];
       const base = F.R * (1.12 + k * 0.95), amp = amp0 * (1 - 0.55 * k);
-
       g.beginPath();
       for (let c = 0; c <= cols; c++) {
         const j = c % cols;
         const th = (TAU * j) / cols + F.base;
-        const r = base + grid[idx * cols + j] * amp;
+        const r = base + tgrid[idx * cols + j] * amp;
         const x = F.cx + Math.sin(th) * r, y = F.cy - Math.cos(th) * r;
         c ? g.lineTo(x, y) : g.moveTo(x, y);
       }
@@ -165,10 +180,84 @@ const SoundVisuals = (() => {
     }
   }
 
+  /* ── Pillars: the spectrum marching into depth ───────────────────────── */
+
+  function pillars(g, F, A, L, kp, small) {
+    const baseY = F.cy + F.R * 1.1, depth = F.R * 0.7, nearW = F.R * 2.2;
+    const tall = F.R * 0.42 * (0.85 + 0.35 * kp);
+    const stride = small ? 2 : 1;
+
+    for (let d = rows - 1; d >= 0; d--) {
+      const k = (d + phase) / rows;
+      if (k >= 1) continue;
+      const idx = rowIdx(d), t = hue[idx];
+      const persp = 1 - 0.55 * k;
+      const y0 = baseY - k * depth;
+      const w = nearW * persp;
+      const alpha = 0.1 + 0.45 * (1 - k);
+
+      // Silhouette of the spectrum, filled.
+      g.beginPath();
+      g.moveTo(F.cx - w / 2, y0);
+      for (let c = 0; c < cols; c += stride) {
+        const x = F.cx - w / 2 + (c / (cols - 1)) * w;
+        g.lineTo(x, y0 - fgrid[idx * cols + c] * tall * persp);
+      }
+      g.lineTo(F.cx + w / 2, y0);
+      g.closePath();
+      if (!small) { g.fillStyle = tint(L, A, t, 0.035 + 0.05 * (1 - k)); g.fill(); }
+      g.strokeStyle = tint(L, A, t, alpha);
+      g.lineWidth = d === 0 ? 1.4 : 1;
+      g.stroke();
+
+      // Columns: the structure of the field.
+      if (!small) {
+        g.beginPath();
+        for (let c = 0; c < cols; c += 6) {
+          const x = F.cx - w / 2 + (c / (cols - 1)) * w;
+          g.moveTo(x, y0);
+          g.lineTo(x, y0 - fgrid[idx * cols + c] * tall * persp);
+        }
+        g.strokeStyle = tint(L, A, t, alpha * 0.5);
+        g.lineWidth = 1;
+        g.stroke();
+      }
+    }
+  }
+
+  /* ── Strata: stacked slabs ───────────────────────────────────────────── */
+
+  function strata(g, F, A, L, kp, small) {
+    const w = F.R * 2.1, top = F.cy - F.R * 0.1;
+    const gap = (F.R * 1.5) / rows;
+    const amp = gap * 1.7 * (0.85 + 0.4 * kp);
+
+    for (let d = rows - 1; d >= 0; d--) {
+      const k = (d + phase) / rows;
+      if (k >= 1) continue;
+      const idx = rowIdx(d), t = hue[idx];
+      const y0 = top + (d + phase) * gap;
+      const slab = gap * 0.9;
+
+      g.beginPath();
+      g.moveTo(F.cx - w / 2, y0 + slab);
+      for (let c = 0; c < cols; c++) {
+        const x = F.cx - w / 2 + (c / (cols - 1)) * w;
+        g.lineTo(x, y0 - Math.abs(tgrid[idx * cols + c]) * amp);
+      }
+      g.lineTo(F.cx + w / 2, y0 + slab);
+      g.closePath();
+      g.fillStyle = tint(L, A, t, 0.05 + 0.12 * (1 - k));
+      g.fill();
+      g.strokeStyle = tint(L, A, t, 0.18 + 0.45 * (1 - k));
+      g.lineWidth = 1;
+      g.stroke();
+    }
+  }
+
   /* ── Ring ────────────────────────────────────────────────────────────── */
 
   function ring(g, F, A, L, kp, v, small) {
-    // Echoes: older scans from the terrain history, travelling outward.
     for (const d of [3, 7, 12, 17]) {
       if (d >= rows) continue;
       const k = (d + phase) / rows, idx = rowIdx(d);
@@ -177,7 +266,7 @@ const SoundVisuals = (() => {
       for (let c = 0; c <= 96; c++) {
         const j = c % 96, src = Math.floor((j * cols) / 96);
         const th = (TAU * j) / 96 + F.base;
-        const r = base + grid[idx * cols + src] * amp;
+        const r = base + tgrid[idx * cols + src] * amp;
         const x = F.cx + Math.sin(th) * r, y = F.cy - Math.cos(th) * r;
         c ? g.lineTo(x, y) : g.moveTo(x, y);
       }
@@ -186,14 +275,13 @@ const SoundVisuals = (() => {
       g.stroke();
     }
 
-    // The wheel's waveform: the crushed structure, modulated by the live output.
     const N = v.ring.crushed.length, step = tb.length / N;
     const pts = () => {
       g.beginPath();
       for (let i = 0; i <= N; i++) {
         const j = i % N;
-        const live = (tb[Math.floor(j * step)] - 128) / 128;
-        const val = 0.6 * v.ring.crushed[j] + 0.4 * live;
+        const liveV = (tb[Math.floor(j * step)] - 128) / 128;
+        const val = 0.6 * v.ring.crushed[j] + 0.4 * liveV;
         const rad = F.R * (1.3 + 0.08 * val * (0.85 + 0.4 * kp));
         const th = (TAU * j) / N + F.base;
         const x = F.cx + Math.sin(th) * rad, y = F.cy - Math.cos(th) * rad;
@@ -236,25 +324,12 @@ const SoundVisuals = (() => {
         age = (now - n.at) / 1500;
         if (age < 0 || age > 1) continue;
       }
+      const wide = n.kind === 'kick';
       g.beginPath();
-      g.arc(F.cx, F.cy, F.R * (1.05 + age * 0.9), 0, TAU);
-      g.strokeStyle = rgba(n.kind === 'pad' ? L : A, (1 - age) * 0.28);
-      g.lineWidth = 1;
+      g.arc(F.cx, F.cy, F.R * (1.05 + age * (wide ? 1.2 : 0.9)), 0, TAU);
+      g.strokeStyle = rgba(n.kind === 'pad' ? L : A, (1 - age) * (wide ? 0.34 : 0.26));
+      g.lineWidth = wide ? 1.4 : 1;
       g.stroke();
-    }
-  }
-
-  function halo(g, F, L, an) {
-    const n = an.frequencyBinCount;
-    if (!halo.buf || halo.buf.length !== n) halo.buf = new Uint8Array(n);
-    an.getByteFrequencyData(halo.buf);
-    for (let i = 0; i < 64; i++) {
-      const bin = Math.min(n - 1, Math.floor(Math.pow(i / 64, 1.8) * n * 0.5));
-      const val = halo.buf[bin] / 255;
-      const th = (TAU * i) / 64 + F.base;
-      const rad = F.R * 1.44 + val * F.R * 0.07;
-      g.fillStyle = rgba(L, 0.1 + val * 0.45);
-      g.fillRect(F.cx + Math.sin(th) * rad - 1, F.cy - Math.cos(th) * rad - 1, 2, 2);
     }
   }
 
@@ -281,16 +356,17 @@ const SoundVisuals = (() => {
   /* ── Frame ───────────────────────────────────────────────────────────── */
 
   Hooks.on('drawPlaying', ({ r, g, F, kp, beat }) => {
+    if (mode === 'none') return;
+
     const now = performance.now();
     const dt = now - last;
     last = now;
     ema = ema * 0.94 + Math.min(dt, 120) * 0.06;
-    if (ema > 24) autoSmall = true;
-    else if (ema < 16) autoSmall = false;
+    if (ema > 24) autoSmall = true; else if (ema < 16) autoSmall = false;
 
     const v = Sound.view();
     if (!v.P || !v.mags || !v.ring) return;
-    const small = Sound.lite || autoSmall;
+    const small = Sound.lite || autoSmall || (typeof Perf !== 'undefined' && Perf.quality === 'low');
     resize(small);
 
     const A = r.pal.accent, L = r.pal.line;
@@ -299,34 +375,31 @@ const SoundVisuals = (() => {
 
     if (an) {
       read(an);
-      if (now - lastCap >= CAP) { lastCap = now; capture(); }
-      phase = clamp((now - lastCap) / CAP, 0, 1);   // the fractional scroll that makes motion smooth
+      if (now - lastCap >= CAP) { lastCap = now; capture(an); }
+      phase = clamp((now - lastCap) / CAP, 0, 1);
       if (mode === 'terrain') terrain(g, F, A, L, kp, small);
       else if (mode === 'orbit') orbit(g, F, A, L, kp, small);
-      else ring(g, F, A, L, kp, v, small);
+      else if (mode === 'pillars') pillars(g, F, A, L, kp, small);
+      else if (mode === 'strata') strata(g, F, A, L, kp, small);
+      else if (mode === 'ring') ring(g, F, A, L, kp, v, small);
     }
 
     crown(g, F, A, v.mags, kp);
     ripples(g, F, A, L, beat);
-    if (an && !small) halo(g, F, L, an);
     vowel(g, F, L);
     if (!small && v.P.grit > 0.5 && kp > 0.55 && Math.random() < 0.3) tears(g, F, A);
   });
 
   /* ── Controls ────────────────────────────────────────────────────────── */
 
-  function setMode(m) {
-    mode = m;
-    Prefs.set('visual.mode', m);
-    UI.announce(LABEL[m]);
-  }
+  function setMode(m) { mode = m; Prefs.set('visual.mode', m); UI.announce(LABEL[m]); }
   const cycle = () => setMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length]);
 
   UI.section({ id: 'visuals', title: 'Visuals', order: 13, build(el) {
     el.append(
-      UI.note('Terrain: the sound as a receding surface, each row coloured by its brightness. Orbit: the same terrain wrapped around the seal. Ring: the wheel’s waveform, with echoes from the terrain.'),
-      UI.select({ label: 'Style', value: mode, options: MODES.map((m) => [m, LABEL[m]]), onChange: (v) => setMode(v) }),
-      UI.check({ label: 'Glow on the front row and the ring', checked: glow, onChange: (v) => { glow = v; Prefs.set('visual.glow', v); } }),
+      UI.note('Every style is tinted by the brightness of the sound, measured as its spectral centroid. Press N to cycle.'),
+      UI.select({ label: 'Style', value: mode, options: MODES.map((m) => [m, LABEL[m]]), onChange: setMode }),
+      UI.check({ label: 'Glow on the front edge', checked: glow, onChange: (v) => { glow = v; Prefs.set('visual.glow', v); } }),
       UI.button('Next style', cycle));
   } });
 

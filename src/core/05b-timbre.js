@@ -49,13 +49,19 @@ const SoundDesign = (() => {
 
   /** Patch fields: name → [share code, min, max]. 'd' is reserved for the dream index. */
   const FIELDS = {
+    // voice
     wave: ['w', 0, FX - 1], layer: ['l', 0, FY - 1], sweep: ['s', 0, 1], drift: ['y', 0, 1],
     tilt: ['x', -1, 1], density: ['z', 0, 2],
     sub: ['u', 0, 1], chorus: ['c', 0, 1], voice: ['v'], vowel: ['o', 0, 4],
     throat: ['t', -1, 1], breath: ['b', 0, 1], bright: ['r', 0, 1],
     grit: ['g', 0, 1], bits: ['i', 2, 16], hold: ['h', 1, 16], fold: ['f', 0, 1],
-    drive: ['n', 0, 1], echo: ['e', 0, 1], drums: ['k', 0, 1.5],
-    drumX: ['m', 0, 1], drumY: ['j', 0, 1],
+    drive: ['n', 0, 1], echo: ['e', 0, 1],
+    // drums
+    drums: ['k', 0, 1.5], drumX: ['m', 0, 1], drumY: ['j', 0, 1],
+    kickSub: ['A', 0, 1.5], kickTone: ['B', 0, 1], kickDecay: ['C', 0, 1], kickClick: ['D', 0, 1],
+    snareBody: ['E', 0, 1], snareNoise: ['F', 0, 1], snareSnap: ['G', 0, 1],
+    hatEdge: ['H', 0, 1], hatLen: ['I', 0, 1],
+    drumRoom: ['J', 0, 1], drumDrive: ['K', 0, 1],
   };
   const INTEGER_FIELDS = new Set(['vowel', 'bits', 'hold']);
   const VOICES = ['auto', 'vox', 'wave'];
@@ -89,7 +95,19 @@ const SoundDesign = (() => {
       echo: R.range(0.1, 0.6),
       drums: R.range(0.75, 1.15),
       drumX: R.range(0.3, 1),                 // drum size
-      drumY: R.range(0, 1),                   // drum colour
+      drumY: R.range(0, 1),  
+      // Drum voice DNA. These are knobs in the Sound panel, and they travel in links.
+      kickSub: R.range(0.55, 1.2),
+      kickTone: R.range(0.2, 0.9),
+      kickDecay: R.range(0.25, 0.9),
+      kickClick: R.range(0.15, 0.8),
+      snareBody: R.range(0.2, 0.9),
+      snareNoise: R.range(0.3, 1),
+      snareSnap: R.range(0.2, 0.9),
+      hatEdge: R.range(0.2, 0.95),
+      hatLen: R.range(0.2, 0.9),
+      drumRoom: R.range(0.05, 0.55),
+      drumDrive: R.range(0.15, 0.7),                 // drum colour
     };
     P.kit = {
       tune: R.range(0, 1),
@@ -247,6 +265,14 @@ const SoundDesign = (() => {
       drums: D.drums * (0.8 + 0.4 * I),
       drumX: clampTo(D.drumX + 0.3 * I, 0, 1),
       drumY: clampTo(D.drumY + 0.25 * k, 0, 1),
+      // Drums open up with intensity and pull back for the Banishing.
+      kickSub: D.kickSub * (0.9 + 0.25 * I),
+      snareSnap: clampTo(D.snareSnap * (0.8 + 0.5 * I), 0, 1),
+      hatEdge: clampTo(D.hatEdge * (0.75 + 0.5 * I), 0, 1),
+      drumDrive: clampTo(D.drumDrive * (0.6 + 0.8 * I), 0, 1),
+      drumRoom: clampTo(D.drumRoom * (0.8 + 0.6 * (1 - I)), 0, 1),
+      // Section-aware sidechain: the music ducks hardest when the rite is loudest.
+      duck: clampTo(0.45 + 0.75 * I - (sec.final ? 0.45 : 0), 0, 1.3),
     };
     if (sec.final) {
       out.bright *= 0.45; out.grit *= 0.3; out.chorus = clampTo(out.chorus * 1.2, 0, 1);
@@ -272,6 +298,27 @@ const SoundDesign = (() => {
       oct: K.oct,
     };
   }
+
+
+  /* ── DRUM CUBE ────────────────────────────────────────────────────────
+     drumX (size) and drumY (colour) select a kit archetype, offset by the
+     sigil's own numbers, so each sigil and each dream has its own kit. */
+     const KICK_MODELS = ['round', 'punch', 'deep', 'gated'];
+     const SNARE_MODELS = ['shell', 'clap', 'rim', 'layered'];
+     const HAT_MODELS = ['metal', 'noise', 'tight'];
+   
+     function drumCell(D, x, y) {
+       const xi = clampTo(Math.round(x * 3), 0, 3);
+       const yi = clampTo(Math.round(y * 3), 0, 3);
+       return {
+         kick: KICK_MODELS[(xi + D.off) % 4],
+         snare: SNARE_MODELS[(yi + D.mult) % 4],
+         hat: HAT_MODELS[(xi + yi + D.layerShift) % 3],
+         size: 0.25 + 0.75 * clampTo(x, 0, 1),
+         colour: clampTo(y, 0, 1),
+       };
+     }
+
 
   /* ── Sigil impulse response ──────────────────────────────────────────── */
 
@@ -352,7 +399,7 @@ const SoundDesign = (() => {
   }
 
   return {
-    H, FX, FY, UPPER, LAYER_NAMES, VOWELS, FIELDS, VOICES, CONSONANT_CLASS, CLASS_TONE,
+    H, FX, FY, UPPER, LAYER_NAMES, VOWELS, FIELDS, VOICES, CONSONANT_CLASS, CLASS_TONE, drumCell, KICK_MODELS, SNARE_MODELS, HAT_MODELS,
     derive, tables, glottal, waveSamples, applyFx,
     arc, kitAt, irSpec,
     encodePatch, decodePatch, mutate, clampTo,

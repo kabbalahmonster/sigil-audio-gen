@@ -22,24 +22,39 @@ const SoundUI = (() => {
   const fmtInt = (v) => String(Math.round(v));
 
   const KNOBS = [
-    { name: 'wave',    label: 'Wave',    min: 0,  max: 12, step: 0.01, fmt: fmtNum },
-    { name: 'layer',   label: 'Layer',   min: 0,  max: 8,  step: 0.01, fmt: fmtNum },
-    { name: 'tilt',    label: 'Tilt',    min: -1, max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'density', label: 'Density', min: 0,  max: 2,  step: 0.01, fmt: fmtNum },
-    { name: 'sweep',   label: 'Sweep',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'drift',   label: 'Drift',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'sub',     label: 'Sub',     min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'chorus',  label: 'Chorus',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'throat',  label: 'Throat',  min: -1, max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'breath',  label: 'Breath',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'bright',  label: 'Bright',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'grit',    label: 'Grit',    min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'drive',   label: 'Drive',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'fold',    label: 'Fold',    min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'bits',    label: 'Bits',    min: 2,  max: 16, step: 1,    fmt: fmtInt },
-    { name: 'hold',    label: 'Hold',    min: 1,  max: 16, step: 1,    fmt: fmtInt },
-    { name: 'echo',    label: 'Echo',    min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'drums',   label: 'Drums',   min: 0,  max: 1.5, step: 0.01, fmt: fmtNum },
+    // ── voice ──
+    { group: 'voice', name: 'wave',    label: 'Wave',    min: 0,  max: 12, step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'layer',   label: 'Layer',   min: 0,  max: 8,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'tilt',    label: 'Tilt',    min: -1, max: 1,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'density', label: 'Density', min: 0,  max: 2,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'sweep',   label: 'Sweep',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'drift',   label: 'Drift',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'sub',     label: 'Sub',     min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'chorus',  label: 'Chorus',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'throat',  label: 'Throat',  min: -1, max: 1,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'breath',  label: 'Breath',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'bright',  label: 'Bright',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'grit',    label: 'Grit',    min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'drive',   label: 'Drive',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'fold',    label: 'Fold',    min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    { group: 'voice', name: 'bits',    label: 'Bits',    min: 2,  max: 16, step: 1,    fmt: fmtInt },
+    { group: 'voice', name: 'hold',    label: 'Hold',    min: 1,  max: 16, step: 1,    fmt: fmtInt },
+    { group: 'voice', name: 'echo',    label: 'Echo',    min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
+    // ── drums ──
+    { group: 'drum', name: 'drums',     label: 'Kit',     min: 0, max: 1.5, step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'drumX',     label: 'Size',    min: 0, max: 1,   step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'drumY',     label: 'Colour',  min: 0, max: 1,   step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'kickSub',   label: 'K Sub',   min: 0, max: 1.5, step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'kickTone',  label: 'K Tone',  min: 0, max: 1,   step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'kickDecay', label: 'K Decay', min: 0, max: 1,   step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'kickClick', label: 'Click',   min: 0, max: 1,   step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'snareBody', label: 'S Body',  min: 0, max: 1,   step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'snareNoise',label: 'S Noise', min: 0, max: 1,   step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'snareSnap', label: 'Snap',    min: 0, max: 1,   step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'hatEdge',   label: 'Hat Edge',min: 0, max: 1,   step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'hatLen',    label: 'Hat Len', min: 0, max: 1,   step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'drumRoom',  label: 'Room',    min: 0, max: 1,   step: 0.01, fmt: fmtNum },
+    { group: 'drum', name: 'drumDrive', label: 'Glue',    min: 0, max: 1,   step: 0.01, fmt: fmtNum },
   ];
 
   const KEYMAP = { a: 0, s: 1, d: 2, f: 3, h: 4, j: 5, k: 6, ';': 7, q: 8, w: 9, e: 10, r: 11, u: 12, i: 13, o: 14, p: 15 };
@@ -298,7 +313,10 @@ const SoundUI = (() => {
     .snd-h{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;opacity:.6;margin:16px 0 4px}`);
 
   UI.section({ id: 'sound', title: 'Sound & Patch', order: 12, build(el) {
-    const grid = h('div', { class: 'kb-grid' }, KNOBS.map((d) => { const k = knob(d); knobs[d.name] = k; return k.el; }));
+    const mkGrid = (group) => h('div', { class: 'kb-grid' },
+    KNOBS.filter((d) => d.group === group).map((d) => { const k = knob(d); knobs[d.name] = k; return k.el; }));
+  const grid = mkGrid('voice');
+  const drumGrid = mkGrid('drum');
     scope = h('canvas', { class: 'snd-scope', width: 280, height: 110, 'aria-hidden': 'true' });
     cube = h('canvas', { class: 'snd-cube', width: 280, height: 46, 'aria-hidden': 'true' });
 
@@ -325,6 +343,7 @@ const SoundUI = (() => {
     el.append(
       UI.note('The sigil is a cube: across is the path drawn letter by letter, up is its spectral character, and every note travels through it. Dream cycles variants, Mutate nudges, and your knobs travel in share links.'),
       grid, scope, cube,
+      h('div', { class: 'snd-h' }, 'Drums'), drumGrid,
       h('div', { class: 'sgrow dream' },
         UI.button('◀ dream', () => Sound.dream(-1)), dreamLbl, UI.button('dream ▶', () => Sound.dream(1))),
       h('div', { class: 'sgrow' },

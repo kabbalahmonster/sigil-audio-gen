@@ -581,6 +581,7 @@ self.onmessage = function (e) {
     const song = app.song, f = FORMATS[S.format];
 
     busy = true; refresh();
+    if (typeof Perf !== 'undefined') Perf.setBusy(true);
     const wasLite = typeof Sound !== 'undefined' ? Sound.lite : false;
     if (typeof Sound !== 'undefined') Sound.setLite(true);   // thin the live voices while rendering
     btn.textContent = 'Rendering…';
@@ -608,6 +609,7 @@ self.onmessage = function (e) {
       status.textContent = 'Export failed: ' + (e.message || e);
     } finally {
       if (typeof Sound !== 'undefined') Sound.setLite(wasLite);
+      if (typeof Perf !== 'undefined') Perf.setBusy(false);
       busy = false;
       btn.textContent = 'Render';
       bar.classList.remove('busy');

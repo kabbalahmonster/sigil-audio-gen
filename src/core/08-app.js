@@ -302,7 +302,8 @@ function setPauseLabel() {
 async function togglePause() {
   if (app.mode !== 'playing') return;
   const c = app.engine.ctx;
-  if (c.state === 'running') await c.suspend(); else await c.resume();
+  if (c.state === 'running') { app.userPaused = true; await c.suspend(); }
+  else { app.userPaused = false; await c.resume(); }
   setPauseLabel();
 }
 

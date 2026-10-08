@@ -51,7 +51,7 @@ const Form = (() => {
     if (!this.running || !this.buses) return;
 
     const c = this.ctx;
-    const horizon = c.currentTime + (document.hidden ? 2.5 : 0.4);
+    const horizon = c.currentTime + (document.hidden ? 2.5 : (this.horizon || 0.45));
     const total = this.song.total, totalSec = total * this.spb;
 
     for (let guard = 0; guard < 6000; guard++) {

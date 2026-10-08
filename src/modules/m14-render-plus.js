@@ -30,11 +30,11 @@ const RenderPlus = (() => {
   let activeStem = null;   // null = full mix
   let busy = false, bar, status, evolveBtn, stemBtn, info;
 
-  /** Silence every bus except the active stem. Runs last, so nothing overrides it. */
-  Hooks.on('buses', (buses) => {
-    if (!activeStem) return;
-    for (const k of Object.keys(buses)) if (k !== activeStem) buses[k].gain.value = 0;
-  }, 100);
+  /** Silence every bus except the active stem, offline contexts only. */
+    Hooks.on('buses', (buses, eng) => {
+      if (!activeStem || !app.engine || eng === app.engine) return;
+      for (const k of Object.keys(buses)) if (k !== activeStem) buses[k].gain.value = 0;
+    }, 100);
 
   const frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
   const setBar = (f) => (bar.firstChild.style.width = `${Math.round(clamp(f, 0, 1) * 100)}%`);
@@ -59,12 +59,12 @@ const RenderPlus = (() => {
   async function renderEvolved(song, sr, onProgress) {
     const out = [];
     for (let p = 0; p < S.passes; p++) {
-      Sound.setRenderSpec(specForPass(p));
+      if (typeof Sound !== 'undefined') Sound.setRenderSpec(specForPass(p));
       // eslint-disable-next-line no-await-in-loop
       const r = await Render.renderSong(song, sr, (f) => onProgress((p + f) / S.passes), { loops: 1 });
       out.push(r);
     }
-    Sound.clearRenderSpec();
+    if (typeof Sound !== 'undefined') Sound.clearRenderSpec();
 
     const passN = out[0].L.length - Math.round(7 * sr);   // pass length without the tail
     const xfN = Math.round(XF * sr);
@@ -129,7 +129,7 @@ const RenderPlus = (() => {
       status.textContent = 'Failed: ' + (e.message || e);
     } finally {
       activeStem = null;
-      Sound.clearRenderSpec();
+      if (typeof Sound !== 'undefined') Sound.clearRenderSpec();
       busy = false;
       bar.classList.remove('busy');
       refresh();

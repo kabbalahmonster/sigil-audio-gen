@@ -2,9 +2,9 @@
 /* ══════════════════════════════════════════════════════════════════════════
    m12 · SOUND UI v2
    --------------------------------------------------------------------------
-   • Sixteen drag-knobs. Drag (Shift = fine), wheel, arrow keys, double-click
+   • Twenty-one drag-knobs. Drag (Shift = fine), wheel, arrow keys, double-click
      resets to this sigil's own value.
-   • Cube map: the 9 × 5 wavetable with the current cell and the travel vector.
+   • Cube map: the 13 × 9 wavetable with the current cell and the travel vector.
    • Scope: the true signal path — blended cell, sub, drive, fold, bit-depth
      and sample-hold — with the clean wave behind it as a ghost.
    • Dream ◀ ▶, Mutate, Freeze, Reset.
@@ -22,22 +22,27 @@ const SoundUI = (() => {
   const fmtInt = (v) => String(Math.round(v));
 
   const KNOBS = [
-    { name: 'wave',   label: 'Wave',   min: 0,  max: 8,   step: 0.01, fmt: fmtNum },
-    { name: 'layer',  label: 'Layer',  min: 0,  max: 4,   step: 0.01, fmt: fmtNum },
-    { name: 'sweep',  label: 'Sweep',  min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'drift',  label: 'Drift',  min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'sub',    label: 'Sub',    min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'chorus', label: 'Chorus', min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'throat', label: 'Throat', min: -1, max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'breath', label: 'Breath', min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'bright', label: 'Bright', min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'grit',   label: 'Grit',   min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'drive',  label: 'Drive',  min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'fold',   label: 'Fold',   min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'bits',   label: 'Bits',   min: 2,  max: 16,  step: 1,    fmt: fmtInt },
-    { name: 'hold',   label: 'Hold',   min: 1,  max: 16,  step: 1,    fmt: fmtInt },
-    { name: 'echo',   label: 'Echo',   min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
-    { name: 'drums',  label: 'Drums',  min: 0,  max: 1.5, step: 0.01, fmt: fmtNum },
+    { name: 'wave',    label: 'Wave',    min: 0,  max: 12,  step: 0.01, fmt: fmtNum },
+    { name: 'layer',   label: 'Layer',   min: 0,  max: 8,   step: 0.01, fmt: fmtNum },
+    { name: 'sweep',   label: 'Sweep',   min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'drift',   label: 'Drift',   min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'warp',    label: 'Warp',    min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'skew',    label: 'Skew',    min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'density', label: 'Density', min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'sub',     label: 'Sub',     min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'chorus',  label: 'Chorus',  min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'throat',  label: 'Throat',  min: -1, max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'breath',  label: 'Breath',  min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'bright',  label: 'Bright',  min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'grit',    label: 'Grit',    min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'drive',   label: 'Drive',   min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'fold',    label: 'Fold',    min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'bits',    label: 'Bits',    min: 2,  max: 16,  step: 1,    fmt: fmtInt },
+    { name: 'hold',    label: 'Hold',    min: 1,  max: 16,  step: 1,    fmt: fmtInt },
+    { name: 'echo',    label: 'Echo',    min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'drums',   label: 'Drums',   min: 0,  max: 1.5, step: 0.01, fmt: fmtNum },
+    { name: 'drumX',   label: 'Kit size', min: 0, max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'drumY',   label: 'Kit tone', min: 0, max: 1,   step: 0.01, fmt: fmtNum },
   ];
 
   const KEYMAP = { a: 0, s: 1, d: 2, f: 3, h: 4, j: 5, k: 6, ';': 7, q: 8, w: 9, e: 10, r: 11, u: 12, i: 13, o: 14, p: 15 };
@@ -101,8 +106,8 @@ const SoundUI = (() => {
 
   /* ── Scope: the true signal path ─────────────────────────────────────── */
 
-  /** The wavetable as a 3D surface: columns are frames, rows are layers, and
-      the front edge is the actual signal, bit-crushing and all. */
+  /** The wavetable as a 3D surface: columns are frames, rows are layers,
+      with the shared clean and processed waveforms drawn over it. */
   function paintScope() {
     if (!scope) return;
     const st = Sound.state(), g = scope.getContext('2d');
@@ -119,7 +124,10 @@ const SoundUI = (() => {
 
     // Far layers first, so nearer ones occlude them.
     for (let y = NY - 1; y >= 0; y--) {
-      const wave = SoundDesign.waveSamples(tb.grid[y][clamp(Math.round(P.wave), 0, NX - 1)], tb.grid[y][clamp(Math.round(P.wave), 0, NX - 1)], 0, SAMP);
+      const cell = tb.cell(P.wave, y);
+      const wave = SoundDesign.waveSamples(cell, cell, 0, SAMP);
+      // REPLACED BELOW WITH ABOVE TO FIX BUG WHERE WAVEFORM WAS NOT DRAWING CORRECTLY WHEN LAYER WAS CHANGED
+      //const wave = SoundDesign.waveSamples(tb.grid[y][clamp(Math.round(P.wave), 0, NX - 1)], tb.grid[y][clamp(Math.round(P.wave), 0, NX - 1)], 0, SAMP);
       const near = 1 - y / (NY - 1);
       g.beginPath();
       for (let i = 0; i < SAMP; i++) {
@@ -147,28 +155,22 @@ const SoundUI = (() => {
     g.lineWidth = 1;
     g.stroke();
 
-    // Front edge: the real signal, with sub, drive, fold, bits and hold.
-    const a = tb.cell(P.wave, P.layer), b = tb.cell(P.wave + P.sweep * 4, P.layer + P.drift * 2.5);
-    const clean = SoundDesign.waveSamples(a, b, 0, W);
-    const withSub = new Float32Array(W);
-    let mx = 1e-9;
-    for (let i = 0; i < W; i++) {
-      withSub[i] = clean[i] + P.sub * 0.6 * Math.sin((2 * Math.PI * i) / W / 2);
-      if (Math.abs(withSub[i]) > mx) mx = Math.abs(withSub[i]);
-    }
-    for (let i = 0; i < W; i++) withSub[i] /= mx;
-    const wet = SoundDesign.applyFx(withSub, { bits: P.grit > 0 ? P.bits : 16, hold: P.hold, fold: P.fold, drive: P.drive, mix: P.grit });
-    g.beginPath();
-    for (let i = 0; i < W; i++) {
-      const Y = H - 9 - wet[i] * 8;
-      i ? g.lineTo(i, Y) : g.moveTo(i, Y);
-    }
-    g.strokeStyle = rgba(A, 0.8);
-    g.lineWidth = 1.2;
-    g.stroke();
+    // Shared ring: clean waveform and the processed signal.
+    const rng = st.ring || SoundDesign.ringSamples(tb, P, W);
+    const line = (arr, style, width) => {
+      g.beginPath();
+      for (let i = 0; i < W; i++) {
+        const x = (i / W) * arr.length | 0;
+        const y = H / 2 - arr[x] * H * 0.42;
+        i ? g.lineTo(i, y) : g.moveTo(i, y);
+      }
+      g.strokeStyle = style; g.lineWidth = width; g.stroke();
+    };
+    line(rng.clean, rgba(renderer.pal.line, 0.3), 1);
+    line(rng.crushed, rgba(renderer.pal.accent, 0.95), 1.5);
   }
 
-  /* ── Cube map: 9 × 5 cells, current position and travel vector ──────── */
+  /* ── Cube map: 13 × 9 cells, current position and travel vector ──────── */
 
   function paintCube() {
     if (!cube) return;
@@ -177,15 +179,16 @@ const SoundUI = (() => {
     g.clearRect(0, 0, W, H);
     if (!st.P) return;
     const P = st.P;
-    const px = (x) => 8 + (x / (SoundDesign.FX - 1)) * (W - 16);
-    const py = (y) => H - 8 - (y / (SoundDesign.FY - 1)) * (H - 16);
+    const NX = SoundDesign.FX - 1, NY = SoundDesign.FY - 1;
+    const px = (x) => 8 + (x / NX) * (W - 16);
+    const py = (y) => H - 8 - (y / NY) * (H - 16);
 
     g.fillStyle = rgba(renderer.pal.line, 0.18);
     for (let y = 0; y < SoundDesign.FY; y++) {
       for (let x = 0; x < SoundDesign.FX; x++) g.fillRect(px(x) - 1, py(y) - 1, 2, 2);
     }
-    const x0 = clamp(P.wave, 0, 8), y0 = clamp(P.layer, 0, 4);
-    const x1 = clamp(x0 + P.sweep * 4, 0, 8), y1 = clamp(y0 + P.drift * 2.5, 0, 4);
+    const x0 = clamp(P.wave, 0, NX), y0 = clamp(P.layer, 0, NY);
+    const x1 = clamp(x0 + P.sweep * 5, 0, NX), y1 = clamp(y0 + P.drift * 4, 0, NY);
     g.strokeStyle = rgba(renderer.pal.accent, 0.55);
     g.lineWidth = 1.2;
     g.beginPath(); g.moveTo(px(x0), py(y0)); g.lineTo(px(x1), py(y1)); g.stroke();
@@ -217,6 +220,9 @@ const SoundUI = (() => {
       dreamLbl.textContent = app.sigil && st.tables
         ? `dream ${st.variant} · ${st.tables.D.mult}×+${st.tables.D.off}`
         : 'cast to dream';
+      if (app.sigil && st.P) {
+        dreamLbl.title = `layer: ${SoundDesign.LAYER_NAMES[Math.round(clamp(st.P.layer, 0, SoundDesign.FY - 1))]}`;
+      }
       paintScope(); paintCube();
     });
   }

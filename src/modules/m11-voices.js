@@ -1,17 +1,13 @@
 'use strict';
 /* ══════════════════════════════════════════════════════════════════════════
-   m11 · VOICES v3
+   m11 · VOICES v4 — pitched synthesis (drums live in m15)
    --------------------------------------------------------------------------
-   NEW IN v3
-     • SOUND ARC     each section gets its own patch overlay (SD.arc), cached
-                     per section so nothing is recomputed per note.
-     • DRUM CUBE     the kit itself moves with the rite (SD.kitAt).
-     • TUNED KICK    the kick's tail lands on the song's tonic, an octave or
-                     two below the bass, with a click, a body and a sub layer
-                     through a shaper. It is a chord tone, not a thud.
-     • SIGIL REVERB  the convolution impulse is built from the sigil's strokes.
-     • SMOOTHNESS    node budget, reused curves, no allocation on the hot path,
-                     and a hard ceiling on simultaneous drum layers.
+   PATCH LAYERS   derived DNA ◂ mood suggestion ◂ your knobs ◂ section arc
+   VOICES         wave (cube travel + sub) · vox (formants) · pad
+   SHARED FX      one stereo chorus per engine, fed by sends
+   EXPORTS        paramsAt(eng, beat)  the patch at a moment, for m15
+                  recentNotes()        onsets for the visual ripples
+                  view().ring          clean and crushed cycles for the ring
    ══════════════════════════════════════════════════════════════════════════ */
 
 const Sound = (() => {
@@ -20,7 +16,7 @@ const Sound = (() => {
   const WORKLET_URL = 'src/audio/sigil-fx.worklet.js';
   const GLOTTAL = SD.glottal();
   const fxReady = new WeakSet();
-  const irCache = new Map();                 // `${sampleRate}:${key}` → AudioBuffer
+  const irCache = new Map();
 
   const VOICE_BUDGET = 34;
   const prefs = {
@@ -35,12 +31,18 @@ const Sound = (() => {
 
   let bank = Prefs.get('soundbank', {});
   let library = Prefs.get('soundlib', []);
-  const cur = { key: null, variant: 0, o: {}, base: null, P: null, tables: null, mags: null, mut: 0 };
+  const cur = { key: null, variant: 0, o: {}, base: null, P: null, tables: null, mags: null, ring: null, mut: 0 };
   let renderSpec = null, pending = null, lastVowel = null, frozen = false, vowelMemory = null;
+  const notes = [];                        // recent onsets, for the visuals
   const subs = new Set();
   const notify = () => subs.forEach((fn) => { try { fn(); } catch (e) { console.error('[sound:ui]', e); } });
   const keyOf = (sig) => sig.fusionKey || sig.reduced;
   const lite = () => prefs.lite;
+
+  function noteMark(ev, kind) {
+    notes.push({ beat: ev.beat, at: performance.now(), kind });
+    if (notes.length > 24) notes.shift();
+  }
 
   /* ── Voice budget ────────────────────────────────────────────────────── */
   let endTimes = [];
@@ -78,7 +80,8 @@ const Sound = (() => {
     const derived = SD.derive(sig.hash, variant);
     const mood = (app.song && app.song.cfg && app.song.cfg.sound) || {};
     const base = { ...derived, ...mood };
-    return { base, P: { ...base, ...overrides }, tables: SD.tables(sig, variant) };
+    const P = { ...base, ...overrides };
+    return { base, P, tables: SD.tables(sig, variant, P) };
   }
 
   function recompute() {
@@ -87,6 +90,7 @@ const Sound = (() => {
     const c = composePatch(sig, cur.variant, cur.o);
     cur.base = c.base; cur.P = c.P; cur.tables = c.tables;
     cur.mags = magnitudes(cur.tables, cur.P.wave, cur.P.layer);
+    cur.ring = SD.ringSamples(cur.tables, cur.P, 128);
   }
 
   function syncFrom(sig) {
@@ -108,19 +112,18 @@ const Sound = (() => {
 
   const specFor = () => renderSpec || { P: cur.P, tables: cur.tables };
 
-  /* ── Sound arc: one merged patch per section, built once ─────────────── */
+  /* ── Sound arc ───────────────────────────────────────────────────────── */
 
   function buildArc(eng) {
     const song = app.song, P = eng.sig.P;
     eng.arcOf = P;
-    if (!song || !prefs.arc) { eng.arc = null; eng.kits = null; return; }
+    if (!song || !prefs.arc) { eng.arc = null; eng.kits = null; eng.secStarts = null; return; }
     const n = song.sections.length;
     eng.arc = song.sections.map((sec, si) => ({ ...P, ...SD.arc(P, sec, si, n) }));
     eng.kits = song.sections.map((sec, si) => SD.kitAt(P, sec, si, n));
     eng.secStarts = song.sections.map((s) => s.start);
   }
 
-  /** Section index for a beat. Linear over seven entries, with a one-slot memo. */
   function sectionIdx(eng, beat) {
     const s = eng.secStarts;
     if (!s) return 0;
@@ -129,12 +132,14 @@ const Sound = (() => {
     return j;
   }
 
-  /** The effective patch and kit for an event. */
-  function patchFor(eng, ev) {
+  /** The effective patch (with its kit) at a beat. m15 calls this. */
+  function paramsAt(eng, beat) {
+    if (!eng || !eng.sig) return null;
     if (eng.arcOf !== eng.sig.P) buildArc(eng);
-    if (!eng.arc) return { P: eng.sig.P, K: eng.sig.P.kit };
-    const si = sectionIdx(eng, ev.beat || 0);
-    return { P: eng.arc[si], K: eng.kits[si] };
+    if (!eng.arc) { const P = eng.sig.P; return { ...P, kit: P.kit }; }
+    const si = sectionIdx(eng, beat || 0);
+    const P = eng.arc[si];
+    return P.kit === eng.kits[si] ? P : (eng.arc[si] = { ...P, kit: eng.kits[si] });
   }
 
   /* ── Engine attachment ───────────────────────────────────────────────── */
@@ -163,18 +168,15 @@ const Sound = (() => {
     eng.chorusIn = input;
   }
 
-  /** Build the sigil's own impulse response: early reflections from its strokes. */
+  /** The reverb impulse, built from the sigil's own strokes. */
   function sigilIR(ctx, sig, variant) {
-    const spec = SD.irSpec(sig, variant);
     const key = `${ctx.sampleRate}:${sig.hex.slice(0, 12)}:${variant}`;
     if (irCache.has(key)) return irCache.get(key);
 
-    const sr = ctx.sampleRate;
-    const len = Math.floor(sr * spec.seconds);
+    const spec = SD.irSpec(sig, variant);
+    const sr = ctx.sampleRate, len = Math.floor(sr * spec.seconds);
     const buf = ctx.createBuffer(2, len, sr);
 
-
-    // Diffuse bed: decaying, progressively darkened noise.
     for (let ch = 0; ch < 2; ch++) {
       const d = buf.getChannelData(ch);
       const rnd = mulberry32(0x1f2e3d + ch + variant * 7);
@@ -186,7 +188,6 @@ const Sound = (() => {
         d[i] = lp * Math.pow(1 - tt, spec.decay) * 1.25;
       }
     }
-    // The strokes themselves, as discrete taps with a short diffuse smear.
     for (const tap of spec.taps) {
       const at = Math.floor(tap.t * sr);
       if (at >= len - 8) continue;
@@ -209,26 +210,14 @@ const Sound = (() => {
   function cellWave(eng, x, y) {
     const cx = clamp(Math.round(x), 0, SD.FX - 1);
     const cy = clamp(Math.round(y), 0, SD.FY - 1);
-    const k = cy * 16 + cx;
+    const k = cy * 32 + cx;
     let w = eng.sig.cells.get(k);
     if (!w) {
-      const c = eng.sig.tables.grid[cy][cx];
+      const c = eng.sig.tables.cell(cx, cy);
       w = eng.ctx.createPeriodicWave(c.re, c.im);
       eng.sig.cells.set(k, w);
     }
     return w;
-  }
-
-  /** A shared drum-bus shaper curve, built once per engine. */
-  function drumCurve(eng) {
-    if (eng.drumCurve) return eng.drumCurve;
-    const c = new Float32Array(1024);
-    for (let i = 0; i < 1024; i++) {
-      const x = (i / 1023) * 2 - 1;
-      c[i] = Math.tanh(2.2 * x) / Math.tanh(2.2);
-    }
-    eng.drumCurve = c;
-    return c;
   }
 
   function attach(eng) {
@@ -239,7 +228,7 @@ const Sound = (() => {
     if (!eng.sound) {
       eng.sound = true;
       eng.analyser = eng.ctx.createAnalyser();
-      eng.analyser.fftSize = 1024;                 // 512 time-domain points for the terrain
+      eng.analyser.fftSize = 1024;
       eng.analyser.smoothingTimeConstant = 0.6;
       eng.out.connect(eng.analyser);
       if (fxReady.has(eng.ctx)) {
@@ -261,7 +250,7 @@ const Sound = (() => {
     buildArc(eng);
 
     if (prefs.sigilVerb && app.sigil) {
-      try { eng.reverb.buffer = sigilIR(eng.ctx, app.sigil, renderSpec ? cur.variant : cur.variant); }
+      try { eng.reverb.buffer = sigilIR(eng.ctx, app.sigil, cur.variant); }
       catch (e) { console.warn('[sound] sigil reverb failed:', e.message); }
     }
 
@@ -269,18 +258,6 @@ const Sound = (() => {
     if (eng.buses) {
       eng.buses.lead.connect(eng.chorusIn);
       eng.buses.pad.connect(eng.chorusIn);
-      // Drum bus gets its own shaper for glue and punch.
-      if (!eng.drumShaped) {
-        const ws = eng.ctx.createWaveShaper();
-        ws.curve = drumCurve(eng);
-        ws.oversample = '2x';
-        eng.drumIn = ws;
-        ws.connect(eng.buses.drums);
-        eng.drumShaped = true;
-      } else {
-        eng.drumIn.disconnect();
-        eng.drumIn.connect(eng.buses.drums);
-      }
     }
     pushFx(eng);
   }
@@ -300,10 +277,7 @@ const Sound = (() => {
 
   async function prepare(ctx) {
     if (fxReady.has(ctx)) return true;
-    if (!ctx.audioWorklet || !window.AudioWorkletNode) {
-      console.warn('[sound] AudioWorklet unsupported; bit-crusher bypassed.');
-      return false;
-    }
+    if (!ctx.audioWorklet || !window.AudioWorkletNode) return false;
     try { await ctx.audioWorklet.addModule(WORKLET_URL); fxReady.add(ctx); return true; }
     catch (e) { console.warn('[sound] could not load', WORKLET_URL, '-', e.message); return false; }
   }
@@ -347,15 +321,15 @@ const Sound = (() => {
 
   function travel(P, ev) {
     const lens = prefs.lensWave && typeof LiveLens !== 'undefined' && LiveLens.shift !== undefined
-      ? LiveLens.shift * 0.6 : 0;
+      ? LiveLens.shift * 0.8 : 0;
     const x0 = clamp(P.wave + lens, 0, SD.FX - 1);
     const y0 = clamp(P.layer, 0, SD.FY - 1);
     if (frozen) return { x0, y0, x1: x0, y1: y0 };
     const dir = ((ev.deg ?? 0) % 2 === 0) ? 1 : -1;
     return {
       x0, y0,
-      x1: clamp(x0 + P.sweep * 4, 0, SD.FX - 1),
-      y1: clamp(y0 + dir * P.drift * 2.5, 0, SD.FY - 1),
+      x1: clamp(x0 + P.sweep * 5, 0, SD.FX - 1),
+      y1: clamp(y0 + dir * P.drift * 4, 0, SD.FY - 1),
     };
   }
 
@@ -413,6 +387,7 @@ const Sound = (() => {
     const nodes = core.oscs.slice();
     if (!hold && !lean && ev.type === 'lead' && d > 0.45) nodes.push(vibrato(ctx, t, d, core.oscs.slice(0, 2), mtof(ev.midi) * 0.004));
     const end = shape(eng, amp, t, d, ev.vel * (opt.peak ?? 0.32), hold);
+    if (!hold) noteMark(ev, opt.kind || ev.type);
     return schedule(ctx, nodes, t, end, hold, amp);
   }
 
@@ -439,8 +414,7 @@ const Sound = (() => {
 
     const sum = ctx.createGain();
     sum.gain.value = 0.7 + 0.4 * P.bright;
-    const count = lean ? 3 : 4;
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < (lean ? 3 : 4); i++) {
       const bp = ctx.createBiquadFilter();
       bp.type = 'bandpass'; bp.Q.value = 6 + 7 * P.bright;
       bp.frequency.setValueAtTime(V0.f[i] * tk, t);
@@ -477,6 +451,7 @@ const Sound = (() => {
     }
 
     lastVowel = { name: V0.name, at: performance.now() };
+    if (!hold) noteMark(ev, 'vox');
     const end = shape(eng, amp, t, d, ev.vel * 0.42 * (ev.type === 'harm' ? 0.7 : 1), hold);
     return schedule(ctx, nodes, t, end, hold, amp);
   }
@@ -494,180 +469,17 @@ const Sound = (() => {
         nodes.push(...core.oscs);
       }
     }
+    if (!hold) noteMark(ev, 'pad');
     const end = shape(eng, amp, t, d, ev.vel * 0.05, hold);
     return schedule(ctx, nodes, t, end, hold, amp);
   }
 
-  /* ── Drum engine v3 ──────────────────────────────────────────────────── */
-
-  /**
-   * The kick's tonic, in Hz. The tail lands on the song's own tonic pitch
-   * class, folded into 41–58 Hz, so the kick is a chord tone.
-   */
-  function kickTonic(eng) {
-    const song = app.song;
-    const pc = song ? song.tonicPc : 0;
-    let m = 24 + pc;                         // C1 … B1
-    let f = mtof(m);
-    while (f < 40.5) { m += 12; f = mtof(m); }
-    while (f > 58) { m -= 12; f = mtof(m); }
-    return f;
-  }
-
-  function letterAt(beat) {
-    const sig = app.sigil;
-    if (!sig) return 'T';
-    return sig.reduced[mod(Math.round(beat * 4), sig.reduced.length)];
-  }
-  function classTone(beat) {
-    return SD.CLASS_TONE[SD.CONSONANT_CLASS[letterAt(beat)] || 'fricative'];
-  }
-
-  /**
-   * Kick: four stacked layers, all tuned.
-   *   1 transient  a 3 ms filtered noise tick (the beater)
-   *   2 click      a fast high sine chirp that gives the attack its edge
-   *   3 body       a sine swept from about four times the tonic down to it
-   *   4 sub        a pure tonic sine that survives the body, for weight
-   * Everything passes through the drum bus shaper, so hard hits compress.
-   */
-  function kick(eng, ev, t, P, K, lvl) {
-    const ctx = eng.ctx, dest = eng.drumIn || eng.buses.drums;
-    const f0 = kickTonic(eng) * (0.94 + 0.12 * K.tune);
-    const vel = ev.vel * lvl;
-    const decay = 0.16 + 0.42 * K.decay;
-
-    // 3 · body
-    const body = ctx.createOscillator();
-    body.type = 'sine';
-    body.frequency.setValueAtTime(f0 * 5.5, t);
-    body.frequency.exponentialRampToValueAtTime(f0 * 1.9, t + 0.016);
-    body.frequency.exponentialRampToValueAtTime(f0, t + 0.055 + 0.06 * K.decay);
-    const bg = ctx.createGain();
-    bg.gain.setValueAtTime(0, t);
-    bg.gain.linearRampToValueAtTime(vel * 0.95, t + 0.002);
-    bg.gain.exponentialRampToValueAtTime(0.0008, t + decay);
-    body.connect(bg); bg.connect(dest);
-    body.start(t); body.stop(t + decay + 0.12);
-
-    // 4 · sub, held on the tonic under the body
-    const sub = ctx.createOscillator();
-    sub.type = 'sine';
-    sub.frequency.setValueAtTime(f0, t);
-    const sg = ctx.createGain();
-    sg.gain.setValueAtTime(0, t);
-    sg.gain.linearRampToValueAtTime(vel * 0.5 * (0.6 + 0.6 * P.sub), t + 0.012);
-    sg.gain.exponentialRampToValueAtTime(0.0006, t + decay * 1.45);
-    sub.connect(sg); sg.connect(dest);
-    sub.start(t); sub.stop(t + decay * 1.5 + 0.1);
-
-    // 2 · click
-    const click = ctx.createOscillator();
-    click.type = 'triangle';
-    click.frequency.setValueAtTime(f0 * 16, t);
-    click.frequency.exponentialRampToValueAtTime(f0 * 4, t + 0.012);
-    const cg = ctx.createGain();
-    eng.perc(cg.gain, t, vel * 0.3 * K.click, 0.0045);
-    click.connect(cg); cg.connect(dest);
-    click.start(t); click.stop(t + 0.08);
-
-    // 1 · transient
-    const n = eng.noise(t, 0.02);
-    const nf = eng.filt('lowpass', 1800 + 3200 * K.click, 0.8);
-    const ng = ctx.createGain();
-    eng.perc(ng.gain, t, vel * 0.26 * K.click, 0.0035);
-    n.connect(nf); nf.connect(ng); ng.connect(dest);
-
-    // Punch: a short dip in the kick's own level right after the peak reads as
-    // compression without the cost of a compressor per hit.
-    const post = ctx.createGain();
-    post.gain.setValueAtTime(1, t);
-    post.gain.setValueAtTime(1 - 0.25 * K.punch, t + 0.008);
-    post.gain.linearRampToValueAtTime(1, t + 0.09);
-    bg.disconnect(); bg.connect(post); post.connect(dest);
-  }
-
-  function snare(eng, ev, t, P, K, lvl) {
-    const ctx = eng.ctx, dest = eng.drumIn || eng.buses.drums;
-    const vel = ev.vel * lvl, tone = classTone(ev.beat || 0);
-    const dec = (0.05 + 0.17 * K.snap) * tone[1];
-    const tonic = kickTonic(eng);
-
-    const n = eng.noise(t, 0.6);
-    const bp = eng.filt('bandpass', (1200 + 1500 * K.noiseTone) * tone[0], 0.65);
-    const hp = eng.filt('highpass', 820, 0.6);
-    const g = ctx.createGain();
-    eng.perc(g.gain, t, vel * 0.48 * tone[2], dec);
-    n.connect(bp); bp.connect(hp); hp.connect(g);
-    if (ctx.createStereoPanner) {
-      const p = ctx.createStereoPanner();
-      p.pan.value = (ev.pan || 0) * 0.4;
-      g.connect(p); p.connect(dest);
-    } else g.connect(dest);
-
-    // Two body partials tuned to the song: a fifth apart, like a real shell.
-    for (const [mul, lev, dk] of [[3, 0.26, 0.03], [4.5, 0.14, 0.022]]) {
-      const o = ctx.createOscillator();
-      o.type = 'triangle';
-      const bf = tonic * mul * (0.9 + 0.25 * K.body);
-      o.frequency.setValueAtTime(bf * 1.25, t);
-      o.frequency.exponentialRampToValueAtTime(bf, t + 0.04);
-      const og = ctx.createGain();
-      eng.perc(og.gain, t, vel * lev, dk);
-      o.connect(og); og.connect(dest);
-      o.start(t); o.stop(t + 0.3);
-    }
-  }
-
-  function hat(eng, ev, t, P, K, lvl) {
-    const ctx = eng.ctx, dest = eng.drumIn || eng.buses.drums;
-    const vel = ev.vel * lvl, tone = classTone(ev.beat || 0);
-    const dec = (ev.open ? 0.11 : 0.012) * (0.6 + 0.9 * K.hatDecay) * tone[1];
-    const n = eng.noise(t, 0.45);
-    const hp = eng.filt('highpass', (6200 + 3200 * K.hatTone) * tone[0], 0.7);
-    const bp = eng.filt('bandpass', (9000 + 3000 * K.hatTone) * tone[0], 0.9);
-    const g = ctx.createGain();
-    eng.perc(g.gain, t, vel * 0.15 * tone[2], dec);
-    n.connect(hp); hp.connect(bp); bp.connect(g);
-    if (ctx.createStereoPanner) {
-      const p = ctx.createStereoPanner();
-      p.pan.value = (ev.pan || 0) * (K.width || 0.5);
-      g.connect(p); p.connect(dest);
-    } else g.connect(dest);
-  }
-
-  function drumVoice(eng, ev, t, P, K) {
-    const lvl = P.drums;
-    switch (ev.type) {
-      case 'kick': return kick(eng, ev, t, P, K, lvl);
-      case 'snare': return snare(eng, ev, t, P, K, lvl);
-      case 'hat': return hat(eng, ev, t, P, K, lvl);
-      case 'shaker': {
-        const ctx = eng.ctx, dest = eng.drumIn || eng.buses.drums;
-        const n = eng.noise(t, 0.2);
-        const bp = eng.filt('bandpass', 5200 + 2600 * K.hatTone, 1.2);
-        const g = ctx.createGain();
-        g.gain.setValueAtTime(0, t);
-        g.gain.linearRampToValueAtTime(ev.vel * lvl * 0.11, t + 0.014);
-        g.gain.setTargetAtTime(0, t + 0.014, 0.024);
-        n.connect(bp); bp.connect(g); g.connect(dest);
-        return;
-      }
-      case 'crash': {
-        const n = eng.noise(t, 2);
-        const hp = eng.filt('highpass', 3600, 0.5);
-        const g = eng.ctx.createGain();
-        eng.perc(g.gain, t, ev.vel * lvl * 0.12, 0.5 + 0.4 * K.hatDecay);
-        n.connect(hp); hp.connect(g); g.connect(eng.buses.bell);
-      }
-    }
-  }
-
-  /* ── Hook ────────────────────────────────────────────────────────────── */
+  /* ── Hook: pitched events only. m15 handles drums at priority 10. ────── */
 
   function voiceHook(_, ev, t, eng) {
     if (prefs.mode !== 'sigil' || !eng.sig || !eng.buses) return null;
-    const { P, K } = patchFor(eng, ev);
+    const P = paramsAt(eng, ev.beat);
+    if (!P) return null;
 
     switch (ev.type) {
       case 'lead': {
@@ -678,9 +490,6 @@ const Sound = (() => {
       case 'harm': voiceVox(eng, ev, t, P, eng.buses.harm, false); return true;
       case 'bass': voiceWave(eng, ev, t, P, eng.buses.bass, false, { bright: 0.18, single: true, sub: Math.max(P.sub, 0.3), peak: 0.4 }); return true;
       case 'pad': voicePad(eng, ev, t, P, eng.buses.pad, false); return true;
-      case 'kick': case 'snare': case 'hat': case 'shaker': case 'crash':
-        if (P.drums > 0) drumVoice(eng, ev, t, P, K);
-        return true;
       default: return null;
     }
   }
@@ -703,7 +512,9 @@ const Sound = (() => {
     const eng = live();
     if (!eng || eng.ctx.state !== 'running') return null;
     const P = eng.sig.P, t = eng.ctx.currentTime, bus = playBus(eng);
-    const ev = { type: 'lead', midi, deg, vel, timbre: 'glass', beat: 0 };
+    const ev = { type: 'lead', midi, deg, vel, timbre: 'glass', beat: null };
+    notes.push({ beat: null, at: performance.now(), kind: 'key' });
+    if (notes.length > 24) notes.shift();
     return P.voice === 'vox' ? voiceVox(eng, ev, t, P, bus, true) : voiceWave(eng, ev, t, P, bus, true);
   }
 
@@ -742,16 +553,18 @@ const Sound = (() => {
 
   const refreshEngine = () => {
     if (app.engine && app.engine.sig) {
+      if (app.engine.sig.tables !== cur.tables) { app.engine.sig = null; attach(app.engine); return; }
       app.engine.sig.P = cur.P;
       buildArc(app.engine);
       pushFx(app.engine);
     }
   };
 
-  const api = {
-    SD, prepare, attach, noteOn, live,
+  return {
+    SD, prepare, attach, noteOn, live, paramsAt,
     view: () => cur,
-    state: () => ({ key: cur.key, variant: cur.variant, o: cur.o, P: cur.P, base: cur.base, tables: cur.tables, mags: cur.mags }),
+    state: () => ({ key: cur.key, variant: cur.variant, o: cur.o, P: cur.P, base: cur.base, tables: cur.tables, mags: cur.mags, ring: cur.ring }),
+    recentNotes: () => notes,
     get mode() { return prefs.mode; },
     get lite() { return prefs.lite; },
     get keysOn() { return prefs.keys; },
@@ -760,7 +573,6 @@ const Sound = (() => {
     get vowelMemoryOn() { return prefs.vowelMemory; },
     get arcOn() { return prefs.arc; },
     get sigilVerbOn() { return prefs.sigilVerb; },
-    hasVowelMemory: () => !!(vowelMemory && vowelMemory.length),
     lastVowel: () => lastVowel,
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
 
@@ -774,8 +586,7 @@ const Sound = (() => {
       if (app.engine) {
         try {
           app.engine.reverb.buffer = prefs.sigilVerb && app.sigil
-            ? sigilIR(app.engine.ctx, app.sigil, cur.variant)
-            : Engine.sharedIR(app.engine.ctx);
+            ? sigilIR(app.engine.ctx, app.sigil, cur.variant) : Engine.sharedIR(app.engine.ctx);
         } catch (e) { console.warn(e); }
       }
       notify();
@@ -822,8 +633,6 @@ const Sound = (() => {
       return n;
     },
   };
-
-  return api;
 })();
 
 if (typeof window !== 'undefined') window.Sound = Sound;

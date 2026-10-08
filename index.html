@@ -179,16 +179,12 @@
     <script src="src/modules/m4-form.js"    onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m5-access.js"  onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m6-moods.js"   onerror="SIGIL_FAIL(this)"></script>
-    <script src="src/modules/m7-render.js"  onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m8-fusion.js"  onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m9-lens.js"    onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m10-astral.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m11-voices.js"        onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m12-sound-ui.js"      onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m13-sound-visuals.js" onerror="SIGIL_FAIL(this)"></script>
-    <script src="src/modules/m14-render-plus.js" onerror="SIGIL_FAIL(this)"></script>
-    <script src="src/modules/m15-drum-engine.js" onerror="SIGIL_FAIL(this)"></script>
-    <script src="src/modules/m16-audio-guard.js" onerror="SIGIL_FAIL(this)"></script>
     
     <!-- ═══════════════════════════════════════════════════════════════════════
          PREFLIGHT. Runs after everything above, even if some of it threw.
@@ -209,7 +205,6 @@
         ['src/core/05-composer.js',  ['makePlan', 'allocate', 'buildPhrase', 'addPassing', 'harmonize', 'validChords', 'composeSong', 'sectionIndexAt', 'phraseIndexAt', 'penProgress', 'pulse', 'displayTransform']],
         ['src/core/05b-timbre.js',          ['SoundDesign']],
         ['src/core/06-engine.js',    ['Engine']],
-        ['src/core/07-renderer.js',  ['Renderer']],
         ['src/core/08-app.js',       ['app', 'renderer', 'hud', 'TIMBRE_NAMES', 'cast', 'forget', 'newDesire', 'toast', 'SigilCore']],
         ['src/ui/ui-kit.js',         ['UI']],
         ['src/modules/m1-midi.js',   ['MidiExport']],
@@ -218,16 +213,12 @@
         ['src/modules/m4-form.js',   ['Form']],
         ['src/modules/m5-access.js', ['Access']],
         ['src/modules/m6-moods.js',  ['Moods']],
-        ['src/modules/m7-render.js', ['Render']],
         ['src/modules/m8-fusion.js', ['Fusion']],
         ['src/modules/m9-lens.js',   ['LiveLens']],
         ['src/modules/m10-astral.js', ['Astral']],
         ['src/modules/m11-voices.js',       ['Sound']],
         ['src/modules/m12-sound-ui.js',     ['SoundUI']],
         ['src/modules/m13-sound-visuals.js', ['SoundVisuals']],
-        ['src/modules/m14-render-plus.js', ['RenderPlus']],    
-        ['src/modules/m15-drum-engine.js',   ['DrumEngine']],
-        ['src/modules/m16-audio-guard.js', ['AudioGuard']],
         
       ];
     

@@ -41,6 +41,10 @@ const Form = (() => {
     this.reanchorAt = 0;
   };
 
+    /** Seconds of audio booked ahead of the playhead. The audio guard widens this under load. */
+    Engine.prototype.horizon = 0.4;
+
+
   /**
    * REPLACEMENT for Engine.prototype.pump, with region looping and an adaptive
    * horizon. The old 0.18 s lookahead was too tight: one long frame (a render,
@@ -51,7 +55,7 @@ const Form = (() => {
     if (!this.running || !this.buses) return;
 
     const c = this.ctx;
-    const horizon = c.currentTime + (document.hidden ? 2.5 : 0.4);
+    const horizon = c.currentTime + this.horizon * (document.hidden ? 5 : 1);
     const total = this.song.total, totalSec = total * this.spb;
 
     for (let guard = 0; guard < 6000; guard++) {

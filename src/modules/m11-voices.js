@@ -74,10 +74,18 @@ const Sound = (() => {
     return out;
   }
 
+  /** Defaults for every knob, so a patch always has a value to show and to reset to. */
+  const DEFAULTS = {
+    tilt: 0, density: 1,
+    kSub: 1, kPunch: 1, kDecay: 1, kTone: 0,
+    sBody: 1, sSnap: 1, sTone: 1,
+    hTone: 1, hDecay: 1,
+  };
+
   function composePatch(sig, variant, overrides) {
     const derived = SD.derive(sig.hash, variant);
     const mood = (app.song && app.song.cfg && app.song.cfg.sound) || {};
-    const base = { tilt: 0, density: 1, ...derived, ...mood };
+    const base = { ...DEFAULTS, ...derived, ...mood };
     return { base, P: { ...base, ...overrides }, tables: SD.tables(sig, variant) };
   }
 
@@ -242,6 +250,28 @@ const Sound = (() => {
     return c;
   }
 
+    /**
+   * Build the cube's PeriodicWaves in small idle slices. Creating one on the main
+   * thread in the middle of a phrase is a hitch; doing them all up front is not.
+   */
+    function warmCells(eng) {
+      if (eng.warming) return;
+      eng.warming = true;
+      const list = [];
+      for (let y = 0; y < SD.FY; y++) for (let x = 0; x < SD.FX; x++) list.push([x, y]);
+      let i = 0;
+      const step = () => {
+        const end = performance.now() + 6;          // about 6 ms of work per slice
+        while (i < list.length && performance.now() < end) {
+          cellWave(eng, list[i][0], list[i][1], eng.sig.P);
+          i++;
+        }
+        if (i < list.length) setTimeout(step, 8);
+        else eng.warming = false;
+      };
+      setTimeout(step, 0);
+    }
+
   function attach(eng) {
     syncFrom(app.sigil);
     const spec = specFor();
@@ -294,6 +324,7 @@ const Sound = (() => {
       }
     }
     pushFx(eng);
+    warmCells(eng);
   }
 
   function pushFx(eng) {

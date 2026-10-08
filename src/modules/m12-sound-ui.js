@@ -39,7 +39,22 @@ const SoundUI = (() => {
     { name: 'bits',    label: 'Bits',    min: 2,  max: 16, step: 1,    fmt: fmtInt },
     { name: 'hold',    label: 'Hold',    min: 1,  max: 16, step: 1,    fmt: fmtInt },
     { name: 'echo',    label: 'Echo',    min: 0,  max: 1,  step: 0.01, fmt: fmtNum },
-    { name: 'drums',   label: 'Drums',   min: 0,  max: 1.5, step: 0.01, fmt: fmtNum },
+  ];
+
+  /** Drum tone and texture. The kit itself is chosen by Size and Colour (the drum cube). */
+  const DRUM_KNOBS = [
+    { name: 'drums',   label: 'Level',   min: 0,  max: 1.5, step: 0.01, fmt: fmtNum },
+    { name: 'drumX',   label: 'Size',    min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'drumY',   label: 'Colour',  min: 0,  max: 1,   step: 0.01, fmt: fmtNum },
+    { name: 'kSub',    label: 'K·Sub',   min: 0,  max: 2,   step: 0.01, fmt: fmtNum },
+    { name: 'kPunch',  label: 'K·Punch', min: 0,  max: 2,   step: 0.01, fmt: fmtNum },
+    { name: 'kDecay',  label: 'K·Decay', min: 0.2, max: 2,  step: 0.01, fmt: fmtNum },
+    { name: 'kTone',   label: 'K·Tone',  min: -5, max: 5,   step: 0.1,  fmt: fmtNum },
+    { name: 'sBody',   label: 'S·Body',  min: 0,  max: 2,   step: 0.01, fmt: fmtNum },
+    { name: 'sSnap',   label: 'S·Snap',  min: 0,  max: 2,   step: 0.01, fmt: fmtNum },
+    { name: 'sTone',   label: 'S·Tone',  min: 0,  max: 2,   step: 0.01, fmt: fmtNum },
+    { name: 'hTone',   label: 'H·Tone',  min: 0,  max: 2,   step: 0.01, fmt: fmtNum },
+    { name: 'hDecay',  label: 'H·Decay', min: 0.2, max: 2,  step: 0.01, fmt: fmtNum },
   ];
 
   const KEYMAP = { a: 0, s: 1, d: 2, f: 3, h: 4, j: 5, k: 6, ';': 7, q: 8, w: 9, e: 10, r: 11, u: 12, i: 13, o: 14, p: 15 };
@@ -235,7 +250,7 @@ const SoundUI = (() => {
     raf = requestAnimationFrame(() => {
       if (!voiceSel) return;
       const st = Sound.state();
-      for (const d of KNOBS) if (knobs[d.name]) knobs[d.name].set(st.P ? st.P[d.name] : d.min);
+      for (const d of KNOBS.concat(DRUM_KNOBS)) if (knobs[d.name]) knobs[d.name].set(st.P ? st.P[d.name] : d.min);
       voiceSel.input.value = st.P ? st.P.voice : 'auto';
       modeSel.input.value = Sound.mode;
       liteBox.input.checked = Sound.lite;
@@ -298,7 +313,9 @@ const SoundUI = (() => {
     .snd-h{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;opacity:.6;margin:16px 0 4px}`);
 
   UI.section({ id: 'sound', title: 'Sound & Patch', order: 12, build(el) {
-    const grid = h('div', { class: 'kb-grid' }, KNOBS.map((d) => { const k = knob(d); knobs[d.name] = k; return k.el; }));
+    const mk = (list) => h('div', { class: 'kb-grid' }, list.map((d) => { const k = knob(d); knobs[d.name] = k; return k.el; }));
+    const grid = mk(KNOBS);
+    const drumGrid = mk(DRUM_KNOBS);
     scope = h('canvas', { class: 'snd-scope', width: 280, height: 110, 'aria-hidden': 'true' });
     cube = h('canvas', { class: 'snd-cube', width: 280, height: 46, 'aria-hidden': 'true' });
 
@@ -324,7 +341,9 @@ const SoundUI = (() => {
 
     el.append(
       UI.note('The sigil is a cube: across is the path drawn letter by letter, up is its spectral character, and every note travels through it. Dream cycles variants, Mutate nudges, and your knobs travel in share links.'),
-      grid, scope, cube,
+      grid,
+      h('div', { class: 'snd-h' }, 'Drums · tone & texture'), drumGrid,
+      scope, cube,
       h('div', { class: 'sgrow dream' },
         UI.button('◀ dream', () => Sound.dream(-1)), dreamLbl, UI.button('dream ▶', () => Sound.dream(1))),
       h('div', { class: 'sgrow' },

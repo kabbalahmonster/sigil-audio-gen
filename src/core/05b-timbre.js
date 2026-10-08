@@ -56,6 +56,10 @@ const SoundDesign = (() => {
     grit: ['g', 0, 1], bits: ['i', 2, 16], hold: ['h', 1, 16], fold: ['f', 0, 1],
     drive: ['n', 0, 1], echo: ['e', 0, 1], drums: ['k', 0, 1.5],
     drumX: ['m', 0, 1], drumY: ['j', 0, 1],
+    // drum tone and texture
+    kSub: ['ks', 0, 2], kPunch: ['kp', 0, 2], kDecay: ['kd', 0.2, 2], kTone: ['kt', -5, 5],
+    sBody: ['sb', 0, 2], sSnap: ['sn', 0, 2], sTone: ['st', 0, 2],
+    hTone: ['ht', 0, 2], hDecay: ['hd', 0.2, 2],
   };
   const INTEGER_FIELDS = new Set(['vowel', 'bits', 'hold']);
   const VOICES = ['auto', 'vox', 'wave'];
@@ -300,6 +304,36 @@ const SoundDesign = (() => {
     };
   }
 
+    /* ── DRUM KIT CUBE ──────────────────────────────────────────────────────
+     A 4 × 4 grid of kits, selected by drumX (size) and drumY (colour). Each
+     cell is drawn from the sigil's own stream, so a sigil always has the same
+     sixteen kits, and a dream has different ones. Memoised: it is called per hit. */
+     const KIT_MEMO = new Map();
+     function drumKit(hash, x, y) {
+       const cx = clampTo(Math.round(x * 3), 0, 3), cy = clampTo(Math.round(y * 3), 0, 3);
+       const key = toHex(hash) + ':' + cx + ':' + cy;
+       let k = KIT_MEMO.get(key);
+       if (k) return k;
+       const R = stream(hash, `drumkit:${cx}:${cy}`);
+       k = {
+         cell: [cx, cy],
+         kickStyle: R.pick([0, 0, 1, 2, 3]),        // 0 808 glide · 1 tight · 2 boom · 3 punch
+         kickSemi: R.pick([0, 0, 5, 7, 12]),        // chord-relative offset, in key
+         kickDecay: R.range(0.35, 1),
+         kickSub: R.range(0.6, 1),                  // how much sub this kit carries
+         snareStyle: R.pick([0, 1, 2, 3]),          // 0 tight · 1 fat · 2 rim · 3 snap
+         snareBody: R.pick([5, 7, 12, 19]),         // semitones above the chord root
+         hatStyle: R.pick([0, 1, 2]),               // 0 closed square · 1 metallic · 2 airy
+         hatDecay: R.range(0.3, 1),
+         crashLen: R.range(0.6, 1.6),
+         room: R.range(0, 0.5),
+       };
+       if (KIT_MEMO.size > 128) KIT_MEMO.clear();
+       KIT_MEMO.set(key, k);
+       return k;
+     }
+   
+
   /* ── Patch codec ─────────────────────────────────────────────────────── */
 
   const b64 = (s) => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -354,7 +388,7 @@ const SoundDesign = (() => {
   return {
     H, FX, FY, UPPER, LAYER_NAMES, VOWELS, FIELDS, VOICES, CONSONANT_CLASS, CLASS_TONE,
     derive, tables, glottal, waveSamples, applyFx,
-    arc, kitAt, irSpec,
+    arc, kitAt, irSpec, drumKit,
     encodePatch, decodePatch, mutate, clampTo,
   };
 })();

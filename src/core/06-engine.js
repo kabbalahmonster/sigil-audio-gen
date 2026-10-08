@@ -39,7 +39,9 @@ class Engine {
    */
   constructor(ctx) {
     const AC = window.AudioContext || window.webkitAudioContext;
-    const c = (this.ctx = ctx || new AC({ latencyHint: 'interactive' }));
+        // 'playback' trades a few milliseconds of latency for far fewer dropouts.
+    // Change it in the console with: Prefs.set('audio.latency', 'interactive') and reload.
+    const c = (this.ctx = ctx || new AC({ latencyHint: Prefs.get('audio.latency', 'playback') }));
 
     /* ── Master chain ──────────────────────────────────────────────────── */
     this.out = this.gain(0.85);

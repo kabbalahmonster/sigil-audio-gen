@@ -458,70 +458,263 @@ const Sound = (() => {
     return schedule(ctx, nodes, t, end, hold, amp);
   }
 
-  function voiceVox(eng, ev, t, P, bus, hold) {
-    const ctx = eng.ctx, f = mtof(ev.midi), d = hold ? 3 : ev.dur * eng.spb;
-    const lean = leaning(takeVoice(ctx, t + d + 1));
-
-    const src = ctx.createOscillator();
-    src.setPeriodicWave(eng.glottalWave);
-    src.frequency.setValueAtTime(ev.from != null ? mtof(ev.from) : f, t);
-    if (ev.from != null) src.frequency.exponentialRampToValueAtTime(f, t + 0.08);
-    const nodes = [src];
-    if (!hold && !lean) nodes.push(vibrato(ctx, t, d, [src], f * 0.006));
-
-    const deg = ev.deg ?? 0;
-    let i0 = mod(deg + P.vowel, 5);
-    if (prefs.vowelMemory && vowelMemory && vowelMemory.length) {
-      i0 = vowelMemory[mod(Math.round((ev.beat ?? deg) * 2), vowelMemory.length)];
+    /**
+   * Vox v2. The sigil does the singing:
+   *   • the consonant at that beat articulates the note's onset, as a plosive
+   *     burst, a fricative hiss, a nasal hum or a liquid glide
+   *   • the vowel comes from the vowels you struck out, when they are known,
+   *     and from the melody's degree when they are not
+   *   • the vowel morphs across the note, as a singer's does
+   */
+    function voiceVox(eng, ev, t, P, bus, hold) {
+      const ctx = eng.ctx, f = mtof(ev.midi), d = hold ? 3 : ev.dur * eng.spb;
+      const lean = leaning(takeVoice(ctx, t + d + 1));
+  
+      const src = ctx.createOscillator();
+      src.setPeriodicWave(eng.glottalWave);
+      const nodes = [src];
+  
+      /* Consonant: the letter sounding at this beat decides the articulation. */
+      const sig = app.sigil;
+      const letter = sig ? sig.reduced[mod(Math.round((ev.beat ?? 0) * 2), sig.reduced.length)] : 'T';
+      const cls = SD.CONSONANT_CLASS[letter] || 'fricative';
+  
+      // A liquid glides into pitch; a plosive snaps to it.
+      const startF = cls === 'liquid' ? f * 0.82 : (ev.from != null ? mtof(ev.from) : f);
+      src.frequency.setValueAtTime(startF, t);
+      if (cls === 'liquid') src.frequency.exponentialRampToValueAtTime(f, t + 0.09);
+      else if (ev.from != null) src.frequency.exponentialRampToValueAtTime(f, t + 0.08);
+  
+      if (!hold && !lean) nodes.push(vibrato(ctx, t, d, [src], f * 0.006));
+  
+      /* Vowel: struck vowels first, otherwise the melody's own degree. */
+      const deg = ev.deg ?? 0;
+      let i0 = mod(deg + P.vowel, 5);
+      if (prefs.vowelMemory && vowelMemory && vowelMemory.length) {
+        i0 = vowelMemory[mod(Math.round((ev.beat ?? deg) * 2), vowelMemory.length)];
+      }
+      const i1 = d > 0.6 ? mod(i0 + 1, 5) : i0;
+      const V0 = SD.VOWELS[i0], V1 = SD.VOWELS[i1];
+      const tk = Math.pow(2, P.throat * 0.35);
+      const morph = t + Math.min(d * 0.9, 0.7);
+  
+      const sum = ctx.createGain();
+      sum.gain.value = 0.7 + 0.4 * P.bright;
+      const count = lean ? 3 : 4;
+      for (let i = 0; i < count; i++) {
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.Q.value = 6 + 7 * P.bright;
+        // Nasals start with a closed, darker tract that opens into the vowel.
+        const open = cls === 'nasal' ? 0.75 : 1;
+        bp.frequency.setValueAtTime(V0.f[i] * tk * open, t);
+        bp.frequency.linearRampToValueAtTime(V1.f[i] * tk, morph);
+        const g = ctx.createGain();
+        g.gain.value = V0.g[i] * (cls === 'nasal' && i > 1 ? 0.5 : 1);
+        src.connect(bp); bp.connect(g); g.connect(sum);
+      }
+  
+      const amp = ctx.createGain();
+      sum.connect(amp);
+      amp.connect(bus);
+  
+      /* The consonant itself, as a short articulation before the vowel. */
+      if (!lean) {
+        const tone = SD.CLASS_TONE[cls];
+        const burst = ctx.createBufferSource();
+        burst.buffer = eng.noiseBuf;
+        burst.loop = true;
+        const bf = ctx.createBiquadFilter();
+        bf.type = cls === 'plosive' ? 'bandpass' : 'highpass';
+        bf.frequency.value = (cls === 'plosive' ? 1800 : 3600) * tone[0];
+        bf.Q.value = cls === 'plosive' ? 1.4 : 0.7;
+        const bg = ctx.createGain();
+        const level = ev.vel * (cls === 'fricative' ? 0.13 : cls === 'plosive' ? 0.18 : 0.05) * (0.5 + P.breath);
+        const len = cls === 'fricative' ? 0.09 : 0.022;
+        bg.gain.setValueAtTime(0, t);
+        bg.gain.linearRampToValueAtTime(level, t + 0.003);
+        bg.gain.setTargetAtTime(0, t + 0.004, len);
+        burst.connect(bf); bf.connect(bg); bg.connect(amp);
+        nodes.push(burst);
+  
+        // A plosive also thumps the tract.
+        if (cls === 'plosive') {
+          const thump = ctx.createOscillator();
+          thump.type = 'sine';
+          thump.frequency.setValueAtTime(f * 0.5, t);
+          const tg = ctx.createGain();
+          tg.gain.setValueAtTime(ev.vel * 0.12, t);
+          tg.gain.setTargetAtTime(0, t + 0.002, 0.018);
+          thump.connect(tg); tg.connect(amp);
+          nodes.push(thump);
+        }
+      }
+  
+      /* Chest: a sub under the voice. */
+      if (P.sub > 0.02 && !lean) {
+        const s = ctx.createOscillator();
+        s.type = 'sine';
+        s.frequency.setValueAtTime(f / 2, t);
+        const sg = ctx.createGain();
+        sg.gain.value = P.sub * 0.22;
+        s.connect(sg); sg.connect(amp);
+        nodes.push(s);
+      }
+  
+      /* Breath beneath the note. */
+      if (P.breath > 0.01 && !lean) {
+        const br = ctx.createBufferSource();
+        br.buffer = eng.noiseBuf; br.loop = true;
+        const bf2 = ctx.createBiquadFilter();
+        bf2.type = 'bandpass'; bf2.frequency.value = 3200 * tk; bf2.Q.value = 0.9;
+        const bg2 = ctx.createGain();
+        const bl = P.breath * 0.06 * ev.vel;
+        bg2.gain.setValueAtTime(0, t);
+        bg2.gain.linearRampToValueAtTime(bl, t + 0.04);
+        bg2.gain.linearRampToValueAtTime(bl * 0.4, t + d);
+        br.connect(bf2); bf2.connect(bg2); bg2.connect(amp);
+        nodes.push(br);
+      }
+  
+      lastVowel = { name: V0.name, at: performance.now() };
+      const end = shape(eng, amp, t, d, ev.vel * 0.42 * (ev.type === 'harm' ? 0.7 : 1), hold);
+      return schedule(ctx, nodes, t, end, hold, amp);
     }
-    const i1 = d > 0.6 ? mod(i0 + 1, 5) : i0;
-    const V0 = SD.VOWELS[i0], V1 = SD.VOWELS[i1];
-    const tk = Math.pow(2, P.throat * 0.35);
-    const morph = t + Math.min(d * 0.9, 0.7);
 
-    const sum = ctx.createGain();
-    sum.gain.value = 0.7 + 0.4 * P.bright;
-    const count = lean ? 3 : 4;
-    for (let i = 0; i < count; i++) {
-      const bp = ctx.createBiquadFilter();
-      bp.type = 'bandpass'; bp.Q.value = 6 + 7 * P.bright;
-      bp.frequency.setValueAtTime(V0.f[i] * tk, t);
-      bp.frequency.linearRampToValueAtTime(V1.f[i] * tk, morph);
-      const g = ctx.createGain();
-      g.gain.value = V0.g[i];
-      src.connect(bp); bp.connect(g); g.connect(sum);
+    /**
+   * FM. The cube cell is the carrier, so the sigil's spectrum is still the
+   * source; a sine modulator at a sigil-derived ratio adds sidebands. The index
+   * falls over the note, which is what makes FM read as a struck sound.
+   */
+    function voiceFm(eng, ev, t, P, bus, hold) {
+      const ctx = eng.ctx, f = mtof(ev.midi), d = hold ? 3 : ev.dur * eng.spb;
+      const lean = leaning(takeVoice(ctx, t + d + 1));
+  
+      const car = ctx.createOscillator();
+      car.setPeriodicWave(cellWave(eng, P.wave, P.layer, P));
+      car.frequency.setValueAtTime(ev.from != null ? mtof(ev.from) : f, t);
+      if (ev.from != null) car.frequency.exponentialRampToValueAtTime(f, t + 0.08);
+  
+      const ratio = 1 + (Math.round(P.wave) % 5) + (Math.round(P.layer) % 2) * 0.5;
+      const mod = ctx.createOscillator();
+      mod.type = 'sine';
+      mod.frequency.setValueAtTime(f * ratio, t);
+      const mg = ctx.createGain();
+      const index = f * (0.6 + 3.4 * P.bright) * ev.vel;
+      mg.gain.setValueAtTime(index, t);
+      mg.gain.setTargetAtTime(index * 0.08, t + 0.004, 0.06 + 0.3 * d);
+      mod.connect(mg); mg.connect(car.frequency);
+  
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass'; lp.Q.value = 0.6;
+      lp.frequency.setValueAtTime(Math.min(16000, f * (6 + 12 * P.bright)), t);
+      const amp = ctx.createGain();
+      car.connect(lp); lp.connect(amp); amp.connect(bus);
+  
+      const nodes = [car, mod];
+      if (P.sub > 0.02 && !lean) {
+        const s = ctx.createOscillator();
+        s.type = 'sine';
+        s.frequency.setValueAtTime(f / 2, t);
+        const sg = ctx.createGain();
+        sg.gain.value = P.sub * 0.4;
+        s.connect(sg); sg.connect(amp);
+        nodes.push(s);
+      }
+      const end = shape(eng, amp, t, d, ev.vel * 0.3, hold);
+      return schedule(ctx, nodes, t, end, hold, amp);
     }
-
-    const amp = ctx.createGain();
-    sum.connect(amp); amp.connect(bus);
-
-    if (P.sub > 0.02 && !lean) {
-      const s = ctx.createOscillator();
-      s.type = 'sine';
-      s.frequency.setValueAtTime(f / 2, t);
-      const sg = ctx.createGain();
-      sg.gain.value = P.sub * 0.22;
-      s.connect(sg); sg.connect(amp);
-      nodes.push(s);
+  
+    /**
+     * Bow. A slow swell on two detuned cube oscillators, with a noise-driven
+     * wobble on the filter that stands in for bow pressure. Sustains well, so it
+     * suits pads, held keys and the Reversal.
+     */
+    function voiceBow(eng, ev, t, P, bus, hold) {
+      const ctx = eng.ctx, f = mtof(ev.midi), d = hold ? 3 : ev.dur * eng.spb;
+      const lean = leaning(takeVoice(ctx, t + d + 1));
+  
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass'; lp.Q.value = 1.6;
+      const cut = f * (2.5 + 8 * P.bright);
+      lp.frequency.setValueAtTime(cut * 0.5, t);
+      lp.frequency.linearRampToValueAtTime(cut, t + Math.min(0.5, d * 0.5));
+  
+      const nodes = [];
+      for (const dt of lean ? [0] : [-7, 7]) {
+        const o = ctx.createOscillator();
+        o.setPeriodicWave(cellWave(eng, P.wave, P.layer, P));
+        o.detune.value = dt;
+        o.frequency.setValueAtTime(ev.from != null ? mtof(ev.from) : f, t);
+        if (ev.from != null) o.frequency.exponentialRampToValueAtTime(f, t + 0.12);
+        o.connect(lp);
+        nodes.push(o);
+      }
+  
+      // Bow pressure: filtered noise pushed into the filter's cutoff.
+      if (!lean) {
+        const n = ctx.createBufferSource();
+        n.buffer = eng.noiseBuf; n.loop = true;
+        const nf = ctx.createBiquadFilter();
+        nf.type = 'lowpass'; nf.frequency.value = 9;
+        const ng = ctx.createGain();
+        ng.gain.value = cut * 0.25 * (0.3 + P.breath);
+        n.connect(nf); nf.connect(ng); ng.connect(lp.frequency);
+        nodes.push(n);
+      }
+  
+      const amp = ctx.createGain();
+      lp.connect(amp); amp.connect(bus);
+      const end = hold
+        ? shape(eng, amp, t, d, ev.vel * 0.3, true)
+        : eng.adsr(amp.gain, t, d, { a: 0.12, d: 0.3, s: 0.9, r: 0.35, peak: ev.vel * 0.3 });
+      return schedule(ctx, nodes, t, end, hold, amp);
     }
-    if (P.breath > 0.01 && !lean) {
-      const br = ctx.createBufferSource();
-      br.buffer = eng.noiseBuf; br.loop = true;
-      const bf = ctx.createBiquadFilter();
-      bf.type = 'bandpass'; bf.frequency.value = 3200 * tk; bf.Q.value = 0.9;
-      const bg = ctx.createGain();
-      const bl = P.breath * 0.06 * ev.vel;
-      bg.gain.setValueAtTime(0, t);
-      bg.gain.linearRampToValueAtTime(bl, t + 0.04);
-      bg.gain.linearRampToValueAtTime(bl * 0.4, t + d);
-      br.connect(bf); bf.connect(bg); bg.connect(amp);
-      nodes.push(br);
+  
+    /**
+     * Bell. The cube cell struck, with an inharmonic partner at 2.76× and a
+     * shimmer an octave and a fifth above. All three decay at different rates,
+     * which is what makes a bell sound alive rather than like a filtered pulse.
+     */
+    function voiceBell(eng, ev, t, P, bus, hold) {
+      const ctx = eng.ctx, f = mtof(ev.midi), d = hold ? 3 : ev.dur * eng.spb;
+      const lean = leaning(takeVoice(ctx, t + d + 1));
+      const ring = Math.max(d * 1.6, 1.1) * (0.6 + 0.8 * P.hDecay ?? 1);
+  
+      const amp = ctx.createGain();
+      amp.connect(bus);
+      const nodes = [];
+      const partial = (mult, level, decay, wave) => {
+        const o = ctx.createOscillator();
+        if (wave) o.setPeriodicWave(cellWave(eng, P.wave, P.layer, P));
+        else o.type = 'sine';
+        o.frequency.setValueAtTime(f * mult, t);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(level, t + 0.004);
+        g.gain.setTargetAtTime(0, t + 0.004, decay);
+        o.connect(g); g.connect(amp);
+        nodes.push(o);
+      };
+      partial(1, 0.5, ring * 0.45, true);
+      partial(2.76, 0.22 * (0.4 + P.bright), ring * 0.3, false);
+      if (!lean) partial(3.01, 0.1 * (0.3 + P.bright), ring * 0.18, false);
+      if (P.sub > 0.02) partial(0.5, P.sub * 0.3, ring * 0.6, false);
+  
+      amp.gain.value = ev.vel * 0.7;
+      const end = t + ring + 0.4;
+      return schedule(ctx, nodes, t, end, hold, amp);
     }
-
-    lastVowel = { name: V0.name, at: performance.now() };
-    const end = shape(eng, amp, t, d, ev.vel * 0.42 * (ev.type === 'harm' ? 0.7 : 1), hold);
-    return schedule(ctx, nodes, t, end, hold, amp);
-  }
+  
+    /** Which voice a lead note uses, given the patch and the score's own timbre. */
+    function pickVoice(P, ev) {
+      if (P.voice && P.voice !== 'auto') return P.voice;
+      if (ev && ev.timbre === 'reed') return 'vox';
+      if (ev && ev.timbre === 'koto') return 'bell';
+      return 'wave';
+    }
+  
+    const VOICE_FN = { wave: voiceWave, vox: voiceVox, fm: voiceFm, bow: voiceBow, bell: voiceBell };
 
   function voicePad(eng, ev, t, P, bus, hold) {
     const ctx = eng.ctx, d = hold ? 3 : ev.dur * eng.spb;
@@ -740,8 +933,8 @@ const Sound = (() => {
     const { P } = patchFor(eng, ev);
     switch (ev.type) {
       case 'lead': {
-        const vox = P.voice === 'vox' || (P.voice === 'auto' && ev.timbre === 'reed');
-        (vox ? voiceVox : voiceWave)(eng, ev, t, P, eng.buses.lead, false);
+        const fn = VOICE_FN[pickVoice(P, ev)] || voiceWave;
+        fn(eng, ev, t, P, eng.buses.lead, false);
         return true;
       }
       case 'harm': voiceVox(eng, ev, t, P, eng.buses.harm, false); return true;
@@ -770,7 +963,8 @@ const Sound = (() => {
     if (!eng || eng.ctx.state !== 'running') return null;
     const P = eng.sig.P, t = eng.ctx.currentTime, bus = playBus(eng);
     const ev = { type: 'lead', midi, deg, vel, timbre: 'glass', beat: 0 };
-    return P.voice === 'vox' ? voiceVox(eng, ev, t, P, bus, true) : voiceWave(eng, ev, t, P, bus, true);
+    const fn = VOICE_FN[pickVoice(P, ev)] || voiceWave;
+    return fn(eng, ev, t, P, bus, true);
   }
 
   /* ── Hooks ───────────────────────────────────────────────────────────── */

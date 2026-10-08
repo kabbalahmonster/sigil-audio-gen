@@ -118,71 +118,124 @@ const SoundUI = (() => {
 
   /* ── Scope: the true signal path ─────────────────────────────────────── */
 
-  /** The wavetable as a 3D surface: columns are frames, rows are layers, and
-      the front edge is the actual signal, bit-crushing and all. */
+  /**
+   * The wave in detail.
+   *   Upper two thirds  the single cycle you are hearing: a filled body, the
+   *                     clean trace as a ghost, the crushed trace in accent,
+   *                     the quantisation ladder when Bits is low, and the cycle
+   *                     the travel is heading toward, dashed.
+   *   Lower third       the 32 partials after Tilt and Density, as bars.
+   *   Readout           peak, RMS, bit depth, hold, and the cube cell.
+   */
   function paintScope() {
     if (!scope) return;
-    const st = Sound.state(), g = scope.getContext('2d');
+    const stt = Sound.state(), g = scope.getContext('2d');
     const W = scope.width, H = scope.height;
     g.clearRect(0, 0, W, H);
-    if (!st.tables || !st.P) return;
-    const P = st.P, tb = st.tables, L = renderer.pal.line, A = renderer.pal.accent;
+    if (!stt.tables || !stt.P) return;
 
-    const NX = SoundDesign.FX, NY = SoundDesign.FY, SAMP = 48;
-    const ox = W * 0.5, oy = H * 0.72;
-    const sx = (W * 0.62) / NX, sy = (H * 0.42) / NY, skew = W * 0.055;
-    const px = (x, y) => ox + (x - (NX - 1) / 2) * sx + (y - (NY - 1) / 2) * skew;
-    const py = (x, y) => oy - (y - (NY - 1) / 2) * sy;
+    const P = stt.P, tb = stt.tables, L = renderer.pal.line, A = renderer.pal.accent;
+    const waveH = Math.floor(H * 0.62), mid = waveH / 2;
+    const specTop = waveH + 10, specH = H - specTop - 12;
 
-    // Far layers first, so nearer ones occlude them.
-    for (let y = NY - 1; y >= 0; y--) {
-      const wave = SoundDesign.waveSamples(tb.grid[y][clamp(Math.round(P.wave), 0, NX - 1)], tb.grid[y][clamp(Math.round(P.wave), 0, NX - 1)], 0, SAMP);
-      const near = 1 - y / (NY - 1);
+    /* The cycle now, and the cycle the travel is heading toward. */
+    const a = tb.cell(P.wave, P.layer);
+    const b = tb.cell(P.wave + P.sweep * 4, P.layer + P.drift * 2.5);
+    const clean0 = SoundDesign.waveSamples(a, a, 0, W);
+    const target = SoundDesign.waveSamples(b, b, 0, W);
+
+    /* Add the sub, exactly as the voice does: an octave down is half a cycle here. */
+    const clean = new Float32Array(W);
+    let mx = 1e-9;
+    for (let i = 0; i < W; i++) {
+      clean[i] = clean0[i] + P.sub * 0.6 * Math.sin((Math.PI * i) / W);
+      if (Math.abs(clean[i]) > mx) mx = Math.abs(clean[i]);
+    }
+    for (let i = 0; i < W; i++) clean[i] /= mx;
+
+    const bits = P.grit > 0 ? P.bits : 16;
+    const wet = SoundDesign.applyFx(clean, { bits, hold: P.hold, fold: P.fold, drive: P.drive, mix: P.grit });
+
+    /* Quantisation ladder: the levels the signal is actually allowed to take. */
+    if (P.grit > 0 && bits <= 7) {
+      const levels = Math.pow(2, bits - 1);
+      g.strokeStyle = rgba(L, 0.07);
+      g.lineWidth = 1;
       g.beginPath();
-      for (let i = 0; i < SAMP; i++) {
-        const x = (i / (SAMP - 1)) * (NX - 1);
-        const h = wave[i] * sy * 0.55;
-        const X = px(x, y), Y = py(x, y) - h;
-        i ? g.lineTo(X, Y) : g.moveTo(X, Y);
+      for (let s = -levels; s <= levels; s++) {
+        const y = mid - (s / levels) * (waveH * 0.42);
+        g.moveTo(0, y); g.lineTo(W, y);
       }
-      const isCurrent = Math.round(clamp(P.layer, 0, NY - 1)) === y;
-      g.strokeStyle = rgba(isCurrent ? A : L, isCurrent ? 0.9 : 0.1 + near * 0.18);
-      g.lineWidth = isCurrent ? 1.5 : 1;
       g.stroke();
     }
 
-    // Struts across the layers, which make the surface read as a solid.
-    g.beginPath();
-    for (let i = 0; i <= 8; i++) {
-      const x = (i / 8) * (NX - 1);
-      for (let y = 0; y < NY; y++) {
-        const X = px(x, y), Y = py(x, y);
-        y ? g.lineTo(X, Y) : g.moveTo(X, Y);
-      }
-    }
-    g.strokeStyle = rgba(L, 0.12);
+    /* Centre line and the hold grid, so sample-rate reduction is visible. */
+    g.strokeStyle = rgba(L, 0.16);
     g.lineWidth = 1;
-    g.stroke();
+    g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke();
+    if (P.grit > 0 && P.hold > 1) {
+      g.strokeStyle = rgba(L, 0.05);
+      g.beginPath();
+      for (let x = 0; x < W; x += Math.max(2, Math.round(P.hold))) { g.moveTo(x, 4); g.lineTo(x, waveH - 4); }
+      g.stroke();
+    }
 
-    // Front edge: the real signal, with sub, drive, fold, bits and hold.
-    const a = tb.cell(P.wave, P.layer), b = tb.cell(P.wave + P.sweep * 4, P.layer + P.drift * 2.5);
-    const clean = SoundDesign.waveSamples(a, b, 0, W);
-    const withSub = new Float32Array(W);
-    let mx = 1e-9;
-    for (let i = 0; i < W; i++) {
-      withSub[i] = clean[i] + P.sub * 0.6 * Math.sin((2 * Math.PI * i) / W / 2);
-      if (Math.abs(withSub[i]) > mx) mx = Math.abs(withSub[i]);
-    }
-    for (let i = 0; i < W; i++) withSub[i] /= mx;
-    const wet = SoundDesign.applyFx(withSub, { bits: P.grit > 0 ? P.bits : 16, hold: P.hold, fold: P.fold, drive: P.drive, mix: P.grit });
+    const trace = (arr, style, width, dash) => {
+      g.setLineDash(dash || []);
+      g.beginPath();
+      for (let x = 0; x < W; x++) {
+        const y = mid - arr[x] * waveH * 0.42;
+        x ? g.lineTo(x, y) : g.moveTo(x, y);
+      }
+      g.strokeStyle = style;
+      g.lineWidth = width;
+      g.stroke();
+      g.setLineDash([]);
+    };
+
+    /* Body fill under the crushed wave: gives the cycle weight. */
     g.beginPath();
-    for (let i = 0; i < W; i++) {
-      const Y = H - 9 - wet[i] * 8;
-      i ? g.lineTo(i, Y) : g.moveTo(i, Y);
+    g.moveTo(0, mid);
+    for (let x = 0; x < W; x++) g.lineTo(x, mid - wet[x] * waveH * 0.42);
+    g.lineTo(W, mid);
+    g.closePath();
+    g.fillStyle = rgba(A, 0.07);
+    g.fill();
+
+    trace(target, rgba(L, 0.16), 1, [3, 3]);    // where the travel is going
+    trace(clean, rgba(L, 0.3), 1);              // before the crusher
+    trace(wet, rgba(A, 0.95), 1.5);             // what you hear
+
+    /* Partials, after Tilt and Density. */
+    const cell = tb.cell(P.wave, P.layer);
+    const n = cell.re.length - 1;
+    const mags = new Float32Array(n);
+    let top = 1e-9;
+    for (let hh = 1; hh <= n; hh++) {
+      const gain = Math.pow(hh, -(P.tilt ?? 0)) * (hh >= SoundDesign.UPPER ? (P.density ?? 1) : 1);
+      const m = Math.hypot(cell.re[hh], cell.im[hh]) * gain;
+      mags[hh - 1] = m;
+      if (m > top) top = m;
     }
-    g.strokeStyle = rgba(A, 0.8);
-    g.lineWidth = 1.2;
-    g.stroke();
+    const bw = W / n;
+    for (let i = 0; i < n; i++) {
+      const v = mags[i] / top;
+      const bh = Math.max(1, v * specH);
+      // Partials in the density tier are tinted, so you can see Density working.
+      g.fillStyle = i + 1 >= SoundDesign.UPPER ? rgba(A, 0.35 + 0.45 * v) : rgba(L, 0.25 + 0.5 * v);
+      g.fillRect(i * bw + 0.5, specTop + specH - bh, Math.max(1, bw - 1), bh);
+    }
+
+    /* Readout. */
+    let peak = 0, sum = 0;
+    for (let i = 0; i < W; i++) { const v = Math.abs(wet[i]); if (v > peak) peak = v; sum += wet[i] * wet[i]; }
+    const rms = Math.sqrt(sum / W);
+    g.font = `10px ${SERIF}`;
+    g.textAlign = 'left';
+    g.fillStyle = rgba(L, 0.55);
+    g.fillText(`cell ${Math.round(P.wave)},${Math.round(P.layer)} · ${SoundDesign.LAYER_NAMES[Math.round(clamp(P.layer, 0, SoundDesign.FY - 1))]}`, 4, 11);
+    g.textAlign = 'right';
+    g.fillText(`peak ${peak.toFixed(2)}  rms ${rms.toFixed(2)}  ${bits}-bit /${Math.round(P.hold)}`, W - 4, 11);
   }
 
   /* ── Cube map: 9 × 5 cells, current position and travel vector ──────── */
@@ -304,7 +357,7 @@ const SoundUI = (() => {
     .kb-cap i{position:absolute;left:50%;top:3px;width:1.5px;height:9px;margin-left:-.75px;background:rgb(var(--accent))}
     .kb-label{opacity:.6;letter-spacing:.08em;text-transform:uppercase}
     .kb-val{font-variant-numeric:tabular-nums;opacity:.55}
-    .snd-scope{width:100%;height:110px;display:block;margin:6px 0 2px}
+    .snd-scope{width:100%;height:150px;display:block;margin:6px 0 2px}
     .snd-cube{width:100%;height:84px;display:block;margin:0 0 6px;opacity:.9}
     .dream{align-items:center}
     .dream-lbl{font-style:italic;opacity:.7;font-size:12.5px;min-width:8em;text-align:center}
@@ -316,7 +369,7 @@ const SoundUI = (() => {
     const mk = (list) => h('div', { class: 'kb-grid' }, list.map((d) => { const k = knob(d); knobs[d.name] = k; return k.el; }));
     const grid = mk(KNOBS);
     const drumGrid = mk(DRUM_KNOBS);
-    scope = h('canvas', { class: 'snd-scope', width: 280, height: 110, 'aria-hidden': 'true' });
+    scope = h('canvas', { class: 'snd-scope', width: 280, height: 150, 'aria-hidden': 'true' });
     cube = h('canvas', { class: 'snd-cube', width: 280, height: 46, 'aria-hidden': 'true' });
 
     attachCube(cube);
@@ -325,7 +378,8 @@ const SoundUI = (() => {
       options: [['sigil', 'Sigil · cube & vox'], ['legacy', 'Legacy · original voices']],
       onChange: (v) => Sound.setMode(v) });
     voiceSel = UI.select({ label: 'Lead voice', value: 'auto',
-      options: [['auto', 'Auto · per timbre'], ['vox', 'Vox · formant'], ['wave', 'Wavetable']],
+    options: [['auto', 'Auto · per timbre'], ['wave', 'Wavetable'], ['vox', 'Vox · formant'],
+    ['fm', 'FM'], ['bow', 'Bow'], ['bell', 'Bell']],
       onChange: (v) => Sound.set('voice', v) });
     liteBox = UI.check({ label: 'Lite mode (fewer oscillators, simpler visuals)', checked: Sound.lite, onChange: (v) => Sound.setLite(v) });
     lensBox = UI.check({ label: 'Live Lens also sweeps the wavetable', checked: Sound.lensWave, onChange: (v) => Sound.setLensWave(v) });
@@ -341,6 +395,7 @@ const SoundUI = (() => {
 
     el.append(
       UI.note('The sigil is a cube: across is the path drawn letter by letter, up is its spectral character, and every note travels through it. Dream cycles variants, Mutate nudges, and your knobs travel in share links.'),
+      scope, cube,
       grid,
       h('div', { class: 'snd-h' }, 'Drums · tone & texture'), drumGrid,
       scope, cube,

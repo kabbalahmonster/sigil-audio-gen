@@ -34,7 +34,7 @@ const SoundVisuals = (() => {
   let rows = 22, cols = 64, bins = 48;
   let timeGrid = new Float32Array(22 * 64), specGrid = new Float32Array(22 * 48), hue = new Float32Array(22);
   let head = 0, lastCap = 0, phase = 0, tb = null, fb = null;
-  let ema = 16, last = 0, autoSmall = false, stability = 0;
+  let ema = 16, last = 0, autoSmall = false, stability = 0, budget = 0, tock = 0;
   const trig = { n: 0, cu: null, su: null };
 
   function resize(small) {
@@ -108,7 +108,7 @@ const SoundVisuals = (() => {
       if (k >= 1) continue;
       const idx = rowIdx(d), t = hue[idx];
 
-      if (!small && d + 1 < rows) {
+      if (!small && budget === 0 && d + 1 < rows) {
         const k2 = (d + 1 + phase) / rows;
         if (k2 < 1) {
           const idx2 = rowIdx(d + 1);
@@ -171,7 +171,7 @@ const SoundVisuals = (() => {
         c ? g.lineTo(x, y) : g.moveTo(x, y);
       }
       g.closePath();
-      if (!small) { g.fillStyle = tint(L, A, t, 0.03 + 0.05 * (1 - k)); g.fill(); }
+      if (!small && budget === 0) { g.fillStyle = tint(L, A, t, 0.03 + 0.05 * (1 - k)); g.fill(); }
       g.strokeStyle = tint(L, A, t, 0.16 + 0.5 * (1 - k));
       g.lineWidth = d === 0 ? 1.5 : 1;
       g.stroke();
@@ -359,12 +359,15 @@ const SoundVisuals = (() => {
 
     const v = Sound.view();
     if (!v.P || !v.mags || !v.ring) return;
-    const small = Sound.lite || autoSmall || stability >= 1;
+    const small = Sound.lite || autoSmall || stability >= 1 || budget >= 1;
+    // At the tightest budget the sound visuals draw on alternate frames. The sigil
+    // itself keeps drawing every frame, so nothing looks frozen.
+    const heavy = budget < 2 || (tock++ & 1) === 0;
     const A = r.pal.accent, L = r.pal.line;
     const eng = Sound.live();
     const an = eng && eng.analyser;
 
-    if (mode !== 'none' && an) {
+    if (mode !== 'none' && an && heavy) {
       resize(small);
       readTime(an);
       if (now - lastCap >= CAP) { lastCap = now; capture(an); }
@@ -387,6 +390,9 @@ const SoundVisuals = (() => {
 
   /* The audio guard asks for lighter visuals when the scheduler struggles. */
   Hooks.on('stability', (level) => { stability = level; });
+/* The profiler tells us how much of the frame drawing is taking. Level 1 drops
+  the fills and shrinks the grid; level 2 halves the visual frame rate too. */
+  Hooks.on('budget', (level) => { budget = level; });
 
   /* ── Controls ────────────────────────────────────────────────────────── */
 

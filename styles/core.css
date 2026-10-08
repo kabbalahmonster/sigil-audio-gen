@@ -252,7 +252,7 @@
     position: absolute; inset: 0;
     display: grid; place-items: center;
     background: rgba(0, 0, 0, .62);
-    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    
     opacity: 0; pointer-events: none !important;
     transition: opacity .6s;
   }
@@ -261,7 +261,7 @@
     width: min(660px, 90vw); max-height: 84vh; overflow: auto;
     padding: 34px 38px;
     border: 1px solid rgba(var(--line), .18);
-    background: rgba(0, 0, 0, .45);
+    background: rgba(0, 0, 0, .78);
     line-height: 1.65; font-size: 16px;
   }
   #about h2 { font-weight: normal; font-style: italic; font-size: 28px; margin: 0 0 14px; }

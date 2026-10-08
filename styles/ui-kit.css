@@ -12,8 +12,7 @@
      position: absolute; top: 0; right: 0; bottom: 0;
      width: min(370px, 94vw);
      display: flex; flex-direction: column;
-     background: rgba(6, 5, 5, .8);
-     backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+     background:rgba(6,5,5,.92);
      border-left: 1px solid rgba(var(--line), .14);
      transform: translateX(104%);
      transition: transform .55s cubic-bezier(.2, .8, .2, 1);

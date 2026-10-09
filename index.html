@@ -190,6 +190,8 @@
     <script src="src/modules/m15-drum-engine.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m16-audio-guard.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m17-profiler.js" onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/dsp/sigil-dsp.js"></script>
+    <script src="src/modules/m18-dsp-engine.js" onerror="SIGIL_FAIL(this)"></script>
     
     <!-- ═══════════════════════════════════════════════════════════════════════
          PREFLIGHT. Runs after everything above, even if some of it threw.
@@ -230,6 +232,8 @@
         ['src/modules/m15-drum-engine.js',   ['DrumEngine']],
         ['src/modules/m16-audio-guard.js', ['AudioGuard']],
         ['src/modules/m17-profiler.js', ['Profiler']],
+        ['src/dsp/sigil-dsp.js',            ['SigilDSP']],
+        ['src/modules/m18-dsp-engine.js',   ['DspEngine']],
         
       ];
     

@@ -127,116 +127,145 @@ const SoundUI = (() => {
    *   Lower third       the 32 partials after Tilt and Density, as bars.
    *   Readout           peak, RMS, bit depth, hold, and the cube cell.
    */
-  function paintScope() {
-    if (!scope) return;
-    const stt = Sound.state(), g = scope.getContext('2d');
-    const W = scope.width, H = scope.height;
-    g.clearRect(0, 0, W, H);
-    if (!stt.tables || !stt.P) return;
-
-    const P = stt.P, tb = stt.tables, L = renderer.pal.line, A = renderer.pal.accent;
-    const waveH = Math.floor(H * 0.62), mid = waveH / 2;
-    const specTop = waveH + 10, specH = H - specTop - 12;
-
-    /* The cycle now, and the cycle the travel is heading toward. */
-    const a = tb.cell(P.wave, P.layer);
-    const b = tb.cell(P.wave + P.sweep * 4, P.layer + P.drift * 2.5);
-    const clean0 = SoundDesign.waveSamples(a, a, 0, W);
-    const target = SoundDesign.waveSamples(b, b, 0, W);
-
-    /* Add the sub, exactly as the voice does: an octave down is half a cycle here. */
-    const clean = new Float32Array(W);
-    let mx = 1e-9;
-    for (let i = 0; i < W; i++) {
-      clean[i] = clean0[i] + P.sub * 0.6 * Math.sin((Math.PI * i) / W);
-      if (Math.abs(clean[i]) > mx) mx = Math.abs(clean[i]);
-    }
-    for (let i = 0; i < W; i++) clean[i] /= mx;
-
-    const bits = P.grit > 0 ? P.bits : 16;
-    const wet = SoundDesign.applyFx(clean, { bits, hold: P.hold, fold: P.fold, drive: P.drive, mix: P.grit });
-
-    /* Quantisation ladder: the levels the signal is actually allowed to take. */
-    if (P.grit > 0 && bits <= 7) {
-      const levels = Math.pow(2, bits - 1);
-      g.strokeStyle = rgba(L, 0.07);
+    /**
+   * The wavetable as a lit 3D surface, with texture.
+   *
+   *   • All nine layers recede into depth, each drawn from the cube column you
+   *     are sitting on. Far layers are dim, the current one is lit and filled.
+   *   • Ridge lines run across the layers, so the surface reads as a solid mesh
+   *     rather than a stack of unrelated curves.
+   *   • The travel target is drawn as a dashed ghost, so Sweep and Drift are visible.
+   *   • The front edge carries the real signal: sub, drive, fold, bits and hold,
+   *     with its quantisation steps shown when Bits is low.
+   *   • A readout names the cell, the layer and the bit depth.
+   */
+    function paintScope() {
+      if (!scope) return;
+      const stt = Sound.state(), g = scope.getContext('2d');
+      const W = scope.width, H = scope.height;
+      g.clearRect(0, 0, W, H);
+      if (!stt.tables || !stt.P) return;
+  
+      const P = stt.P, tb = stt.tables, L = renderer.pal.line, A = renderer.pal.accent;
+      const NY = SoundDesign.FY, NX = SoundDesign.FX;
+      const SAMP = 72;                               // samples per layer curve
+      const cx = clamp(Math.round(P.wave), 0, NX - 1);
+      const cyNow = clamp(Math.round(P.layer), 0, NY - 1);
+  
+      const frontH = 34;                             // space reserved for the signal trace
+      const surfH = H - frontH - 14;
+      const ox = W * 0.5, oy = surfH * 0.82;
+      const sx = (W * 0.74) / SAMP, skew = W * 0.085 / NY, sy = (surfH * 0.62) / NY;
+  
+      // Project (sample i, layer y, height v) into the panel.
+      const PX = (i, y) => ox - (SAMP * sx) / 2 + i * sx + (y - (NY - 1) / 2) * skew;
+      const PY = (y, v) => oy - (y - (NY - 1) / 2) * sy - v * (sy * 1.5);
+  
+      // One cached curve per layer.
+      const curves = [];
+      for (let y = 0; y < NY; y++) curves.push(SoundDesign.waveSamples(tb.grid[y][cx], tb.grid[y][cx], 0, SAMP));
+  
+      // Far layers first, so nearer ones occlude them.
+      for (let y = NY - 1; y >= 0; y--) {
+        const w = curves[y], isNow = y === cyNow;
+        const near = 1 - y / (NY - 1);
+  
+        if (isNow) {                                 // fill the layer you are on
+          g.beginPath();
+          g.moveTo(PX(0, y), PY(y, 0));
+          for (let i = 0; i < SAMP; i++) g.lineTo(PX(i, y), PY(y, w[i]));
+          g.lineTo(PX(SAMP - 1, y), PY(y, 0));
+          g.closePath();
+          g.fillStyle = rgba(A, 0.1);
+          g.fill();
+        }
+  
+        g.beginPath();
+        for (let i = 0; i < SAMP; i++) {
+          const x = PX(i, y), yy = PY(y, w[i]);
+          i ? g.lineTo(x, yy) : g.moveTo(x, yy);
+        }
+        g.strokeStyle = isNow ? rgba(A, 0.95) : rgba(L, 0.08 + near * 0.2);
+        g.lineWidth = isNow ? 1.6 : 1;
+        g.stroke();
+      }
+  
+      // Ridge lines across the layers: the texture of the surface.
+      g.beginPath();
+      for (let i = 0; i < SAMP; i += 6) {
+        for (let y = 0; y < NY; y++) {
+          const x = PX(i, y), yy = PY(y, curves[y][i]);
+          y ? g.lineTo(x, yy) : g.moveTo(x, yy);
+        }
+      }
+      g.strokeStyle = rgba(L, 0.12);
       g.lineWidth = 1;
-      g.beginPath();
-      for (let s = -levels; s <= levels; s++) {
-        const y = mid - (s / levels) * (waveH * 0.42);
-        g.moveTo(0, y); g.lineTo(W, y);
+      g.stroke();
+  
+      // Where the travel is heading, on its own layer, dashed.
+      const tx = clamp(Math.round(P.wave + P.sweep * 4), 0, NX - 1);
+      const ty = clamp(Math.round(P.layer + P.drift * 2.5), 0, NY - 1);
+      if (tx !== cx || ty !== cyNow) {
+        const tw = SoundDesign.waveSamples(tb.grid[ty][tx], tb.grid[ty][tx], 0, SAMP);
+        g.setLineDash([3, 3]);
+        g.beginPath();
+        for (let i = 0; i < SAMP; i++) {
+          const x = PX(i, ty), yy = PY(ty, tw[i]);
+          i ? g.lineTo(x, yy) : g.moveTo(x, yy);
+        }
+        g.strokeStyle = rgba(A, 0.4);
+        g.lineWidth = 1;
+        g.stroke();
+        g.setLineDash([]);
       }
-      g.stroke();
-    }
-
-    /* Centre line and the hold grid, so sample-rate reduction is visible. */
-    g.strokeStyle = rgba(L, 0.16);
-    g.lineWidth = 1;
-    g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke();
-    if (P.grit > 0 && P.hold > 1) {
-      g.strokeStyle = rgba(L, 0.05);
-      g.beginPath();
-      for (let x = 0; x < W; x += Math.max(2, Math.round(P.hold))) { g.moveTo(x, 4); g.lineTo(x, waveH - 4); }
-      g.stroke();
-    }
-
-    const trace = (arr, style, width, dash) => {
-      g.setLineDash(dash || []);
-      g.beginPath();
-      for (let x = 0; x < W; x++) {
-        const y = mid - arr[x] * waveH * 0.42;
-        x ? g.lineTo(x, y) : g.moveTo(x, y);
+  
+      /* ── Front edge: the signal you actually hear ─────────────────────── */
+      const base = surfH + 10, midY = base + frontH / 2;
+      const a = tb.cell(P.wave, P.layer);
+      const raw = SoundDesign.waveSamples(a, a, 0, W);
+      const clean = new Float32Array(W);
+      let mx = 1e-9;
+      for (let i = 0; i < W; i++) {
+        clean[i] = raw[i] + P.sub * 0.6 * Math.sin((Math.PI * i) / W);
+        if (Math.abs(clean[i]) > mx) mx = Math.abs(clean[i]);
       }
-      g.strokeStyle = style;
-      g.lineWidth = width;
-      g.stroke();
-      g.setLineDash([]);
-    };
-
-    /* Body fill under the crushed wave: gives the cycle weight. */
-    g.beginPath();
-    g.moveTo(0, mid);
-    for (let x = 0; x < W; x++) g.lineTo(x, mid - wet[x] * waveH * 0.42);
-    g.lineTo(W, mid);
-    g.closePath();
-    g.fillStyle = rgba(A, 0.07);
-    g.fill();
-
-    trace(target, rgba(L, 0.16), 1, [3, 3]);    // where the travel is going
-    trace(clean, rgba(L, 0.3), 1);              // before the crusher
-    trace(wet, rgba(A, 0.95), 1.5);             // what you hear
-
-    /* Partials, after Tilt and Density. */
-    const cell = tb.cell(P.wave, P.layer);
-    const n = cell.re.length - 1;
-    const mags = new Float32Array(n);
-    let top = 1e-9;
-    for (let hh = 1; hh <= n; hh++) {
-      const gain = Math.pow(hh, -(P.tilt ?? 0)) * (hh >= SoundDesign.UPPER ? (P.density ?? 1) : 1);
-      const m = Math.hypot(cell.re[hh], cell.im[hh]) * gain;
-      mags[hh - 1] = m;
-      if (m > top) top = m;
+      for (let i = 0; i < W; i++) clean[i] /= mx;
+      const bits = P.grit > 0 ? P.bits : 16;
+      const wet = SoundDesign.applyFx(clean, { bits, hold: P.hold, fold: P.fold, drive: P.drive, mix: P.grit });
+  
+      if (P.grit > 0 && bits <= 7) {                 // the quantisation ladder
+        const levels = Math.pow(2, bits - 1);
+        g.strokeStyle = rgba(L, 0.07);
+        g.beginPath();
+        for (let s = -levels; s <= levels; s++) {
+          const y = midY - (s / levels) * (frontH * 0.45);
+          g.moveTo(0, y); g.lineTo(W, y);
+        }
+        g.stroke();
+      }
+      g.strokeStyle = rgba(L, 0.14);
+      g.beginPath(); g.moveTo(0, midY); g.lineTo(W, midY); g.stroke();
+  
+      const trace = (arr, style, width) => {
+        g.beginPath();
+        for (let i = 0; i < W; i++) {
+          const y = midY - arr[i] * frontH * 0.45;
+          i ? g.lineTo(i, y) : g.moveTo(i, y);
+        }
+        g.strokeStyle = style;
+        g.lineWidth = width;
+        g.stroke();
+      };
+      trace(clean, rgba(L, 0.28), 1);
+      trace(wet, rgba(A, 0.95), 1.4);
+  
+      g.font = `10px ${SERIF}`;
+      g.textAlign = 'left';
+      g.fillStyle = rgba(L, 0.55);
+      g.fillText(`cell ${cx},${cyNow} · ${SoundDesign.LAYER_NAMES[cyNow]}`, 4, 11);
+      g.textAlign = 'right';
+      g.fillText(`${bits}-bit /${Math.round(P.hold)} · tilt ${(P.tilt ?? 0).toFixed(2)} · dens ${(P.density ?? 1).toFixed(2)}`, W - 4, 11);
     }
-    const bw = W / n;
-    for (let i = 0; i < n; i++) {
-      const v = mags[i] / top;
-      const bh = Math.max(1, v * specH);
-      // Partials in the density tier are tinted, so you can see Density working.
-      g.fillStyle = i + 1 >= SoundDesign.UPPER ? rgba(A, 0.35 + 0.45 * v) : rgba(L, 0.25 + 0.5 * v);
-      g.fillRect(i * bw + 0.5, specTop + specH - bh, Math.max(1, bw - 1), bh);
-    }
-
-    /* Readout. */
-    let peak = 0, sum = 0;
-    for (let i = 0; i < W; i++) { const v = Math.abs(wet[i]); if (v > peak) peak = v; sum += wet[i] * wet[i]; }
-    const rms = Math.sqrt(sum / W);
-    g.font = `10px ${SERIF}`;
-    g.textAlign = 'left';
-    g.fillStyle = rgba(L, 0.55);
-    g.fillText(`cell ${Math.round(P.wave)},${Math.round(P.layer)} · ${SoundDesign.LAYER_NAMES[Math.round(clamp(P.layer, 0, SoundDesign.FY - 1))]}`, 4, 11);
-    g.textAlign = 'right';
-    g.fillText(`peak ${peak.toFixed(2)}  rms ${rms.toFixed(2)}  ${bits}-bit /${Math.round(P.hold)}`, W - 4, 11);
-  }
 
   /* ── Cube map: 9 × 5 cells, current position and travel vector ──────── */
 
@@ -357,7 +386,7 @@ const SoundUI = (() => {
     .kb-cap i{position:absolute;left:50%;top:3px;width:1.5px;height:9px;margin-left:-.75px;background:rgb(var(--accent))}
     .kb-label{opacity:.6;letter-spacing:.08em;text-transform:uppercase}
     .kb-val{font-variant-numeric:tabular-nums;opacity:.55}
-    .snd-scope{width:100%;height:150px;display:block;margin:6px 0 2px}
+    .snd-scope{width:100%;height:168px;display:block;margin:6px 0 2px}
     .snd-cube{width:100%;height:84px;display:block;margin:0 0 6px;opacity:.9}
     .dream{align-items:center}
     .dream-lbl{font-style:italic;opacity:.7;font-size:12.5px;min-width:8em;text-align:center}
@@ -369,7 +398,7 @@ const SoundUI = (() => {
     const mk = (list) => h('div', { class: 'kb-grid' }, list.map((d) => { const k = knob(d); knobs[d.name] = k; return k.el; }));
     const grid = mk(KNOBS);
     const drumGrid = mk(DRUM_KNOBS);
-    scope = h('canvas', { class: 'snd-scope', width: 280, height: 150, 'aria-hidden': 'true' });
+    scope = h('canvas', { class: 'snd-scope', width: 280, height: 168, 'aria-hidden': 'true' });
     cube = h('canvas', { class: 'snd-cube', width: 280, height: 46, 'aria-hidden': 'true' });
 
     attachCube(cube);
@@ -394,11 +423,12 @@ const SoundUI = (() => {
     const fileIn = h('input', { type: 'file', accept: 'application/json,.json', style: 'display:none', onchange: () => importFile(fileIn) });
 
     el.append(
-      UI.note('The sigil is a cube: across is the path drawn letter by letter, up is its spectral character, and every note travels through it. Dream cycles variants, Mutate nudges, and your knobs travel in share links.'),
-      scope, cube,
+      UI.note('The sigil is a cube: across is the path drawn letter by letter, up is its spectral character, and every note travels through it.'),
+      scope,
+      cube,
       grid,
-      h('div', { class: 'snd-h' }, 'Drums · tone & texture'), drumGrid,
-      scope, cube,
+      h('div', { class: 'snd-h' }, 'Drums · tone & texture'),
+      drumGrid,
       h('div', { class: 'sgrow dream' },
         UI.button('◀ dream', () => Sound.dream(-1)), dreamLbl, UI.button('dream ▶', () => Sound.dream(1))),
       h('div', { class: 'sgrow' },

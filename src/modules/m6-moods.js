@@ -196,6 +196,62 @@ const Moods = (() => {
           s.intensity = Math.max(2, s.intensity); s.halfTime = true; s.drone = true;
         }
       },
+    },    clockwork: {
+      label: 'Clockwork', blurb: 'Precise and mechanical. Tight kit, bit-crushed arpeggios, nothing human.',
+      compose(cfg) {
+        cfg.P.swing = 0;
+        cfg.P.arp = 'up';
+        cfg.bpm = Math.round(cfg.bpm * 1.08);
+        cfg.levels = { arp: 1.2, drums: 1.05, pad: 0.7 };
+        cfg.sound = { grit: 0.6, bits: 6, hold: 3, chorus: 0.1, sweep: 0.15, drift: 0, layer: 7, sub: 0.3, drums: 1.1, kPunch: 1.5, sSnap: 1.4, hDecay: 0.5 };
+      },
+      plan(plan) {
+        for (const s of plan) { s.halfTime = false; if (s.intensity > 0) s.intensity = 2; if (s.arp) s.arp = 'full'; }
+      },
+    },
+
+    fathom: {
+      label: 'Fathom', blurb: 'Far under. Everything filtered, the kick felt more than heard.',
+      compose(cfg) {
+        cfg.bpm = Math.round(cfg.bpm * 0.7);
+        cfg.levels = { bass: 1.25, drone: 1.3, bell: 0.5, arp: 0.4, drums: 0.8 };
+        cfg.sound = { bright: 0.16, layer: 4, sub: 1, tilt: 0.5, chorus: 0.5, echo: 0.7, grit: 0.2, bits: 10, drumX: 1, drumY: 0.2, kSub: 1.6, kDecay: 1.6, hTone: 0.4 };
+      },
+      plan(plan) { for (const s of plan) { s.drone = true; s.intensity = Math.min(1, s.intensity); s.density = 0; } },
+    },
+
+    gilded: {
+      label: 'Gilded', blurb: 'Ceremonial and bright. Bells, wide chorus, a processional kit.',
+      compose(cfg) {
+        cfg.modeName = cfg.modeName === 'Phrygian' ? 'Lydian' : cfg.modeName;
+        cfg.leadTimbre = 'glass';
+        cfg.voicing = { seventh: true, ninth: true };
+        cfg.levels = { bell: 1.3, pad: 1.15, harm: 1.2 };
+        cfg.sound = { voice: 'bell', bright: 0.95, chorus: 0.8, layer: 2, density: 1.6, tilt: -0.3, grit: 0, sub: 0.35, drums: 0.95, sTone: 1.4 };
+      },
+      plan(plan) { for (const s of plan) { if (s.intensity >= 2) s.harm = true; s.halfTime = false; } },
+    },
+
+    static: {
+      label: 'Static', blurb: 'A transmission breaking up. Heavy crushing, folded voices, hats like interference.',
+      compose(cfg, R) {
+        cfg.bpm = Math.round(cfg.bpm * (R.chance(0.5) ? 0.9 : 1.15));
+        cfg.levels = { drums: 1.1, pad: 0.75, lead: 1.05 };
+        cfg.sound = { grit: 0.9, bits: R.pick([3, 4, 5]), hold: R.pick([3, 5, 7]), fold: 0.6, drive: 0.7, layer: 3, density: 1.8, breath: 0.6, hTone: 1.8, hDecay: 0.5, drumY: 0.9 };
+      },
+      plan(plan) { for (const s of plan) { if (s.intensity > 0) s.intensity = Math.max(2, s.intensity); s.density = 1; } },
+    },
+
+    vigil: {
+      label: 'Vigil', blurb: 'Held and watchful. Bowed voices, almost no percussion, one long breath.',
+      compose(cfg) {
+        cfg.bpm = Math.round(cfg.bpm * 0.82);
+        cfg.levels = { drums: 0.25, pad: 1.2, harm: 1.25, drone: 1.2 };
+        cfg.sound = { voice: 'bow', bright: 0.45, chorus: 0.7, sweep: 0.3, drift: 0.25, sub: 0.5, grit: 0, echo: 0.6, drums: 0.4, hDecay: 1.4 };
+      },
+      plan(plan) {
+        for (const s of plan) { s.intensity = Math.min(1, s.intensity); s.drone = true; s.halfTime = false; }
+      },
     },
   };
 

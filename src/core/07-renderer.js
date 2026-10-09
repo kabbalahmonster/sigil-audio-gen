@@ -47,12 +47,19 @@ class Renderer {
     }));
 
     this.last = performance.now() / 1000;
+        /** 0 full, 1 reduced, 2 minimal. The profiler's budget drives it. */
+        this.quality = 0;
+        Hooks.on('budget', (level) => { this.quality = level; });
     this.resize(true);
     addEventListener('resize', () => this.resize(false));
   }
 
   resize(first) {
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);  // cap at 2: 3× costs more than it shows
+        // Cap the backing store. Past about 1.6 million pixels, a software
+    // compositor spends more time filling than we spend deciding what to fill.
+    const want = Math.min(window.devicePixelRatio || 1, 2);
+    const px = innerWidth * innerHeight * want * want;
+    this.dpr = px > 1.6e6 ? want * Math.sqrt(1.6e6 / px) : want;
     this.w = innerWidth; this.h = innerHeight;
     this.cv.width = Math.round(this.w * this.dpr);
     this.cv.height = Math.round(this.h * this.dpr);
@@ -70,20 +77,27 @@ class Renderer {
   /* ── §7.1 Primitives ───────────────────────────────────────────────── */
 
   /**
-   * Draw a polyline three times — wide and faint, medium, then hairline — under
-   * 'lighter' compositing. The result reads as glowing ink at a fraction of the
-   * cost of shadowBlur or a real blur filter.
+   * Ink that glows. Three strokes at 7×, 2.6× and 1× width.
+   *
+   * The widest pass is by far the most expensive thing we rasterise, so the
+   * quality level (set by the profiler's budget) drops passes rather than
+   * detail: level 1 keeps two, level 2 keeps one. On a GPU you will never see
+   * level 1 or 2; on a software compositor it is the difference between 15 and
+   * 60 frames a second.
    */
   strokeGlow(pts, col, alpha, width) {
     if (pts.length < 4) return;
     const g = this.g, p = new Path2D();
     p.moveTo(pts[0], pts[1]);
     for (let i = 2; i < pts.length; i += 2) p.lineTo(pts[i], pts[i + 1]);
-
-    g.lineCap = 'round'; g.lineJoin = 'round';
-    g.strokeStyle = rgba(col, alpha * 0.07); g.lineWidth = width * 7;   g.stroke(p);
-    g.strokeStyle = rgba(col, alpha * 0.2);  g.lineWidth = width * 2.6; g.stroke(p);
-    g.strokeStyle = rgba(col, alpha);        g.lineWidth = width;       g.stroke(p);
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    const q = this.quality | 0;
+    if (q === 0) { g.strokeStyle = rgba(col, alpha * 0.07); g.lineWidth = width * 7; g.stroke(p); }
+    if (q <= 1) { g.strokeStyle = rgba(col, alpha * 0.2); g.lineWidth = width * 2.6; g.stroke(p); }
+    g.strokeStyle = rgba(col, q >= 2 ? Math.min(1, alpha * 1.25) : alpha);
+    g.lineWidth = width;
+    g.stroke(p);
   }
 
   circle(x, y, r, col, a, fill = false, lw = 1) {
@@ -203,14 +217,11 @@ class Renderer {
     g.globalCompositeOperation = 'source-over';
     g.globalAlpha = 1;
 
-    g.fillStyle = this.pal.bg;
-    g.fillRect(0, 0, w, h);
-
-    const vg = g.createRadialGradient(F.cx, F.cy, F.R * 0.1, F.cx, F.cy, Math.max(w, h) * 0.75);
-    vg.addColorStop(0, rgba(this.pal.accent, 0.045));
-    vg.addColorStop(0.45, 'rgba(0,0,0,0)');
-    vg.addColorStop(1, 'rgba(0,0,0,0.62)');
-    g.fillStyle = vg; g.fillRect(0, 0, w, h);
+    // The ground and vignette never change between frames. Rasterising a
+    // full-screen radial gradient every frame is the single most expensive
+    // thing we were doing on a software compositor, so cache it and blit.
+    this.paintGround(w, h, F);
+    g.drawImage(this.groundCv, 0, 0, w, h);
 
     g.globalCompositeOperation = 'lighter';   // everything from here glows
 
@@ -245,6 +256,33 @@ class Renderer {
       g.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
     }
   }
+
+    /**
+   * Build (or rebuild) the cached ground: background colour plus vignette.
+   * Rebuilt only when the size, palette or frame centre moves meaningfully.
+   */
+    paintGround(w, h, F) {
+      const key = `${w}x${h}|${this.pal.name}|${Math.round(F.cx)},${Math.round(F.cy)},${Math.round(F.R)}`;
+      if (this.groundKey === key) return;
+      this.groundKey = key;
+      if (!this.groundCv) this.groundCv = document.createElement('canvas');
+      const cv = this.groundCv;
+      // Half resolution is invisible for a soft gradient and a quarter of the fill cost.
+      cv.width = Math.max(2, Math.round(w / 2));
+      cv.height = Math.max(2, Math.round(h / 2));
+      const g = cv.getContext('2d');
+      const sx = cv.width / w, sy = cv.height / h;
+      g.setTransform(sx, 0, 0, sy, 0, 0);
+      g.fillStyle = this.pal.bg;
+      g.fillRect(0, 0, w, h);
+      const vg = g.createRadialGradient(F.cx, F.cy, F.R * 0.1, F.cx, F.cy, Math.max(w, h) * 0.75);
+      vg.addColorStop(0, rgba(this.pal.accent, 0.045));
+      vg.addColorStop(0.45, 'rgba(0,0,0,0)');
+      vg.addColorStop(1, 'rgba(0,0,0,0.62)');
+      g.fillStyle = vg;
+      g.fillRect(0, 0, w, h);
+      g.setTransform(1, 0, 0, 1, 0, 0);
+    }
 
   /** Reduction: the seal's own wheel fades in and each chimed letter extends the path. */
   drawReducing(app, now) {

@@ -252,6 +252,39 @@ const Moods = (() => {
       plan(plan) {
         for (const s of plan) { s.intensity = Math.min(1, s.intensity); s.drone = true; s.halfTime = false; }
       },
+    },nocturne: {
+      label: 'Nocturne', blurb: 'Dorian and unhurried: reed lead, sparse drums, a long bridge.',
+      compose(cfg) {
+        cfg.modeName = 'Dorian'; cfg.bpm = Math.round(cfg.bpm * 0.85); cfg.leadTimbre = 'reed';
+        cfg.levels = { drums: 0.6, pad: 1.1 };
+      },
+      plan(plan) {
+        for (const s of plan) { if (s.id === 'bridge') s.halfTime = true; if (s.intensity > 2) s.intensity = 2; }
+      },
+    },
+    ember: {
+      label: 'Ember', blurb: 'Phrygian heat: plucked strings, pendulum arpeggios, a rising drone.',
+      compose(cfg) {
+        cfg.modeName = 'Phrygian'; cfg.bpm = Math.round(cfg.bpm * 1.05); cfg.leadTimbre = 'koto';
+        cfg.P.arp = 'pendulum'; cfg.levels = { drone: 1.2, arp: 1.1 };
+      },
+      plan(plan) { for (const s of plan) { s.drone = true; if (s.arp) s.arp = 'light'; } },
+    },
+    tidewater: {
+      label: 'Tidewater', blurb: 'Lydian and wide: glass bells, a swelling sub-bass, constant drone.',
+      compose(cfg) {
+        cfg.modeName = 'Lydian'; cfg.bpm = Math.round(cfg.bpm * 0.8); cfg.leadTimbre = 'glass';
+        cfg.levels = { bass: 1.1, drone: 1.3, drums: 0.5 };
+      },
+      plan(plan) { for (const s of plan) { s.drone = true; s.halfTime = s.intensity > 0; } },
+    },
+    sanctum: {
+      label: 'Sanctum', blurb: 'Aeolian stillness: bells and breath, no arpeggios, almost no drums.',
+      compose(cfg) {
+        cfg.modeName = 'Aeolian'; cfg.bpm = Math.round(cfg.bpm * 0.65); cfg.leadTimbre = 'glass';
+        cfg.levels = { drums: 0, arp: 0, bass: 0.6 };
+      },
+      plan(plan) { for (const s of plan) { s.intensity = Math.min(1, s.intensity); s.arp = null; s.density = 0; } },
     },
   };
 

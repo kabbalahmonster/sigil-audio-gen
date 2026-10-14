@@ -85,6 +85,7 @@ const DrumEngine = (() => {
   /* ── Routing ─────────────────────────────────────────────────────────── */
 
   function route(eng) {
+    if (eng.isDSP) return;
     const ctx = eng.ctx, bus = eng.buses && eng.buses.drums;
     if (!bus) return;
 
@@ -395,7 +396,7 @@ const DrumEngine = (() => {
   Hooks.on('song', refresh);
   UI.whenReady(refresh);
 
-  return { chordAt, rootAt };
+  return { chordAt, rootAt, settings: S };
 })();
 
 if (typeof window !== 'undefined') window.DrumEngine = DrumEngine;

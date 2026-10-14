@@ -56,12 +56,12 @@ const RenderPlus = (() => {
   }
 
   /** Render `passes` passes, each with its own spec, and stitch them together. */
-  async function renderEvolved(song, sr, onProgress) {
+  async function renderEvolved(song, sr, onProgress, levels){
     const out = [];
     for (let p = 0; p < S.passes; p++) {
       Sound.setRenderSpec(specForPass(p));
       // eslint-disable-next-line no-await-in-loop
-      const r = await Render.renderSong(song, sr, (f) => onProgress((p + f) / S.passes), { loops: 1 });
+      const r = await Render.renderSong(song, sr, (f) => onProgress((p + f) / S.passes), { loops: 1, levels });
       out.push(r);
     }
     Sound.clearRenderSpec();
@@ -115,7 +115,7 @@ const RenderPlus = (() => {
         status.textContent = `Rendering ${label}…`;
         await frame();
         const r = mode === 'stems' && S.passes <= 1
-          ? await Render.renderSong(app.song, 44100, (f) => { bar.classList.remove('busy'); setBar((i + f * 0.9) / list.length); }, { loops: 1 })
+          ? await Render.renderSong(app.song, 44100, (f) => { bar.classList.remove('busy'); setBar((i + f * 0.9) / list.length); }, { loops: 1, levels })
           : await renderEvolved(app.song, 44100, (f) => { bar.classList.remove('busy'); setBar((i + f * 0.9) / list.length); });
         peakNormalise(r);
         const blob = await Render.encodeWav(r.L, r.R, r.sr, 24);
@@ -144,6 +144,11 @@ const RenderPlus = (() => {
     info.textContent = app.song
       ? `${S.passes} pass${S.passes === 1 ? '' : 'es'}, each a dream ${S.spread} further on. Stems are 24-bit WAV, one file per bus.`
       : 'Cast a sigil to render.';
+  }
+
+  function stemLevels(busKey) {
+    const cur = (app.engine && app.engine.levels) || {};
+    return Object.fromEntries(STEMS.map(([k]) => [k, k === busKey ? (cur[k] ?? 1) : 0]));
   }
 
   UI.section({ id: 'renderplus', title: 'Stems & Evolve', order: 46, build(el) {

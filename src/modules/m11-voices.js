@@ -276,6 +276,10 @@ const Sound = (() => {
     syncFrom(app.sigil);
     const spec = specFor();
     if (!spec.P || !spec.tables) return;
+    if (eng.isDSP) {                       // Engine v2: the DSP core plays; we just publish the patch
+      eng.sig = { P: spec.P, tables: spec.tables, cells: null };
+      return;
+    }
 
     if (!eng.sound) {
       eng.sound = true;
@@ -961,6 +965,7 @@ const Sound = (() => {
   function noteOn({ midi, deg = 0, vel = 0.8 }) {
     const eng = live();
     if (!eng || eng.ctx.state !== 'running') return null;
+    if (eng.isDSP) return eng.noteOn({ midi, deg, vel });
     const P = eng.sig.P, t = eng.ctx.currentTime, bus = playBus(eng);
     const ev = { type: 'lead', midi, deg, vel, timbre: 'glass', beat: 0 };
     const fn = VOICE_FN[pickVoice(P, ev)] || voiceWave;
@@ -1092,6 +1097,8 @@ const Sound = (() => {
       saveLibrary(); notify();
       return n;
     },
+    currentSpec: () => specFor(),                                             // honours setRenderSpec (Evolve)
+    vowelMemory: () => (prefs.vowelMemory && vowelMemory ? vowelMemory.slice() : null),
   };
 
   return api;

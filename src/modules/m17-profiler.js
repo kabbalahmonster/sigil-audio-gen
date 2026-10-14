@@ -80,11 +80,7 @@ const Profiler = (() => {
       nodeCount = 0;
       lastSecond = now;
 
-      // `draw` is JS time only; `frame` includes rasterisation, which on a
-      // software compositor is where the time actually goes.
-      if (st.frame > 34 || st.draw > 14) setLevel(2);
-      else if (st.frame > 22 || st.draw > 8) setLevel(1);
-      else if (st.frame < 18 && st.draw < 5) setLevel(0);
+
     }
     requestAnimationFrame(tick);
   }

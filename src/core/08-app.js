@@ -121,6 +121,10 @@ async function cast(opts = {}) {
     // The AudioContext must be created/resumed inside the user gesture.
     if (!app.engine) app.engine = new Engine();
     try { await app.engine.ctx.resume(); } catch { /* already running, or blocked */ }
+    if (!app.engine) app.engine = new Engine();
+    try { await app.engine.ctx.resume(); } catch { /* already running, or blocked */ }
+    try { await app.engine.ready; }                                   // NEW: worklet must be loaded
+    catch (e) { app.engine = null; flashErr('The audio engine could not start: ' + e.message); return; }
 
     if (app.mode === 'playing') { app.engine.stop(0.6); Hooks.emit('stop', 'recast'); }
 
@@ -551,15 +555,5 @@ const SigilCore = {
    ─────────────────────────────────────────────────────────────────────────── */
    (function boot() {
     setTimeout(() => $('#desire').focus({ preventScroll: true }), 900);
-  
-    let frameErrorShown = false;
-    (function loop() {
-      try {
-        renderer.draw(app);
-        updateHUD();
-      } catch (e) {
-        if (!frameErrorShown) { frameErrorShown = true; console.error('[frame]', e); }
-      }
-      requestAnimationFrame(loop);
-    })();
+    Stage.start();          // the frame loop, visual clock and quality governor live in 06c
   })();

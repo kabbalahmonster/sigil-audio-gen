@@ -50,19 +50,28 @@ class Renderer {
         /** 0 full, 1 reduced, 2 minimal. The profiler's budget drives it. */
         this.quality = 0;
         Hooks.on('budget', (level) => { this.quality = level; });
-    this.resize(true);
+        this.cv = canvas;
+        // alpha:false: every frame starts by painting the opaque ground, so the compositor
+        // can skip blending this canvas with the page. A free win on software compositing.
+        this.g = canvas.getContext('2d', { alpha: false });
+        this.renderScale = 1;        // set by Stage's governor (1 … 0.5)
+        this.glyphs = new Map();     // letter sprites (glyph())
+        this._pen = null;            // pen-glow sprite (penSprite())
+        this.resize(true);
     addEventListener('resize', () => this.resize(false));
   }
 
   resize(first) {
-        // Cap the backing store. Past about 1.6 million pixels, a software
-    // compositor spends more time filling than we spend deciding what to fill.
     const want = Math.min(window.devicePixelRatio || 1, 2);
     const px = innerWidth * innerHeight * want * want;
-    this.dpr = px > 1.6e6 ? want * Math.sqrt(1.6e6 / px) : want;
+    const base = px > 1.6e6 ? want * Math.sqrt(1.6e6 / px) : want;
+    this.dpr = base * (this.renderScale || 1);        // CSS keeps the canvas full-size; the GPU/compositor upscales
     this.w = innerWidth; this.h = innerHeight;
-    this.cv.width = Math.round(this.w * this.dpr);
-    this.cv.height = Math.round(this.h * this.dpr);
+    this.cv.width = Math.max(1, Math.round(this.w * this.dpr));
+    this.cv.height = Math.max(1, Math.round(this.h * this.dpr));
+    this.groundKey = null;
+    if (this.glyphs) this.glyphs.clear();
+    this._pen = null;
     if (first) Object.assign(this.F, this.targetFrame(false));
   }
 
@@ -123,41 +132,67 @@ class Renderer {
    */
   drawWheel(F, letters, T, o) {
     const g = this.g, L = this.pal.line, A = this.pal.accent, a = o.alpha ?? 1;
-
-    this.circle(F.cx, F.cy, F.R, L, (0.3 + 0.35 * (o.kick || 0)) * a);  // pulses with the kick
+    this.circle(F.cx, F.cy, F.R, L, (0.3 + 0.35 * (o.kick || 0)) * a);
     this.circle(F.cx, F.cy, F.R * 1.045, L, 0.14 * a);
-
-    g.setLineDash([1.5, 7]);
-    RINGS.forEach((r) => this.circle(F.cx, F.cy, F.R * r, L, 0.08 * a));
-    g.setLineDash([]);
-
-    g.beginPath();
-    for (let j = 0; j < 3; j++) {
-      const [x, y] = polar(j * 7, 1, ID_T, F);
-      j ? g.lineTo(x, y) : g.moveTo(x, y);
+    if (this.quality < 2) {                              // dashed arcs are costly in software raster
+      g.setLineDash([1.5, 7]);
+      RINGS.forEach((r) => this.circle(F.cx, F.cy, F.R * r, L, 0.08 * a));
+      g.setLineDash([]);
     }
+    g.beginPath();
+    for (let j = 0; j < 3; j++) { const [x, y] = polar(j * 7, 1, ID_T, F); j ? g.lineTo(x, y) : g.moveTo(x, y); }
     g.closePath();
     g.strokeStyle = rgba(L, 0.055 * a); g.lineWidth = 1; g.stroke();
-
-    const fs = Math.max(10, F.R * 0.062);
-    g.font = `${fs}px ${SERIF}`;
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-
+    g.beginPath();                                       // 21 ticks, ONE stroke call
     for (let s = 0; s < SLOTS; s++) {
       const [x0, y0] = polar(s, 1, T, F), [x1, y1] = polar(s, 1.045, T, F);
-      g.strokeStyle = rgba(L, 0.28 * a); g.lineWidth = 1;
-      g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
-
-      const letter = letters[s];
-      const inS = o.set && o.set.has(letter);       // a letter of this sigil
-      const cur = o.current === letter;             // the letter now sounding
-      const [lx, ly] = polar(s, 1.15, T, F);
-
-      if (cur) { g.shadowColor = rgba(A, 0.9); g.shadowBlur = 14; }
-      g.fillStyle = cur ? rgba(A, a) : rgba(L, (inS ? 0.62 : 0.16) * a);
-      g.fillText(letter, lx, ly);
-      if (cur) g.shadowBlur = 0;
+      g.moveTo(x0, y0); g.lineTo(x1, y1);
     }
+    g.strokeStyle = rgba(L, 0.28 * a); g.lineWidth = 1; g.stroke();
+    const px = Math.max(10, F.R * 0.062);                // letters: cached sprites, no per-frame shadowBlur
+    for (let s = 0; s < SLOTS; s++) {
+      const letter = letters[s], cur = o.current === letter, inS = o.set && o.set.has(letter);
+      const [lx, ly] = polar(s, 1.15, T, F);
+      const sp = this.glyph(letter, cur ? A : L, cur, px), w = sp.w * (px / sp.px);
+      g.globalAlpha = clamp((cur ? 1 : inS ? 0.62 : 0.16) * a, 0, 1);
+      g.drawImage(sp.cv, lx - w / 2, ly - w / 2, w, w);
+    }
+    g.globalAlpha = 1;
+  }
+  
+  /** A letter rendered once (per colour, glow and quarter-octave size) and reused as an image. */
+  glyph(letter, col, glow, px) {
+    const size = Math.pow(2, Math.ceil(Math.log2(px) * 4) / 4);
+    const key = `${letter}|${col}|${glow ? 1 : 0}|${size}|${this.dpr}`;
+    let sp = this.glyphs.get(key);
+    if (sp) return sp;
+    if (this.glyphs.size > 300) this.glyphs.clear();
+    const pad = glow ? size * 0.9 : size * 0.2, w = Math.ceil(size * 1.3 + pad * 2), k = this.dpr;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = Math.max(1, Math.ceil(w * k));
+    const c = cv.getContext('2d');
+    c.scale(k, k);
+    c.font = `${size}px ${SERIF}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
+    if (glow) { c.shadowColor = rgba(col, 0.9); c.shadowBlur = 14 * k; }
+    c.fillText(letter, w / 2, w / 2);
+    sp = { cv, w, px: size };
+    this.glyphs.set(key, sp);
+    return sp;
+  }
+  
+  /** The pen's radial glow, rendered once per accent colour. */
+  penSprite(col) {
+    const key = `${col}|${this.dpr}`;
+    if (this._pen && this._penKey === key) return this._pen;
+    const k = this.dpr, cv = document.createElement('canvas');
+    cv.width = cv.height = Math.ceil(32 * k);
+    const c = cv.getContext('2d'), r = 16 * k;
+    const gr = c.createRadialGradient(r, r, 0, r, r, r);
+    gr.addColorStop(0, rgba(col, 0.55)); gr.addColorStop(1, rgba(col, 0));
+    c.fillStyle = gr; c.fillRect(0, 0, cv.width, cv.height);
+    this._pen = cv; this._penKey = key;
+    return cv;
   }
 
   /** Euclidean rhythms drawn as polygons at the hub, with a rotating step marker. */
@@ -225,12 +260,18 @@ class Renderer {
 
     g.globalCompositeOperation = 'lighter';   // everything from here glows
 
-    for (const m of this.motes) {
+    const ml = this.pal.line, step = this.quality >= 2 ? 2 : 1;
+    g.fillStyle = `rgb(${ml[0]},${ml[1]},${ml[2]})`;
+    for (let i = 0; i < this.motes.length; i++) {
+      const m = this.motes[i];
       m.x = mod(m.x + m.vx * dt, 1);
       m.y = mod(m.y + m.vy * dt, 1);
       m.ph += dt * 0.7;
-      this.circle(m.x * w, m.y * h, m.s, this.pal.line, 0.05 + 0.05 * Math.sin(m.ph), true);
+      if (i % step) continue;
+      g.globalAlpha = Math.max(0, 0.05 + 0.05 * Math.sin(m.ph));
+      g.fillRect(m.x * w - m.s, m.y * h - m.s, m.s * 2, m.s * 2);
     }
+    g.globalAlpha = 1;
 
     if (app.mode === 'idle') {
       F.base = 0;
@@ -378,11 +419,7 @@ class Renderer {
     // The pen: a radial glow, a white-hot tip, and a trail of sparks.
     const px = pts[pts.length - 2], py = pts[pts.length - 1];
     const frac = prog - Math.floor(prog);
-    const gr = this.g.createRadialGradient(px, py, 0, px, py, 16);
-    gr.addColorStop(0, rgba(A, 0.55));
-    gr.addColorStop(1, rgba(A, 0));
-    this.g.fillStyle = gr;
-    this.g.fillRect(px - 16, py - 16, 32, 32);
+    this.g.drawImage(this.penSprite(A), px - 16, py - 16, 32, 32);
     this.circle(px, py, 2.2, [255, 250, 240], 0.95, true);
 
     if (frac > 0.02 && frac < 0.98 && Math.random() < 0.8) {

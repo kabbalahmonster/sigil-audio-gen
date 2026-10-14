@@ -4,6 +4,7 @@
     "scripts": {
       "golden": "node tests/golden.mjs",
       "golden:update": "node tests/golden.mjs --update",
-      "check": "find src -name '*.js' -exec node --check {} \\;"
+      "check": "find src -name '*.js' -exec node --check {} \\;",
+      "bench": "node tests/dsp-bench.mjs"
     }
   }

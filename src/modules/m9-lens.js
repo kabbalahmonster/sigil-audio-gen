@@ -87,11 +87,7 @@ const LiveLens = (() => {
     }
   }
 
-  Engine.claim('play', 'M9 Live Lens');
-  const _play = Engine.prototype.play;
-  Engine.prototype.play = function (ev, t) {
-    return _play.call(this, this === app.engine && active() ? map(ev, this.song) : ev, t);
-  };
+
 
   Hooks.on('viewT', (T) => {
     const u = view();
@@ -135,6 +131,7 @@ const LiveLens = (() => {
 
   let lastText = '';
   function sync() {
+    Hooks.emit('lens', { m, k }); 
     const on = m !== 1 || mod(k, SLOTS) !== 0, t = on ? describe() : '';
     badge.hidden = !on;
     badge.querySelector('.lens-text').textContent = t ? `lens · ${t}` : '';

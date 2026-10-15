@@ -30,11 +30,7 @@ const RenderPlus = (() => {
   let activeStem = null;   // null = full mix
   let busy = false, bar, status, evolveBtn, stemBtn, info;
 
-  /** Silence every bus except the active stem. Runs last, so nothing overrides it. */
-  Hooks.on('buses', (buses) => {
-    if (!activeStem) return;
-    for (const k of Object.keys(buses)) if (k !== activeStem) buses[k].gain.value = 0;
-  }, 100);
+
 
   const frame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
   const setBar = (f) => (bar.firstChild.style.width = `${Math.round(clamp(f, 0, 1) * 100)}%`);
@@ -61,7 +57,7 @@ const RenderPlus = (() => {
     for (let p = 0; p < S.passes; p++) {
       Sound.setRenderSpec(specForPass(p));
       // eslint-disable-next-line no-await-in-loop
-      const r = await Render.renderSong(song, sr, (f) => onProgress((p + f) / S.passes), { loops: 1 });
+      const r = await Render.renderSong(song, sr, (f) => onProgress((p + f) / S.passes), { loops: 1, solo: activeStem });
       out.push(r);
     }
     Sound.clearRenderSpec();
@@ -115,7 +111,7 @@ const RenderPlus = (() => {
         status.textContent = `Rendering ${label}…`;
         await frame();
         const r = mode === 'stems' && S.passes <= 1
-          ? await Render.renderSong(app.song, 44100, (f) => { bar.classList.remove('busy'); setBar((i + f * 0.9) / list.length); }, { loops: 1 })
+          ? await Render.renderSong(app.song, 44100, (f) => { bar.classList.remove('busy'); setBar((i + f * 0.9) / list.length); }, { loops: 1, solo: activeStem })
           : await renderEvolved(app.song, 44100, (f) => { bar.classList.remove('busy'); setBar((i + f * 0.9) / list.length); });
         peakNormalise(r);
         const blob = await Render.encodeWav(r.L, r.R, r.sr, 24);

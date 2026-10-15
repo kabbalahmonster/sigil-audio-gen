@@ -2,152 +2,66 @@
 /* ══════════════════════════════════════════════════════════════════════════
    m17 · PROFILER — where the milliseconds go
    --------------------------------------------------------------------------
-   Measures, with almost no cost of its own:
-     frame   the real interval between animation frames
-     draw    time inside renderer.draw(), the whole visual frame
-     visual  time inside the 'drawPlaying' hook, i.e. the sound visuals
-     nodes   Web Audio nodes created per second (the synthesis cost proxy)
-     gap     the worst scheduler gap, read from the AudioGuard
-
-   It also runs the BUDGET: when drawing exceeds its share of a frame, it emits
-   Hooks 'budget' with a level, and the visuals degrade themselves. The audio
-   scheduler gets the frame back before it starves.
-
-   Profiler.report() copies a full diagnostic to the clipboard. If anything is
-   still stalling, send me that.
+   Reads two sources and adds no instrumentation of its own:
+     Stage.stats     frame interval, draw time, governor level and scale
+     engine.stats    kernel load (share of its deadline used), voices, peak,
+                     per-bus meters, stolen voices, faults
+   Profiler.report() copies a full diagnostic to the clipboard.
    ══════════════════════════════════════════════════════════════════════════ */
-
 const Profiler = (() => {
   'use strict';
   const { h } = UI;
 
-  const st = {
-    frame: 16, draw: 0, visual: 0,
-    nodes: 0, nodesPerSec: 0,
-    level: 0, worstFrame: 0,
-  };
-  let nodeCount = 0, lastSecond = performance.now(), lastFrame = 0;
-
-  /* ── Node counting: wrap the factory methods once, on the prototype ──── */
-  const B = window.BaseAudioContext && BaseAudioContext.prototype;
-  if (B) {
-    for (const k of ['createOscillator', 'createGain', 'createBiquadFilter', 'createBufferSource',
-                     'createWaveShaper', 'createStereoPanner', 'createDelay', 'createPeriodicWave',
-                     'createConvolver', 'createDynamicsCompressor', 'createAnalyser']) {
-      const orig = B[k];
-      if (!orig) continue;
-      B[k] = function (...a) { nodeCount++; return orig.apply(this, a); };
-    }
-  }
-
-  /* ── Time the whole visual frame ─────────────────────────────────────── */
-  const origDraw = renderer.draw.bind(renderer);
-  renderer.draw = function (a) {
-    const t0 = performance.now();
-    origDraw(a);
-    st.draw = st.draw * 0.9 + (performance.now() - t0) * 0.1;
-  };
-
-  /* ── Time just the sound visuals ─────────────────────────────────────── */
-  const origEmit = Hooks.emit.bind(Hooks);
-  Hooks.emit = function (name, ...args) {
-    if (name !== 'drawPlaying') return origEmit(name, ...args);
-    const t0 = performance.now();
-    origEmit(name, ...args);
-    st.visual = st.visual * 0.9 + (performance.now() - t0) * 0.1;
-  };
-
-  /* ── Budget: keep drawing under a third of the frame ─────────────────── */
-  function setLevel(l) {
-    if (l === st.level) return;
-    st.level = l;
-    Hooks.emit('budget', l);
-    if (l > 0) console.info(`[profiler] budget level ${l}: draw ${st.draw.toFixed(1)} ms`);
-  }
-
-  function tick() {
-    const now = performance.now();
-    if (lastFrame) {
-      const dt = now - lastFrame;
-      st.frame = st.frame * 0.9 + Math.min(dt, 200) * 0.1;
-      if (dt > st.worstFrame) st.worstFrame = dt;
-    }
-    lastFrame = now;
-
-    if (now - lastSecond >= 1000) {
-      st.nodesPerSec = nodeCount;
-      st.nodes += nodeCount;
-      nodeCount = 0;
-      lastSecond = now;
-
-      // `draw` is JS time only; `frame` includes rasterisation, which on a
-      // software compositor is where the time actually goes.
-      if (st.frame > 34 || st.draw > 14) setLevel(2);
-      else if (st.frame > 22 || st.draw > 8) setLevel(1);
-      else if (st.frame < 18 && st.draw < 5) setLevel(0);
-    }
-    requestAnimationFrame(tick);
-  }
-  requestAnimationFrame(tick);
-
-  /* ── Diagnostic report ───────────────────────────────────────────────── */
   function report() {
-    const eng = app.engine;
-    const guard = typeof AudioGuard !== 'undefined' ? AudioGuard.stats() : null;
+    const eng = app.engine, s = Stage.stats;
     return {
       when: new Date().toISOString(),
       ua: navigator.userAgent,
       cores: navigator.hardwareConcurrency || null,
       dpr: window.devicePixelRatio,
-      canvas: [renderer.w, renderer.h, renderer.dpr],
-      frameMs: +st.frame.toFixed(2),
-      drawMs: +st.draw.toFixed(2),
-      visualMs: +st.visual.toFixed(2),
-      worstFrameMs: +st.worstFrame.toFixed(1),
-      nodesPerSec: st.nodesPerSec,
-      budgetLevel: st.level,
-      guard,
+      canvas: [renderer.w, renderer.h, +renderer.dpr.toFixed(3)],
+      stage: { frameMs: +s.frameMs.toFixed(2), drawMs: +s.drawMs.toFixed(2), worstMs: +s.worstMs.toFixed(1),
+               periodMs: +s.period.toFixed(2), level: s.level, scale: s.scale, quality: Stage.quality },
       audio: eng ? {
-        state: eng.ctx.state,
-        sampleRate: eng.ctx.sampleRate,
-        baseLatency: eng.ctx.baseLatency,
-        outputLatency: eng.ctx.outputLatency,
-        horizon: Engine.prototype.horizon,
-        hasWorklet: !!eng.sfx,
+        state: eng.ctx.state, sampleRate: eng.ctx.sampleRate,
+        baseLatency: eng.ctx.baseLatency, outputLatency: eng.ctx.outputLatency,
+        kernel: !!eng.node, error: eng.error ? String(eng.error) : null,
+        load: +eng.stats.load.toFixed(3), voices: eng.stats.voices, peak: +eng.stats.peak.toFixed(3),
+        stolen: eng.stats.stolen, faults: eng.stats.faults,
+        plan: eng.plan ? { events: eng.plan.count, tables: eng.plan.tables } : null,
       } : null,
-      sound: typeof Sound !== 'undefined' ? {
-        mode: Sound.mode, lite: Sound.lite, variant: Sound.state().variant,
-      } : null,
+      guard: typeof AudioGuard !== 'undefined' ? AudioGuard.stats() : null,
+      sound: typeof Sound !== 'undefined' ? { lite: Sound.lite, variant: Sound.state().variant } : null,
       visualStyle: Prefs.get('visual.mode', 'terrain'),
       mood: app.song && app.song.cfg ? app.song.cfg.mood : null,
       sigil: app.sigil ? app.sigil.reduced : null,
     };
   }
 
-  /* ── Panel ───────────────────────────────────────────────────────────── */
   let out, timer;
   const ms = (v) => `${v.toFixed(1)} ms`;
-
   function paint() {
     if (!out) return;
-    const fps = st.frame > 0 ? 1000 / st.frame : 0;
-    const g = typeof AudioGuard !== 'undefined' ? AudioGuard.stats() : { stalls: 0, stallTimes: 0, resumes: 0 };
+    const s = Stage.stats, e = app.engine && app.engine.stats;
     out.textContent =
-      `frame   ${ms(st.frame)}  (${fps.toFixed(0)} fps, worst ${st.worstFrame.toFixed(0)} ms)\n` +
-      `draw    ${ms(st.draw)}   of which visuals ${ms(st.visual)}\n` +
-      `nodes   ${st.nodesPerSec}/s\n` +
-      `budget  level ${st.level}\n` +
-      `audio   stalls ${g.stalls} (${g.stallTimes} recent) · resumes ${g.resumes} · horizon ${Engine.prototype.horizon}`;
+      `frame   ${ms(s.frameMs)}  (${(1000 / s.frameMs).toFixed(0)} fps, worst ${s.worstMs.toFixed(0)} ms)\n` +
+      `draw    ${ms(s.drawMs)}   quality ${s.level} · scale ${Math.round(s.scale * 100)}%\n` +
+      (e ? `kernel  ${(e.load * 100).toFixed(0)}% of deadline · ${e.voices} voices · peak ${e.peak.toFixed(2)}\n` +
+           `        stolen ${e.stolen} · faults ${e.faults}`
+         : 'kernel  not started');
   }
 
   UI.section({ id: 'perf', title: 'Performance', order: 95, build(el) {
     UI.css('.perf-out{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.7;white-space:pre;opacity:.8}');
     out = h('pre', { class: 'perf-out' });
     el.append(
-      UI.note('If the audio stutters, look here first. Anything above about 8 ms of draw time on a 60 Hz display is competing with the scheduler.'),
+      UI.note('Audio runs on its own thread, so slow frames can no longer interrupt it. Kernel load is the share of each audio deadline the synthesis uses; draw is the time spent painting a frame.'),
       out,
+      UI.select({ label: 'Visual quality', value: String(Stage.quality),
+        options: [['auto', 'Automatic'], ['0', 'Full'], ['1', 'Reduced'], ['2', 'Minimal']],
+        onChange: (v) => Stage.setQuality(v) }),
       h('div', { class: 'sgrow' },
-        UI.button('Reset worst', () => { st.worstFrame = 0; }),
+        UI.button('Reset worst', () => { Stage.stats.worstMs = 0; }),
         UI.button('Visuals off', () => SoundVisuals.setMode('none')),
         UI.button('Copy report', () => {
           const t = JSON.stringify(report(), null, 1);
@@ -159,7 +73,6 @@ const Profiler = (() => {
     paint();
   } });
 
-  return { stats: () => ({ ...st }), report };
+  return { stats: () => ({ ...Stage.stats }), report };
 })();
-
 if (typeof window !== 'undefined') window.Profiler = Profiler;

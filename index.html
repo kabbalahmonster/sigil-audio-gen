@@ -159,9 +159,15 @@
     <script src="src/core/04-theory.js"  onerror="SIGIL_FAIL(this)"></script>
     <script src="src/core/05-composer.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/core/05b-timbre.js" onerror="SIGIL_FAIL(this)"></script>
-    
-    <!-- Core: runtime layer -->
-    <script src="src/core/06-engine.js"   onerror="SIGIL_FAIL(this)"></script>
+
+    <!-- Engine layer: kernel (DSP), host, score compiler, frame engine -->
+    <script src="src/engine/sigil-kernel.js" onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/engine/sigil-engine.js" onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/engine/sigil-score.js"  onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/engine/sigil-stage.js"  onerror="SIGIL_FAIL(this)"></script>
+
+    <script src="src/core/07-renderer.js" onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/core/08-app.js"      onerror="SIGIL_FAIL(this)"></script>
     <script src="src/core/07-renderer.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/core/08-app.js"      onerror="SIGIL_FAIL(this)"></script>
     
@@ -190,8 +196,6 @@
     <script src="src/modules/m15-drum-engine.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m16-audio-guard.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m17-profiler.js" onerror="SIGIL_FAIL(this)"></script>
-    <script src="src/dsp/sigil-dsp.js"></script>
-    <script src="src/modules/m18-dsp-engine.js" onerror="SIGIL_FAIL(this)"></script>
     
     <!-- ═══════════════════════════════════════════════════════════════════════
          PREFLIGHT. Runs after everything above, even if some of it threw.
@@ -211,7 +215,10 @@
         ['src/core/04-theory.js',    ['MODES', 'MODE_NAMES', 'MODE_WEIGHTS', 'NOTE_NAMES', 'mtof', 'degToMidi', 'fold', 'euclid']],
         ['src/core/05-composer.js',  ['makePlan', 'allocate', 'buildPhrase', 'addPassing', 'harmonize', 'validChords', 'composeSong', 'sectionIndexAt', 'phraseIndexAt', 'penProgress', 'pulse', 'displayTransform']],
         ['src/core/05b-timbre.js',          ['SoundDesign']],
-        ['src/core/06-engine.js',    ['Engine']],
+        ['src/engine/sigil-kernel.js', ['SigilKernelFactory', 'SigilKernel']],
+        ['src/engine/sigil-engine.js', ['Engine']],
+        ['src/engine/sigil-score.js',  ['Score']],
+        ['src/engine/sigil-stage.js',  ['Stage']],
         ['src/core/07-renderer.js',  ['Renderer']],
         ['src/core/08-app.js',       ['app', 'renderer', 'hud', 'TIMBRE_NAMES', 'cast', 'forget', 'newDesire', 'toast', 'SigilCore']],
         ['src/ui/ui-kit.js',         ['UI']],
@@ -232,8 +239,6 @@
         ['src/modules/m15-drum-engine.js',   ['DrumEngine']],
         ['src/modules/m16-audio-guard.js', ['AudioGuard']],
         ['src/modules/m17-profiler.js', ['Profiler']],
-        ['src/dsp/sigil-dsp.js',            ['SigilDSP']],
-        ['src/modules/m18-dsp-engine.js',   ['DspEngine']],
         
       ];
     
@@ -259,15 +264,7 @@
       }
     
       // 3. Engine patch points that no module claimed (a module is absent or disabled).
-      try {
-        for (const [method, owner] of Object.entries(Engine.EXPECTED_CLAIMS)) {
-          if (Engine.claims[method] !== owner) {
-            problems.push({ file: owner, detail: `Engine.${method} was not claimed by "${owner}"` });
-          }
-        }
-      } catch (e) {
-        problems.push({ file: '06-engine.js', detail: 'patch registry unavailable: ' + e.message });
-      }
+
     
       const fileProtocol = location.protocol === 'file:';
     

@@ -61,7 +61,7 @@ const SoundUI = (() => {
 
   const knobs = {};
   const held = new Map();
-  let scope, cube, voiceSel, modeSel, liteBox, lensBox, vowBox, arcBox, verbBox, dreamLbl, keyBtn, freezeBtn, libList;
+  let scope, cube, voiceSel,  liteBox, lensBox, vowBox, arcBox, verbBox, dreamLbl, keyBtn, freezeBtn, libList;
 
   /* ── Knob ───────────────────────────────────────────────────────────── */
 
@@ -334,7 +334,7 @@ const SoundUI = (() => {
       const st = Sound.state();
       for (const d of KNOBS.concat(DRUM_KNOBS)) if (knobs[d.name]) knobs[d.name].set(st.P ? st.P[d.name] : d.min);
       voiceSel.input.value = st.P ? st.P.voice : 'auto';
-      modeSel.input.value = Sound.mode;
+      
       liteBox.input.checked = Sound.lite;
       lensBox.input.checked = Sound.lensWave;
       vowBox.input.checked = Sound.vowelMemoryOn;
@@ -403,9 +403,7 @@ const SoundUI = (() => {
 
     attachCube(cube);
 
-    modeSel = UI.select({ label: 'Engine', value: Sound.mode,
-      options: [['sigil', 'Sigil · cube & vox'], ['legacy', 'Legacy · original voices']],
-      onChange: (v) => Sound.setMode(v) });
+
     voiceSel = UI.select({ label: 'Lead voice', value: 'auto',
     options: [['auto', 'Auto · per timbre'], ['wave', 'Wavetable'], ['vox', 'Vox · formant'],
     ['fm', 'FM'], ['bow', 'Bow'], ['bell', 'Bell']],
@@ -433,7 +431,7 @@ const SoundUI = (() => {
         UI.button('◀ dream', () => Sound.dream(-1)), dreamLbl, UI.button('dream ▶', () => Sound.dream(1))),
       h('div', { class: 'sgrow' },
         UI.button('Mutate', () => Sound.mutate()), freezeBtn, UI.button('Reset knobs', () => Sound.reset())),
-      modeSel, voiceSel, liteBox, lensBox, vowBox,      modeSel, voiceSel, liteBox, lensBox, vowBox, arcBox, verbBox,
+       voiceSel, liteBox, lensBox, vowBox, arcBox, verbBox,
       h('div', { class: 'sgrow' }, keyBtn, UI.button('Copy patch code', () => copy(Sound.code()))),
       h('div', { class: 'snd-h' }, 'Patch library'),
       h('div', { class: 'sgrow' },

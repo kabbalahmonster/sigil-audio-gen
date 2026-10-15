@@ -41,19 +41,7 @@ const Mixer = (() => {
   let saveT;
   const save = () => { clearTimeout(saveT); saveT = setTimeout(() => Prefs.set('mixer', S), 300); };
 
-  /* ── Engine extension: tempo change that preserves musical position ──── */
-  Engine.claim('setTempo', 'M2 Mixer');
-  Engine.prototype.setTempo = function (bpm) {
-    if (!this.song || !(bpm > 0)) return;
-    const now = this.ctx.currentTime;
-    const r = (60 / bpm) / this.spb;
-    const scale = (t) => now + (t - now) * r;   // rescale time about "now"
 
-    this.anchor = scale(this.anchor);
-    if (this.reanchorAt) { this.prevAnchor = scale(this.prevAnchor); this.reanchorAt = scale(this.reanchorAt); }
-    this.spb = 60 / bpm;
-    this.delay.delayTime.setTargetAtTime(this.spb * 0.75, now, 0.15);
-  };
 
   /* ── Levels ────────────────────────────────────────────────────────── */
 

@@ -16,84 +16,7 @@
 const Form = (() => {
   'use strict';
   const { h } = UI;
-  // Declare the Engine methods this module replaces or wraps (see 06-engine.js §6.8).
-  Engine.claim('start', 'M4 Form');
-  Engine.claim('seek', 'M4 Form');
-  Engine.claim('pump', 'M4 Form');
-  Engine.claim('beatNow', 'M4 Form');
-  /** Binary search: index of the first event with beat ≥ b. */
-  function firstAt(events, b) {
-    let lo = 0, hi = events.length;
-    while (lo < hi) { const m = (lo + hi) >> 1; if (events[m].beat < b) lo = m + 1; else hi = m; }
-    return lo;
-  }
-
-  /* ── Transport overrides ───────────────────────────────────────────── */
-
-  const _start = Engine.prototype.start;
-  Engine.prototype.start = function (lead) { this.region = null; return _start.call(this, lead); };
-
-  const _seek = Engine.prototype.seek;
-  Engine.prototype.seek = function (beat) {
-    // Seeking outside the loop region cancels the loop.
-    if (this.region && (beat < this.region.start || beat >= this.region.end)) { this.region = null; sync(); }
-    _seek.call(this, beat);
-    this.reanchorAt = 0;
-  };
-
-    /** Seconds of audio booked ahead of the playhead. The audio guard widens this under load. */
-    Engine.prototype.horizon = 0.4;
-
-
-  /**
-   * REPLACEMENT for Engine.prototype.pump, with region looping and an adaptive
-   * horizon. The old 0.18 s lookahead was too tight: one long frame (a render,
-   * a GC, a panel redraw) would let the playhead pass a booked event, which is
-   * what the gaps were. 0.4 s of slack costs nothing and removes them.
-   */
-  Engine.prototype.pump = function () {
-    if (!this.running || !this.buses) return;
-
-    const c = this.ctx;
-    const horizon = c.currentTime + this.horizon * (document.hidden ? 5 : 1);
-    const total = this.song.total, totalSec = total * this.spb;
-
-    for (let guard = 0; guard < 6000; guard++) {
-      const reg = this.region, ev = this.events[this.ptr];
-
-      if (reg && (!ev || ev.beat >= reg.end)) {
-        const tEnd = this.anchor + (this.loopIndex * total + reg.end) * this.spb;
-        if (tEnd > horizon) break;
-        this.prevAnchor = this.anchor;
-        this.reanchorAt = tEnd;
-        this.anchor += (reg.end - reg.start) * this.spb;
-        this.ptr = firstAt(this.events, reg.start);
-        continue;
-      }
-
-      if (!ev) {
-        if (this.anchor + (this.loopIndex + 1) * totalSec > horizon) break;
-        this.loopIndex++; this.ptr = 0; continue;
-      }
-
-      const t = this.anchor + (this.loopIndex * total + ev.beat) * this.spb;
-      if (t > horizon) break;
-      // A late event is nudged forward rather than dropped, so a stall during
-      // a render causes a small smear instead of a silent bar.
-      if (t >= c.currentTime - 0.12) this.play(ev, Math.max(t, c.currentTime + 0.005));
-      this.ptr++;
-    }
-  };
-
-  /** REPLACEMENT for Engine.prototype.beatNow, honouring the pending re-anchor. */
-  Engine.prototype.beatNow = function () {
-    if (!this.song) return 0;
-    const now = this.ctx.currentTime - (this.ctx.outputLatency || this.ctx.baseLatency || 0);
-    const a = this.reanchorAt && now < this.reanchorAt ? this.prevAnchor : this.anchor;
-    const b = (now - a) / this.spb;
-    return b < 0 ? 0 : b % this.song.total;
-  };
-
+  
   /* ── Navigation ────────────────────────────────────────────────────── */
 
   const playing = () => app.mode === 'playing' && app.song && app.engine;
@@ -184,6 +107,7 @@ const Form = (() => {
   Hooks.on('section', (s, si) => {
     if (list) list.querySelectorAll('.f-row').forEach((r) => r.classList.toggle('cur', +r.dataset.si === si));
   });
+  Hooks.on('region', sync);
 
   // Shift-click the progress bar to loop that section. Capture phase +
   // stopImmediatePropagation so the core's plain seek handler never runs.

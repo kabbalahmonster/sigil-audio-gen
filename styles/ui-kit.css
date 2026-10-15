@@ -4,6 +4,8 @@
    so module panels are re-skinned by each desire along with the rest.
    ═══════════════════════════════════════════════════════════════════════════ */
 
+   
+
    .top-right { display: flex; gap: 4px; align-items: center; }
    #about { z-index: 10; }
    
@@ -123,3 +125,8 @@
      position: absolute !important; width: 1px; height: 1px;
      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
    }
+
+   /* Backdrop blur over an animating canvas is re-filtered every frame. The Stage adds
+   .lowfx as soon as frames are tight; the drawer goes opaque instead. */
+    body.lowfx #drawer, body.lowfx #about { backdrop-filter: none; -webkit-backdrop-filter: none; }
+    body.lowfx #drawer { background: rgba(6, 5, 5, .94); }

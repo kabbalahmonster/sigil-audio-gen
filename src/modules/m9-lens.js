@@ -87,11 +87,7 @@ const LiveLens = (() => {
     }
   }
 
-  Engine.claim('play', 'M9 Live Lens');
-  const _play = Engine.prototype.play;
-  Engine.prototype.play = function (ev, t) {
-    return _play.call(this, this === app.engine && active() ? map(ev, this.song) : ev, t);
-  };
+
 
   Hooks.on('viewT', (T) => {
     const u = view();
@@ -139,6 +135,7 @@ const LiveLens = (() => {
     badge.hidden = !on;
     badge.querySelector('.lens-text').textContent = t ? `lens · ${t}` : '';
     if (t !== lastText) { lastText = t; if (t) UI.announce(`Lens: ${t}`); }
+    if (app.engine && app.engine.song) app.engine.refresh();   // the lens changes what the notes are: recompile
   }
 
   /* ── Pointer interaction ───────────────────────────────────────────── */

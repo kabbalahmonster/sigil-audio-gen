@@ -127,7 +127,7 @@ async function cast(opts = {}) {
     const song = composeSong(sigil);
     Object.assign(app, { sigil, song, lit: 0, reduceStart: performance.now() / 1000 });
     applyPalette(sigil.palette);
-    if (typeof Sound !== 'undefined') await Sound.prepare(app.engine.ctx);
+    if (!(await app.engine.ready)) throw app.engine.error;
     app.engine.load(song);
 
     $('#invoke').classList.add('away');
@@ -288,7 +288,8 @@ function updateHUD() {
     hud.spans.forEach((sp) => sp.classList.toggle('cur', sp.textContent === letter));
   }
 
-  $('#progress .fill').style.transform = `scaleX(${beat / song.total})`;
+  const p = Math.round((beat / song.total) * 1000) / 1000;
+if (p !== hud.p) { hud.p = p; (hud.fill || (hud.fill = $('#progress .fill'))).style.transform = `scaleX(${p})`; }
 }
 
 /* ── §8.4 TRANSPORT CONTROLS ───────────────────────────────────────────── */
@@ -551,15 +552,8 @@ const SigilCore = {
    ─────────────────────────────────────────────────────────────────────────── */
    (function boot() {
     setTimeout(() => $('#desire').focus({ preventScroll: true }), 900);
-  
-    let frameErrorShown = false;
-    (function loop() {
-      try {
-        renderer.draw(app);
-        updateHUD();
-      } catch (e) {
-        if (!frameErrorShown) { frameErrorShown = true; console.error('[frame]', e); }
-      }
-      requestAnimationFrame(loop);
-    })();
+    // The Stage owns the one frame loop. Layers are isolated: a throw in one is logged once and the rest keep drawing.
+    Stage.layer({ id: 'sigil', z: 0, draw: (clock) => renderer.draw(app, clock) });
+    Stage.layer({ id: 'hud', z: 100, draw: updateHUD });
+    Stage.start();
   })();

@@ -713,6 +713,26 @@ function SigilKernelFactory(scope) {
       return i;
     }
   }
+  class PluckVoice extends Voice {
+    constructor(sr) { super(sr); this.env = new Env(); this.p = 0; this.inc = 0; }
+    init(K, e, o, spb) {
+      const X = PluckVoice.X, P = o + EV.P;
+      this.inc = inc01(e[o + EV.FREQ], this.sr); this.p = 0;
+      this.env.start(this.sr, 0.002, e[P + X.decay], 0, 0.05, e[P + X.peak] * e[o + EV.VEL]);
+    }
+    release() { this.env.release(); }
+    render(out, from, to) {
+      let p = this.p, i = from;
+      for (; i < to; i++) {
+        p += this.inc; if (p >= 1) p -= 1;
+        out[i] = SINT[(p * SIN_N) | 0] * this.env.next();
+        if (this.env.stage === 0) { this.on = false; i++; break; }
+      }
+      this.p = p;
+      return i;
+    }
+  }
+  define('pluck', PluckVoice, 12, { decay: 0.2, peak: 0.3 });
 
   /**
    * Noise: one filtered burst. Covers shaker, crash wash, swell, quill tick and fire.

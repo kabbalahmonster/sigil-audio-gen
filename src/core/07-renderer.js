@@ -372,7 +372,9 @@ class Renderer {
     const lines = [];   // everything burnable, collected for burn()
 
     this.drawWheel(F, sig.wheel, T, { alpha: 1, kick: kp, set: sig.letterSet, current: cur.letter });
-    if (sec.intensity >= 2) this.drawRhythm(F, song.P, beat, kp, 1);
+    // The polygons of the rhythm actually being played: a section's own (05c turns them with
+    // the sigil), or the song's when the composer's bars are in use.
+    if (sec.intensity >= 2) this.drawRhythm(F, sec.rhythm || song.P, beat, kp, 1);
 
     /* Ghosts: one faint copy of the path for every DISTINCT transformation
        already performed, so the seal accumulates its own history. */

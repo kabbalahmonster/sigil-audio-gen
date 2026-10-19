@@ -1,10 +1,12 @@
 {
-    "name": "sigil",
-    "private": true,
-    "scripts": {
-      "golden": "node tests/golden.mjs",
-      "golden:update": "node tests/golden.mjs --update",
-      "check": "find src -name '*.js' -exec node --check {} \\;",
-      "bench": "node tests/dsp-bench.mjs"
-    }
+  "name": "sigil",
+  "private": true,
+  "scripts": {
+    "golden": "node tests/golden.mjs",
+    "golden:update": "node tests/golden.mjs --update",
+    "check": "find src -name '*.js' -exec node --check {} \\;",
+    "bench": "node tests/dsp-bench.mjs",
+    "drums": "node tests/drums.spec.mjs",
+    "drums:quick": "node tests/drums.spec.mjs --quick"
   }
+}

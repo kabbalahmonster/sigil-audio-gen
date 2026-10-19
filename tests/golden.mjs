@@ -22,6 +22,7 @@
      'src/core/04-theory.js',
      'src/core/05-composer.js',
      'src/core/05b-timbre.js',
+     'src/core/05c-groove.js',
      'tests/golden-core.js',
    ];
    

@@ -119,6 +119,21 @@ emission = fit to the bar's notes (weighted by duration and metric strength),
 transition = preference for root motion by fourths/fifths, plus cadence bonuses and a
 small hash-derived per-chord "personality".
 
+**The kit** reads the sigil too (`05c-groove.js`, played by M15). It is not an
+accompaniment laid under the melody but a second reading of the same figure:
+
+| The sigil | The kit |
+|---|---|
+| The Euclidean polygons at the hub | The kick, hat and ghost patterns |
+| The section's transform (turn, mirror, retrace) | The same transform, applied to those polygons. A turned kick is re-anchored on the downbeat, so turning it selects another *mode* of the same necklace |
+| The letters, cycling one per sixteenth | Each hit's colour (its consonant class) and weight (its ring: outer letters are struck harder). A sigil of *n* letters phrases in *n* against 16, so unless *n* divides 16 the accents drift from bar to bar |
+| The letters, in the section's order | The **fills**: at the end of a phrase the kit speaks the sigil. `B P` kick · `T K Q` snare (`F V H` a soft stroke) · `D G` and the liquids toms, pitched by ring · nasals the floor tom · sibilants hats. Backwards in the Reversal, inverted in the Reflection |
+| Where the rite is going | How much is said: a rise is built into, a fall is let go of, the Banishing dissolves |
+
+The toms are tuned to the root, fifth and octave of the chord they land on, so a fill
+is always in key. The composer's original bars (one bar per section, repeated) remain
+available as **Classic** in the Drum Engine panel, and are reproduced exactly.
+
 ---
 
 ## Features
@@ -144,6 +159,7 @@ small hash-derived per-chord "personality".
 | **M8 Fusion** | Up to three desires on one wheel as counterpoint; partners weigh into harmony at passing-tone strength |
 | **M9 Live Lens** | Drag the wheel to transpose, double-tap to mirror — in real time, affecting melody, harmony, bass and arpeggios, and propagating to MIDI/audio export |
 | **M10 Hours & Moon** | Planetary hours (true sunrise equation if you share location), moon phase, optional attunement of mode/timbre/tempo/palette to the hour, and timed charging sessions |
+| **M15 Drum Engine** | How the kit plays: Sigil or Classic patterns, a hundred grooves per sigil (`◀ groove ▶`; the number travels in the share link), Variation / Fills / Ghosts / Humanise / Dynamics, sidechain ducking, and a bypass for the kit's own FX chain. The chain itself (drive → punch/body transient shaper → crusher → filter, with parallel compression, a room and a tempo-synced ping-pong echo beside the dry hit) runs in the DSP worklet; its `D·` knobs are in Sound & Patch, dealt per sigil and saved with the patch |
 
 ---
 
@@ -165,6 +181,7 @@ Press **?** for the in-app sheet.
 | `←` `→` | Lens: turn one step |
 | `M` | Lens: mirror |
 | `0` | Lens: reset |
+| `,` `.` | Previous / next groove |
 
 ---
 
@@ -198,6 +215,7 @@ index.html
 | `03-geometry.js` | §3 | `buildSigil`, wheel shuffle, ring assignment, Y collision repair, `polar`, `nodeXY`, `segmentPoints`, `tracePoints`, `polyLength`, `PALETTES` |
 | `04-theory.js` | §4 | `MODES`, `degToMidi`, `mtof`, `fold`, `euclid` |
 | `05-composer.js` | §5 | `makePlan`, `buildPhrase`, `addPassing`, `harmonize`, `padVoicing`, `bassPitch`, `arpTones`, drum/bass/arp bar emitters, **`composeSong`**, time-lookup helpers |
+| `05c-groove.js` | §5c | `Groove`: the drum part written from the sigil (polygons under each section's transform, letter accents, fills). Pure; `apply` / `restore` rewrite a song's kit in place |
 | `06-engine.js` | §6 | `Engine`: buses, FX, voices, lookahead scheduler, transport, ritual sounds |
 | `07-renderer.js` | §7 | `Renderer`: frame composition, wheel, rhythm polygons, pen, particles, burn |
 | `08-app.js` | §8 | `cast`, `performReduction`, HUD, controls, `exportSeal`, `toggleRecord`, `share`, `forget`, boot |
@@ -232,6 +250,7 @@ Listeners run in ascending priority and are individually try/caught.
 | `buildSigil` | `null` → sigil | Return a sigil object to take over construction (M8) |
 | `compose` | config object | **Do not draw from the composer's `R`.** Use `stream(sigil.hash, 'your:label')` |
 | `plan` | array of sections | Mutate in place or return a new array |
+| `score` | array of events | The whole score, before it is sorted and indexed; second argument `{sigil, cfg, sections, phrases, total}`. Return a replacement array (M15 rewrites the kit's part here). **Do not draw from `R`** |
 | `palette` | `{name,bg,line,accent}` | Contrast runs at priority 100 and wins |
 | `meta` | `string[]` | HUD meta line parts |
 | `shareKey` | string | URL fragment |
@@ -315,6 +334,16 @@ This is the most important rule in the project.
    parallel offline render produce identical audio across segment boundaries.
 4. `buildSigil` hashes `'SIGIL/v1::' + reduced`. If you ever need to change the
    geometry algorithm, bump to `v2` rather than silently mutating existing sigils.
+5. The drum part obeys the same contract on its own streams. `Groove.dna` draws from
+   `stream(hash, 'groove')` (or `'groove:<take>'`) and `SoundDesign.drumFx` from
+   `'drumfx'`, each in a frozen order; everything per bar and per hit is stateless
+   noise keyed by musical position, so the panel's amounts are thresholds on a fixed
+   field (more Fills adds fills, it does not reshuffle the song). The composer's `R`
+   is never touched: with no `score` listener its output is bit-for-bit what it was.
+
+`npm run golden` pins all of the above; `npm run drums` checks the groove's
+invariants and that the engine with the kit's FX bypassed is, to the sample, the
+engine before they existed.
 
 ---
 

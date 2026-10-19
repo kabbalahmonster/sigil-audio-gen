@@ -41,12 +41,36 @@ function soundFingerprint(reduced, variant) {
   return toHex(hashStr(parts.join('#'))).slice(0, 32);
 }
 
+/**
+ * Drum-part fingerprint (05c): every stroke the groove writes, and the polygons each section
+ * shows. `take` 0 is the sigil's own groove. The composer's score is fingerprinted above and
+ * is NOT affected by this file; these pin the part that replaces its drum bars.
+ */
+function grooveFingerprint(reduced, take) {
+  const s = buildSigil(reduced);
+  const song = Groove.apply(composeSong(s), s, { take });
+  const parts = song.events.filter((e) => Groove.TYPES.has(e.type)).map((e) =>
+    `${e.beat.toFixed(3)}|${e.type}|${e.tom ?? ''}${e.open ? 'o' : ''}|${e.vel.toFixed(3)}`);
+  parts.push(song.sections.map((x) =>
+    (x.rhythm ? x.rhythm.kick.map(Number).join('') + '/' + x.rhythm.hat.map(Number).join('') : '-')).join(','));
+  return toHex(hashStr(parts.join(';'))).slice(0, 32);
+}
+
+/** The kit's dealt FX (05b drumFx): its own labelled stream, pinned like derive(). */
+function drumFxFingerprint(reduced, variant) {
+  return toHex(hashStr(JSON.stringify(SoundDesign.drumFx(buildSigil(reduced).hash, variant)))).slice(0, 32);
+}
+
 /** Everything the CI compares, as a flat object of name → value. */
 function computeAll() {
   const out = {};
   for (const w of GOLDEN_INPUTS) out[`music:${w}`] = fingerprint(w);
   for (const w of GOLDEN_INPUTS) {
     for (const v of GOLDEN_VARIANTS) out[`sound:${w}:dream${v}`] = soundFingerprint(w, v);
+  }
+  for (const w of GOLDEN_INPUTS) {
+    for (const take of [0, 3]) out[`groove:${w}:take${take}`] = grooveFingerprint(w, take);
+    for (const v of GOLDEN_VARIANTS) out[`drumfx:${w}:dream${v}`] = drumFxFingerprint(w, v);
   }
   const patch = { wave: 2.5, voice: 'vox', grit: 0.4 };
   out['codec:encode'] = SoundDesign.encodePatch(patch, 3);

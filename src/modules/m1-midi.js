@@ -20,7 +20,9 @@ const MidiExport = (() => {
   /* General MIDI programs (0-based): Celesta, Oboe, Koto, Tubular Bells,
      Choir Aahs, Warm Pad, Synth Bass 1, Vibraphone, Sweep Pad. */
   const GM = { glass: 8, reed: 68, koto: 107, bell: 14, choir: 52, pad: 89, bass: 38, arp: 11, drone: 95 };
-  const DRUM = { kick: 36, snare: 38, hat: 42, open: 46, shaker: 70, crash: 49 };
+  const DRUM = { kick: 36, snare: 38, hat: 42, open: 46, shaker: 70, crash: 49, rim: 37 };
+  /** The three toms of the drum engine's fills (m15 / 05c): floor, low, high-mid. */
+  const TOMS = [41, 45, 48];
 
   /** [internal id, track name, channel]. Channel 9 is GM percussion. */
   const TRACKS = [
@@ -116,8 +118,9 @@ const MidiExport = (() => {
           case 'arp':   note('arp', ev.midi, b, ev.dur, vel(ev.vel * 0.8), GM.arp); break;
           case 'drone': note('drone', ev.midi, b, ev.dur, 60, GM.drone);
                         note('drone', ev.midi + 7, b, ev.dur, 50, GM.drone); break;
-          case 'kick': case 'snare': case 'shaker': case 'crash':
+          case 'kick': case 'snare': case 'shaker': case 'crash': case 'rim':
                         note('drums', DRUM[ev.type], b, 0.25, vel(ev.vel * 1.1), null); break;
+          case 'tom':   note('drums', TOMS[clamp(ev.tom | 0, 0, 2)], b, 0.25, vel(ev.vel * 1.1), null); break;
           case 'hat':   note('drums', ev.open ? DRUM.open : DRUM.hat, b, 0.25, vel(ev.vel), null); break;
         }
       }

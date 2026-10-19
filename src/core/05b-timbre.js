@@ -60,8 +60,20 @@ const SoundDesign = (() => {
     kSub: ['ks', 0, 2], kPunch: ['kp', 0, 2], kDecay: ['kd', 0.2, 2], kTone: ['kt', -5, 5],
     sBody: ['sb', 0, 2], sSnap: ['sn', 0, 2], sTone: ['st', 0, 2],
     hTone: ['ht', 0, 2], hDecay: ['hd', 0.2, 2],
+    // the kit's own FX chain (DSP §5b). ⚠ APPEND ONLY below this line: mutate() draws once
+    // per field in this order, so inserting one would re-deal every existing "Mutate".
+    dDrive: ['dv', 0, 1], dPunch: ['dp', -1, 1], dBody: ['db', -1, 1],
+    dCrush: ['dc', 0, 1], dBits: ['di', 2, 16], dHold: ['dh', 1, 16], dFilter: ['df', -1, 1],
+    dSmash: ['ds', 0, 1], dRoom: ['dr', 0, 1], dEcho: ['de', 0, 1], dTime: ['dt', 0, 3],
+    // which groove the kit plays (05c). Travels with the patch so a shared link keeps its drummer.
+    take: ['tk', 0, 99],
   };
-  const INTEGER_FIELDS = new Set(['vowel', 'bits', 'hold']);
+  const INTEGER_FIELDS = new Set(['vowel', 'bits', 'hold', 'dBits', 'dHold', 'dTime', 'take']);
+  /**
+   * Fields Mutate leaves alone: switches and indices, where a nudge is a different thing entirely;
+   * and the kit's filter, which is a performance control (a nudge off centre takes the kick's sub away).
+   */
+  const FIXED_FIELDS = new Set(['bits', 'hold', 'voice', 'dBits', 'dHold', 'dTime', 'dFilter', 'take']);
   const VOICES = ['auto', 'vox', 'wave'];
   const clampTo = (x, a, b) => Math.min(b, Math.max(a, x));
 
@@ -120,6 +132,37 @@ const SoundDesign = (() => {
       dmemo.set(key, d);
     }
     return { ...d, kit: { ...d.kit } };   // callers may spread or mutate freely
+  }
+
+  /* ── drum FX: the sigil's own treatment of its kit ───────────────────────
+     Drawn from a SEPARATE labelled stream, so derive() (and every sound golden)
+     is untouched. The ranges are deliberately tame: a sigil may arrive with a
+     little room and weight on its kit, never with it wrecked. The knobs go further. */
+  /** Echo times for dTime 0…3, in beats: sixteenth, eighth, dotted eighth, quarter. */
+  const ECHO_BEATS = [0.25, 0.5, 0.75, 1];
+  const fxmemo = new Map();
+  function drumFx(hash, variant = 0) {
+    const key = toHex(hash) + ':' + variant;
+    let d = fxmemo.get(key);
+    if (!d) {
+      const R = stream(hash, variant ? `drumfx:dream:${variant}` : 'drumfx');
+      d = {                                     // ⚠ draw order is frozen, like derive()
+        dDrive: R.range(0, 0.4),
+        dPunch: R.range(0.1, 0.55),
+        dBody: R.range(-0.25, 0.3),
+        dCrush: R.chance(0.35) ? R.range(0.15, 0.45) : 0,
+        dBits: R.pick([6, 8, 10, 12]),
+        dHold: R.pick([1, 1, 2, 3]),
+        dFilter: 0,                             // never dealt: a sigil does not arrive with its kit filtered
+        dSmash: R.range(0.1, 0.5),
+        dRoom: R.range(0.05, 0.35),
+        dEcho: R.chance(0.4) ? R.range(0.1, 0.3) : 0,
+        dTime: R.pick([0, 1, 2, 2]),
+      };
+      if (fxmemo.size > 64) fxmemo.clear();
+      fxmemo.set(key, d);
+    }
+    return { ...d };
   }
 
   /* ── cell construction ───────────────────────────────────────────────── */
@@ -257,6 +300,17 @@ const SoundDesign = (() => {
       out.wave = clampTo(D.wave * 0.5, 0, FX - 1); out.drums *= 0.4;
     }
     if (si === 0) { out.grit *= 0.25; out.bright *= 0.8; }
+    /* The kit's FX follow the rite too. Loud sections hit harder, dirtier and denser; sparse and
+       half-time ones open into the room and let the echo speak; the Banishing dissolves into both.
+       Only fields the patch actually carries are arced, so a patch without the chain stays without. */
+    const half = sec.halfTime ? 1 : 0;
+    const fx = (name, v, lo = 0, hi = 1) => { if (typeof D[name] === 'number') out[name] = clampTo(v, lo, hi); };
+    fx('dPunch', D.dPunch * (0.75 + 0.4 * I), -1, 1);
+    fx('dDrive', D.dDrive * (0.6 + 0.6 * I));
+    fx('dCrush', D.dCrush * (0.4 + 0.8 * I));
+    fx('dSmash', D.dSmash * (0.6 + 0.55 * I));
+    fx('dRoom', D.dRoom * (1.1 - 0.3 * I + 0.3 * half) * (sec.final ? 1.5 : 1));
+    fx('dEcho', D.dEcho * (1.1 - 0.5 * I + 0.4 * half) * (sec.final ? 1.6 : 1));
     return out;
   }
 
@@ -374,7 +428,7 @@ const SoundDesign = (() => {
     const R = stream(hash, `mutate:${n}`);
     const o = { ...current };
     for (const [name, [, lo, hi]] of Object.entries(FIELDS)) {
-      if (lo === undefined || name === 'bits' || name === 'hold' || name === 'voice') continue;
+      if (lo === undefined || FIXED_FIELDS.has(name)) continue;
       if (!R.chance(0.4)) continue;
       const from = current[name] !== undefined ? current[name] : base[name];
       if (typeof from !== 'number') continue;
@@ -388,7 +442,7 @@ const SoundDesign = (() => {
   return {
     H, FX, FY, UPPER, LAYER_NAMES, VOWELS, FIELDS, VOICES, CONSONANT_CLASS, CLASS_TONE,
     derive, tables, glottal, waveSamples, applyFx,
-    arc, kitAt, irSpec, drumKit,
+    arc, kitAt, irSpec, drumKit, drumFx, ECHO_BEATS,
     encodePatch, decodePatch, mutate, clampTo,
   };
 })();

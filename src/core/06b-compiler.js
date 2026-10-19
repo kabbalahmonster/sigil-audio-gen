@@ -11,9 +11,14 @@
      tables    the wavetable cube, built in slices (reachable cells first)
 
    Live edits have three price levels (see Part 5 of the docs):
-     refreshSections  ~µs   knobs the core reads at note-on / per block
+     refreshSections  ~µs   knobs the core reads at note-on / per block (incl. the drum FX chain)
      sendTables       ~ms   tilt, density, dream (background slices)
      replan           ~ms   anything baked into rows (drums, lens, vowels)
+
+   DRUMS. The score says WHAT is struck and how hard; this file decides what
+   that stroke sounds like: the kit cell, the chord it is tuned to, the letter
+   that colours it, and (when the song carries a groove, 05c) how velocity
+   reshapes the hit. A song without a groove compiles exactly as it always did.
    ══════════════════════════════════════════════════════════════════════════ */
 const SigilPlan = (() => {
   'use strict';
@@ -37,7 +42,11 @@ const SigilPlan = (() => {
     { body: 0.35, bodyDec: 0.02, noise: 1.35, snap: 1.1, rim: 0 },
   ];
   const SECTION_DUCK = [0, 0.45, 1.0, 0.7, 0.9, 1.15, 0.35];
-  const DRUM_DEFAULTS = { duck: 0.5, sidechain: true, sectionAware: true, tuneToKey: true, kickOct: 'auto' };
+  /** Mirrors m15's settings, for hosts without the module (Node bench, workers). */
+  const DRUM_DEFAULTS = { duck: 0.5, sidechain: true, sectionAware: true, tuneToKey: true, kickOct: 'auto',
+    fx: true, dynamics: 0.6 };
+  /** Stereo seats for the three toms (audience view): floor right, rack centre, high left. */
+  const TOM_PAN = [0.32, 0, -0.32];
   const num = (x, d) => (typeof x === 'number' && Number.isFinite(x) ? x : d);
   const hasApp = () => typeof app !== 'undefined';
   const variantOf = (tb) => parseInt(String(tb.key).split(':').pop(), 10) || 0;
@@ -45,7 +54,7 @@ const SigilPlan = (() => {
   /* ── Inputs from optional modules (all soft dependencies) ───────────── */
   function defaultSpec(sigil, song) {
     const mood = (song && song.cfg && song.cfg.sound) || {};
-    return { P: { ...DEFAULTS, ...SD.derive(sigil.hash, 0), ...mood }, cube: SD.tables(sigil, 0),
+    return { P: { ...DEFAULTS, ...SD.derive(sigil.hash, 0), ...SD.drumFx(sigil.hash, 0), ...mood }, cube: SD.tables(sigil, 0),
       variant: 0, arc: true, frozen: false, verb: true, vowels: null };
   }
   /** The sound patch: the live Sound module's (knobs, dream, mood, render spec) or a derived one. */
@@ -63,8 +72,10 @@ const SigilPlan = (() => {
     }
     return defaultSpec(sigil, song);
   }
-  function drumSettings() {
-    return (typeof DrumEngine !== 'undefined' && DrumEngine.settings) || DRUM_DEFAULTS;
+  /** The drum settings in force: the module's, or the defaults; `over` wins (offline jobs, tests). */
+  function drumSettings(over) {
+    const base = (typeof DrumEngine !== 'undefined' && DrumEngine.settings) || DRUM_DEFAULTS;
+    return over ? { ...DRUM_DEFAULTS, ...base, ...over } : base;
   }
   function waveOffset() {
     return typeof Sound !== 'undefined' && Sound.lensWave && typeof LiveLens !== 'undefined' ? LiveLens.shift * 0.6 : 0;
@@ -75,8 +86,9 @@ const SigilPlan = (() => {
     const n = song.sections.length;
     return song.sections.map((sec, si) => (spec.arc ? { ...spec.P, ...SD.arc(spec.P, sec, si, n) } : spec.P));
   }
-  function sectionsTable(song, spec, Ps) {
-    const DS = drumSettings(), out = new Float64Array(Ps.length * PSTRIDE);
+  function sectionsTable(song, sigil, spec, Ps, DS) {
+    const out = new Float64Array(Ps.length * PSTRIDE);
+    const fxOn = DS.fx !== false;                    // the panel's bypass: every D* column at rest
     Ps.forEach((P, si) => {
       const o = si * PSTRIDE, sec = song.sections[si];
       const set = (k, v, d) => { out[o + PA[k]] = num(v, d); };
@@ -92,6 +104,23 @@ const SigilPlan = (() => {
       set('HOLD', P.hold, 1); set('FOLD', P.fold, 0); set('DRIVE', P.drive, 0);
       out[o + PA.DUCK] = DS.sidechain ? num(DS.duck, 0.5) * (DS.sectionAware ? (SECTION_DUCK[si] ?? 1) : 1) : 0;
       out[o + PA.INTENSITY] = sec.intensity || 0;
+
+      /* The kit's FX chain (DSP §5b). Left at rest, these columns reproduce the pre-chain kit exactly. */
+      out[o + PA.DBITS] = 16; out[o + PA.DHOLD] = 1; out[o + PA.DSIZE] = 0.5; out[o + PA.DTIME] = 0.75;
+      if (fxOn) {
+        const crush = clamp(num(P.dCrush, 0), 0, 1);
+        out[o + PA.DPUNCH] = clamp(num(P.dPunch, 0), -1, 1); out[o + PA.DBODY] = clamp(num(P.dBody, 0), -1, 1);
+        out[o + PA.DDRIVE] = clamp(num(P.dDrive, 0), 0, 1); out[o + PA.DFILTER] = clamp(num(P.dFilter, 0), -1, 1);
+        out[o + PA.DCRUSH] = crush; out[o + PA.DBITS] = crush > 0 ? num(P.dBits, 8) : 16;
+        out[o + PA.DHOLD] = num(P.dHold, 1);
+        out[o + PA.DSMASH] = clamp(num(P.dSmash, 0), 0, 1);
+        // Each kit cell carries its own room: with the arc on, the cell colours the knob (×0.7…1.3).
+        const kit = SD.drumKit(sigil.hash, num(P.drumX, 0.5), num(P.drumY, 0.5));
+        out[o + PA.DROOM] = clamp(num(P.dRoom, 0) * (spec.arc ? 0.7 + 1.2 * kit.room : 1), 0, 1);
+        out[o + PA.DSIZE] = clamp(num(P.drumX, 0.5), 0, 1);          // a bigger kit sits in a bigger room
+        out[o + PA.DECHO] = clamp(num(P.dEcho, 0), 0, 1);
+        out[o + PA.DTIME] = SD.ECHO_BEATS[clamp(Math.round(num(P.dTime, 2)), 0, SD.ECHO_BEATS.length - 1)];
+      }
     });
     return out;
   }
@@ -113,9 +142,14 @@ const SigilPlan = (() => {
     const ph = P[lo];
     return bassPitch(ph.chords[clamp(Math.floor((beat - ph.start) / 4), 0, 3)], 'root', song.bassBase, song.scale);
   }
-  function compileEvents(song, sigil, spec, Ps, lens) {
+  function compileEvents(song, sigil, spec, Ps, lens, DS) {
     const src = song.events, N = src.length, out = new Float64Array((N * 2 + 8) * STRIDE);
-    const DS = drumSettings(), red = sigil.reduced, RL = red.length;
+    const red = sigil.reduced, RL = red.length;
+    /* Velocity → timbre. Only for songs that carry a groove (05c): a hard hit opens up and rings
+       longer, a ghost is shorter, darker and more skin than wire. `hard` is the stroke relative
+       to that drum's normal one (1 = normal); with dyn at 0 it is exactly 1 and nothing moves. */
+    const dyn = song.cfg && song.cfg.groove ? clamp(num(DS.dynamics, 0.6), 0, 1) : 0;
+    const hard = (vel, ref) => (dyn > 0 ? 1 + dyn * (clamp(num(vel, ref) / ref, 0.15, 1.35) - 1) : 1);
     const vowels = spec.vowels && spec.vowels.length ? spec.vowels : null;
     const starts = song.sections.map((s) => s.start);
     let si = 0, n = 0;
@@ -169,13 +203,13 @@ const SigilPlan = (() => {
           out[o + EV.P4] = 0; out[o + EV.P5] = 0.1; out[o + EV.AUX] = 1;
           break;
         }
-        case 'kick': case 'snare': case 'hat': case 'shaker': case 'crash': {
+        case 'kick': case 'snare': case 'hat': case 'shaker': case 'crash': case 'tom': case 'rim': {
           const kit = SD.drumKit(sigil.hash, num(P.drumX, 0.5), num(P.drumY, 0.5));
           const root = rootAt(song, ev.beat, DS);
           const tone = SD.CLASS_TONE[SD.CONSONANT_CLASS[red[mod(Math.round(ev.beat * 4), RL)]] || 'fricative'];
           const hTone = num(P.hTone, 1), hDecay = num(P.hDecay, 1);
           if (ev.type === 'kick') {
-            const st = KSTYLE[kit.kickStyle], kPunch = num(P.kPunch, 1);
+            const st = KSTYLE[kit.kickStyle], kPunch = num(P.kPunch, 1), h = hard(ev.vel, 0.95);
             const oct = DS.kickOct === 'low' ? 0.5 : DS.kickOct === 'high' ? 2 : 1;
             const f = mtof(root + (DS.tuneToKey ? kit.kickSemi : 0)) * oct * Math.pow(2, num(P.kTone, 0) / 12)
                     * (kit.kickStyle === 2 ? 0.5 : 1);
@@ -185,8 +219,12 @@ const SigilPlan = (() => {
             out[o + EV.P3] = kit.kickSub * num(P.kSub, 1);
             out[o + EV.P4] = 0.45 * st.click * kPunch; out[o + EV.P5] = kPunch;
             out[o + EV.AUX] = 1400 + 2200 * num(P.drumY, 0.5);
+            if (h !== 1) {                                // a soft kick: less beater, less dive, shorter
+              out[o + EV.P0] = 1 + (st.glide - 1) * (0.55 + 0.45 * h);
+              out[o + EV.P2] *= 0.7 + 0.3 * h; out[o + EV.P4] *= h * h;
+            }
           } else if (ev.type === 'snare') {
-            const st = SSTYLE[kit.snareStyle], sSnap = num(P.sSnap, 1), sTone = num(P.sTone, 1);
+            const st = SSTYLE[kit.snareStyle], sSnap = num(P.sSnap, 1), sTone = num(P.sTone, 1), h = hard(ev.vel, 0.8);
             const o = put(ev, KIND.SNARE, BUS.drums, mtof(root + kit.snareBody));
             out[o + EV.F0] = 0.55 * st.noise * tone[2];
             out[o + EV.P0] = 0.5 * st.body * num(P.sBody, 1);
@@ -196,13 +234,41 @@ const SigilPlan = (() => {
             out[o + EV.P4] = st.bodyDec * (0.6 + 0.8 * sSnap);
             out[o + EV.P5] = st.rim;
             out[o + EV.AUX] = 4800 + 1800 * sTone;
+            if (h !== 1) {                                // a ghost: more skin than wire, short and dark
+              out[o + EV.P0] *= 1.3 - 0.3 * h; out[o + EV.P1] *= 0.5 + 0.5 * h;
+              out[o + EV.P2] *= h * h; out[o + EV.P3] *= 0.78 + 0.22 * h;
+            }
+          } else if (ev.type === 'rim') {                 // side-stick: the snare voice, all click and no wire
+            const o = put(ev, KIND.SNARE, BUS.drums, mtof(root + kit.snareBody + 12));
+            out[o + EV.PAN] = ev.pan || 0;
+            out[o + EV.F0] = 0.1 * tone[2];
+            out[o + EV.P0] = 0.22; out[o + EV.P1] = 0.018 * tone[1]; out[o + EV.P2] = 0.3;
+            out[o + EV.P3] = 2400 * tone[0]; out[o + EV.P4] = 0.014; out[o + EV.P5] = 1;
+            out[o + EV.AUX] = 5200;
+          } else if (ev.type === 'tom') {
+            /* Three toms on the chord: root, fifth, octave. A fill is therefore always in key. */
+            const idx = clamp(ev.tom | 0, 0, 2), h = hard(ev.vel, 0.75);
+            const low = fold(root + 12, 41, 52);
+            const o = put(ev, KIND.TOM, BUS.drums, mtof(low + (idx === 2 ? 12 : idx === 1 ? 7 : 0)));
+            out[o + EV.PAN] = ev.pan ?? TOM_PAN[idx];
+            out[o + EV.P0] = (0.5 - 0.1 * idx) * (0.6 + 0.4 * h);
+            out[o + EV.P1] = 0.07 - 0.015 * idx;
+            // Short enough that sixteenths do not smear into one another; longer for the floor tom and a bigger kit.
+            out[o + EV.P2] = (0.09 + 0.12 * kit.kickDecay) * (1.25 - 0.22 * idx) * (0.75 + 0.5 * num(P.drumX, 0.5))
+                           * num(P.kDecay, 1) * (0.8 + 0.2 * h);
+            out[o + EV.P3] = 0.32 * num(P.kPunch, 1) * tone[2] * h;
+            out[o + EV.P4] = (1700 + 1500 * num(P.drumY, 0.5)) * tone[0];
+            out[o + EV.P5] = 0.3;
           } else if (ev.type === 'hat') {
-            const base = (DS.tuneToKey ? mtof(root + 30) : 320) * tone[0] * (0.7 + 0.3 * hTone);
+            const base = (DS.tuneToKey ? mtof(root + 30) : 320) * tone[0] * (0.7 + 0.3 * hTone), h = hard(ev.vel, 0.75);
             const len = (ev.open ? 0.4 + 0.45 * kit.hatDecay : 0.05 + 0.07 * kit.hatDecay) * hDecay;
             const o = put(ev, KIND.HAT, BUS.drums, base);
             out[o + EV.PAN] = ev.pan || 0;
             out[o + EV.P0] = len * 0.3; out[o + EV.P1] = 6500 + 2500 * hTone; out[o + EV.P2] = 9000 + 3000 * hTone;
             out[o + EV.P3] = 0.12 * tone[2]; out[o + EV.P4] = kit.hatStyle; out[o + EV.P5] = ev.open ? 6 : 4;
+            if (h !== 1) {                                // a light tap: shorter and duller
+              out[o + EV.P0] *= 0.65 + 0.35 * h; out[o + EV.P1] *= 0.86 + 0.14 * h; out[o + EV.P2] *= 0.9 + 0.1 * h;
+            }
           } else if (ev.type === 'shaker') {
             const o = put(ev, KIND.NOISE, BUS.drums, 0), f = 5200 + 2600 * hTone;
             out[o + EV.VEL] = (ev.vel ?? 0.5) * 0.12; out[o + EV.PAN] = ev.pan || 0;
@@ -220,14 +286,14 @@ const SigilPlan = (() => {
     return { events: out.slice(0, n * STRIDE), count: n };
   }
 
-  /** Compile a song. opts: { spec, lens, events:false (sections only) } */
+  /** Compile a song. opts: { spec, lens, events:false (sections only), drums (settings override) } */
   function compile(song, sigil, opts = {}) {
     const spec = opts.spec || soundSpec(sigil, song);
-    const Ps = patches(song, spec);
-    const p = { spec, Ps, sections: sectionsTable(song, spec, Ps), nSec: Ps.length, total: song.total };
+    const Ps = patches(song, spec), DS = drumSettings(opts.drums);
+    const p = { spec, Ps, sections: sectionsTable(song, sigil, spec, Ps, DS), nSec: Ps.length, total: song.total };
     if (opts.events !== false) {
       const lens = opts.lens ?? (typeof LiveLens !== 'undefined' && LiveLens.active());
-      Object.assign(p, compileEvents(song, sigil, spec, Ps, lens));
+      Object.assign(p, compileEvents(song, sigil, spec, Ps, lens, DS));
     }
     return p;
   }
@@ -345,7 +411,7 @@ const SigilPlan = (() => {
   }
   /** Everything a worker needs to render: plain data only, structured-clone friendly. */
   function renderJob(song, sigil, o) {
-    const p = compile(song, sigil, { lens: !!o.lens, spec: o.spec });
+    const p = compile(song, sigil, { lens: !!o.lens, spec: o.spec, drums: o.drums });
     const eng = hasApp() ? app.engine : null;
     return {
       sr: o.sr, bpm: 60 / o.spb, passes: Math.max(1, o.passes | 0), voices: 80,

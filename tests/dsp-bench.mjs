@@ -1,6 +1,10 @@
 /* ══════════════════════════════════════════════════════════════════════════
    DSP BENCH: how fast is the core on THIS machine, and is it deterministic?
-     node tests/dsp-bench.mjs [CONSONANTS] [sampleRate]
+     node tests/dsp-bench.mjs [CONSONANTS] [sampleRate] [--classic]
+
+   By default it renders what the app plays: the groove (05c) and the kit's FX
+   chain. --classic renders the composer's own bars with the chain bypassed,
+   which is the engine as it was before either existed (a reference to A/B).
    ══════════════════════════════════════════════════════════════════════════ */
    import { readFileSync } from 'node:fs';
    import { createContext, runInContext } from 'node:vm';
@@ -9,17 +13,22 @@
    
    const root = join(dirname(fileURLToPath(import.meta.url)), '..');
    const FILES = ['src/core/00-utils.js', 'src/core/01-crypto.js', 'src/core/02-reduction.js', 'src/core/03-geometry.js',
-     'src/core/04-theory.js', 'src/core/05-composer.js', 'src/core/05b-timbre.js', 'src/dsp/sigil-dsp.js', 'src/core/06b-compiler.js'];
+     'src/core/04-theory.js', 'src/core/05-composer.js', 'src/core/05b-timbre.js', 'src/core/05c-groove.js',
+     'src/dsp/sigil-dsp.js', 'src/core/06b-compiler.js'];
    const sandbox = { TextEncoder, btoa, atob, console, performance };
    sandbox.window = sandbox; sandbox.globalThis = sandbox;
    const ctx = createContext(sandbox);
    for (const f of FILES) runInContext(readFileSync(join(root, f), 'utf8'), ctx, { filename: f });
    
-   const word = process.argv[2] || 'KRSTVM', sr = +(process.argv[3] || 48000);
+   const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+   const classic = process.argv.includes('--classic');
+   const word = args[0] || 'KRSTVM', sr = +(args[1] || 48000);
    const run = () => runInContext(`(() => {
      const sig = buildSigil(${JSON.stringify(word)}), song = composeSong(sig);
+     if (!${classic}) Groove.apply(song, sig, {});
      const spec = SigilPlan.defaultSpec(sig, song);
-     const job = SigilPlan.renderJob(song, sig, { sr: ${sr}, spb: song.spb, passes: 1, lens: false, spec, levels: null });
+     const job = SigilPlan.renderJob(song, sig, { sr: ${sr}, spb: song.spb, passes: 1, lens: false, spec, levels: null,
+       drums: ${classic} ? { fx: false } : undefined });
      const secs = song.total * song.spb + 6, t0 = performance.now();
      const r = SigilDSP.renderRange(job, 0, secs, 0);
      const ms = performance.now() - t0;
@@ -35,7 +44,7 @@
    
    const a = run(), b = run();
    const x = (a.secs * 1000) / a.ms;
-   console.log(`${word}: ${a.events} events · ${a.secs.toFixed(1)} s of audio in ${(a.ms / 1000).toFixed(2)} s`);
+   console.log(`${word} (${classic ? 'classic bars, chain bypassed' : 'groove + FX chain'}): ${a.events} events · ${a.secs.toFixed(1)} s of audio in ${(a.ms / 1000).toFixed(2)} s`);
    console.log(`→ ${x.toFixed(1)}× real time · the live engine needs ≈ ${(100 / x).toFixed(1)} % of one core`);
    console.log(`peak ${a.peak.toFixed(3)} · non-finite samples ${a.bad} · hash ${a.hash}`);
    console.log(a.hash === b.hash ? '✓ deterministic (two renders are bit-identical)' : '✗ NOT deterministic');

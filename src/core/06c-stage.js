@@ -31,7 +31,7 @@ const Stage = (() => {
   const st = { interval: 16.7, cost: 0, worst: 0, bad: 0, good: 0, settle: 800, upWait: 6000, lastUp: -1e9, clock: 0 };
   const F = { now: 0, dt: 16.7, frame: 0, t: 0, beat: 0, playing: false, quality: 0, scale: 1 };
   const layers = [];
-  const cur = { song: null, ptr: 0, beat: 0, list: [] };
+  const cur = { song: null, events: null, ptr: 0, beat: 0, list: [] };
   let raf = 0, last = 0, running = false, lastQ = -1, errShown = false, saveT = 0;
 
   /* ── score cursor ── */
@@ -43,8 +43,9 @@ const Stage = (() => {
   function cursor(beat) {
     const song = app.song;
     if (!F.playing || !song) { cur.song = null; return; }
-    if (cur.song !== song || beat < cur.beat - 0.02 || beat - cur.beat > 4) {   // new song, seek, loop, stall
-      cur.song = song; cur.ptr = lower(song.events, beat); cur.beat = beat;
+    // new song, a re-written score (the drum part can change while it plays), seek, loop, stall
+    if (cur.song !== song || cur.events !== song.events || beat < cur.beat - 0.02 || beat - cur.beat > 4) {
+      cur.song = song; cur.events = song.events; cur.ptr = lower(song.events, beat); cur.beat = beat;
       return;
     }
     const E = song.events, list = cur.list;

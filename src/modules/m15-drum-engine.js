@@ -1,24 +1,38 @@
 'use strict';
 /* ══════════════════════════════════════════════════════════════════════════
-   m15 · DRUM ENGINE v3 · the flagship
+   m15 · DRUM ENGINE v4 · how the kit plays
    --------------------------------------------------------------------------
-   KIT        a 4 × 4 drum cube (SD.drumKit), chosen by Size and Colour, with
-              a different kick, snare, hat and crash per cell
-   KICK       four layers: a tonal body that glides into the chord root, a sub
-              that holds the root, a harmonic layer that reads on small speakers,
-              and a beater click. Drive and sidechain come from the bus
-   SNARE      tuned body, noise body, crack, and a rim voice for one style
-   HATS       square clusters, inharmonic clusters or airy noise
-   CRASH      noise plus a metallic cluster, tuned to the chord
+   WHERE THINGS LIVE
+     the part     src/core/05c-groove.js   what is struck, and how hard (pure)
+     the strokes  src/core/06b-compiler.js what each stroke sounds like
+     the sound    src/dsp/sigil-dsp.js     the voices, and the kit's FX chain (§5b)
+     the knobs    m12 (Sound & Patch)      kit tone, and the chain's D· knobs
+     THIS FILE    the settings and panel that decide how the kit PLAYS and how
+                  it moves the music, and the wiring that keeps a playing song
+                  in step with them.
 
-   TONE & TEXTURE  the K·, S· and H· knobs live in the Sound panel (m12). They
-                   reshape the kit in real time without replacing it.
-   TIMING     the hit is scheduled on the audio clock, and the kit is memoised.
-   CONTROLS   ducking, sidechain, section-aware ducking, tune-to-chord and kick
-              octave live in this module's panel.
+   PATTERN    Sigil   the kit reads the sigil (05c): polygons turned with each
+                      section, letters as accents, fills that speak the name.
+              Classic the composer's own bars, exactly as before this module.
+   GROOVE     each sigil has a hundred grooves; 0 is its own. The number is a
+              patch field (`take`), so it is kept per sigil, travels in a shared
+              link and is forgotten with the sigil.
+   AMOUNTS    Variation, Fills, Ghosts, Humanise, Dynamics. These are this
+              listener's taste and apply to every sigil (a mood may override
+              them for itself through cfg.drums).
+   FX         one switch that rests the kit's whole FX chain.
+   MOVEMENT   ducking, sidechain, section-aware ducking, tune-to-chord and kick
+              octave, as before.
 
-   ROUTING    music:  mix → duck → crusher → tone
-              drums:  buses.drums → glue compressor → drumSum → tone (never ducked)
+   HOW A CHANGE REACHES THE EAR
+     at composition   the 'score' filter writes the part into the new song
+     while playing    sync() rewrites the part IN PLACE and re-plans; the engine
+                      swaps events at the playhead, so nothing restarts
+
+   LEGACY. The Web Audio voices below (kick, snare, hat…, the 'voice' hook and
+   route()) belong to Engine v1. Engine v2 makes every sound in the DSP worklet
+   and never calls them (nothing filters 'voice', and route() returns at once
+   for a DSP engine). They are left here untouched.
    ══════════════════════════════════════════════════════════════════════════ */
 
 const DrumEngine = (() => {
@@ -48,8 +62,10 @@ const DrumEngine = (() => {
 
   const S = {
     duck: 0.5, sidechain: true, sectionAware: true, tuneToKey: true, kickOct: 'auto',
+    style: 'sigil', variation: 0.6, fills: 0.6, ghosts: 0.5, human: 0.4, dynamics: 0.6, fx: true,
     ...Prefs.get('drums', {}),
   };
+  if (S.style !== 'classic') S.style = 'sigil';
   const save = () => Prefs.set('drums', S);
 
   /* ── Musical context ─────────────────────────────────────────────────── */
@@ -360,13 +376,126 @@ const DrumEngine = (() => {
     return true;
   }, 10);
 
-  /* ── Panel: controls for the drum engine ─────────────────────────────── */
+  /* ── The part: which groove, written when, kept in step how ──────────── */
+
+  const hasSound = typeof Sound !== 'undefined';
+
+  /** The groove number for a sigil: its patch's, else the mood's, else the sigil's own (0). */
+  function takeFor(sigil, cfg) {
+    const o = hasSound && Sound.overridesFor ? Sound.overridesFor(sigil) : {};
+    const mood = (cfg && cfg.sound) || {};
+    return clamp((o.take ?? mood.take ?? 0) | 0, 0, 99);
+  }
+
+  /** What 05c is asked for: this listener's amounts, the sigil's groove, and any mood override. */
+  function optionsFor(sigil, cfg) {
+    return { take: takeFor(sigil, cfg), variation: S.variation, fills: S.fills, ghosts: S.ghosts, human: S.human,
+             ...((cfg && cfg.drums) || {}) };
+  }
+
+  // Composition: write the part into the score. Classic leaves the composer's bars alone.
+  Hooks.on('score', (events, ctx) => (S.style === 'sigil' ? Groove.score(events, ctx, optionsFor(ctx.sigil, ctx.cfg)) : undefined));
+
+  const liveEngine = () => {
+    const e = app.engine;
+    return e && e.isDSP && e.buses && app.song && e.song === app.song ? e : null;
+  };
+  let planT = 0;
+  /** Re-plan soon: coalesces a slider drag into one compile. Sounding hits ring on. */
+  function replanSoon() {
+    clearTimeout(planT);
+    planT = setTimeout(() => { const e = liveEngine(); if (e) SigilPlan.replan(e); }, 120);
+  }
+
+  /**
+   * Bring a song's drum part in line with the settings. Rewrites the part in
+   * place when (and only when) it was written with different options, so it is
+   * safe to call on every change. Returns true if the part changed.
+   */
+  function sync(song = app.song, sigil = app.sigil, replan = true) {
+    if (!song || !sigil || !song.cfg) return false;
+    const opts = optionsFor(sigil, song.cfg);
+    const want = S.style === 'sigil' ? Groove.sigOf(opts) : null;
+    const have = song.cfg.groove ? song.cfg.groove.sig : null;
+    if (want === have) return false;
+    if (want === null) Groove.restore(song); else Groove.apply(song, sigil, opts);
+    const e = app.engine;
+    if (e && e.song === song) { e.events = song.events; if (replan) replanSoon(); }
+    if (song === app.song) renderMeta();
+    return true;
+  }
+
+  // Loading: by now Sound has synced the patch to this sigil (m11 attaches at priority 0), and the
+  // plan is compiled straight after this hook. If the groove number the song was composed with is
+  // not the patch's after all, this is where it is put right, before a single event is compiled.
+  Hooks.on('buses', (_b, eng) => { sync(eng.song, eng.sigil, false); }, 20);
+
+  Hooks.on('meta', (parts) => {
+    const gr = app.song && app.song.cfg && app.song.cfg.groove;
+    if (gr && gr.take) parts.push(`groove ${gr.take}`);
+  });
+
+  /* When the kit speaks a letter (a fill), that letter answers on the wheel: a small ring in the
+     ink colour at its node, gone within a beat. The melody's flares are ember; these are not, so
+     the two readings of the sigil can be told apart. `said` is sorted, so a binary search finds now. */
+  const SAID_BEATS = 0.9;
+  Hooks.on('drawPlaying', ({ r, F, T, beat, song }) => {
+    const said = song.cfg && song.cfg.groove && song.cfg.groove.said;
+    if (!said || !said.length) return;
+    let lo = 0, hi = said.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (said[m].beat < beat - SAID_BEATS) lo = m + 1; else hi = m; }
+    for (let i = lo; i < said.length && said[i].beat <= beat; i++) {
+      const q = (beat - said[i].beat) / SAID_BEATS, [x, y] = nodeXY(said[i], T, F);
+      r.circle(x, y, 2.6, r.pal.line, 0.9 * (1 - q), true);
+      r.circle(x, y, 3 + F.R * 0.055 * q, r.pal.line, 0.7 * (1 - q), false, 1.2);
+    }
+  });
+
+  /** Step to another groove of this sigil. The number lives in the patch, so Sound keeps and shares it. */
+  function step(d) {
+    if (!hasSound || !app.sigil || !app.song || S.style !== 'sigil') return;
+    const n = mod(takeFor(app.sigil, app.song.cfg) + d, 100);
+    if (n) Sound.set('take', n); else Sound.unset('take');   // either notifies; the subscription below does the rest
+    const now = Groove.describe(app.song);
+    UI.announce(`${now.short}: ${now.detail}`);
+  }
+
+  /* ── Panel: how the kit plays, and how it moves the music ────────────── */
 
   const pct = (v) => `${Math.round(v * 100)}%`;
-  let duckRow, scRow, secRow, tuneRow, octRow;
+  let styleRow, grooveLbl, grooveInfo, prevBtn, nextBtn, fxRow, duckRow, scRow, secRow, tuneRow, octRow;
+  const amounts = {};
+  const AMOUNTS = [
+    ['variation', 'Variation', 'How much each bar answers the one before: extra kicks, flams, side-stick, the shaker’s whispers'],
+    ['fills', 'Fills', 'How much the kit says at the end of a phrase and of a section. At zero it never fills'],
+    ['ghosts', 'Ghosts', 'Ghost notes on the snare, between the backbeats'],
+    ['human', 'Humanise', 'A drummer’s hand: small differences of timing and force, and a backbeat that sits behind the beat'],
+    ['dynamics', 'Dynamics', 'How much a stroke’s force changes its sound, not only its level'],
+  ];
+
+  function showGroove() {
+    if (!grooveLbl) return;
+    const d = app.song ? Groove.describe(app.song) : { short: 'cast to hear', detail: '' };
+    grooveLbl.textContent = d.short;
+    // A mood may hold some of the amounts for itself (cfg.drums); say so, or the sliders would seem to lie.
+    const held = app.song && app.song.cfg.groove && app.song.cfg.drums
+      ? Object.entries(app.song.cfg.drums).map(([k, v]) => {
+          if (k === 'steady') return v ? 'the kick steady' : '';
+          const a = AMOUNTS.find((x) => x[0] === k);
+          return a ? `${a[1].toLowerCase()} at ${pct(v)}` : '';
+        }).filter(Boolean)
+      : [];
+    grooveInfo.textContent = d.detail + (held.length ? ` · the mood holds ${held.join(', ')}` : '');
+  }
 
   function refresh() {
     if (!duckRow) return;
+    const sigil = S.style === 'sigil';
+    styleRow.input.value = S.style;
+    for (const [k] of AMOUNTS) { amounts[k].set(S[k]); amounts[k].input.disabled = !sigil; }
+    fxRow.input.checked = S.fx;
+    prevBtn.disabled = nextBtn.disabled = !sigil || !app.song;
+    showGroove();
     duckRow.set(S.duck);
     scRow.input.checked = S.sidechain;
     secRow.input.checked = S.sectionAware;
@@ -375,6 +504,37 @@ const DrumEngine = (() => {
   }
 
   UI.section({ id: 'drums', title: 'Drum Engine', order: 14, build(el) {
+    UI.css(`.dr-groove{align-items:center}.dr-lbl{flex:1;min-width:6em;text-align:center;font-style:italic;opacity:.7;font-size:12.5px}
+      .dr-info{text-align:center;margin-top:-2px}
+      .dr-h{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;opacity:.6;margin:16px 0 4px}`);
+
+    styleRow = UI.select({ label: 'Pattern', value: S.style,
+      options: [['sigil', 'Sigil · the kit reads the sigil'], ['classic', 'Classic · the composer’s own bars']],
+      title: 'Sigil writes a part from the sigil’s own geometry and letters. Classic is the single repeated bar per section.',
+      onChange: (v) => {
+        S.style = v === 'classic' ? 'classic' : 'sigil'; save(); sync(); refresh();
+        UI.announce(S.style === 'sigil' ? 'Sigil patterns' : 'Classic patterns');
+      } });
+
+    grooveLbl = h('output', { class: 'dr-lbl', 'aria-live': 'off' });
+    grooveInfo = UI.note('');
+    grooveInfo.classList.add('dr-info');
+    prevBtn = UI.button('◀ groove', () => step(-1), { title: 'Previous groove of this sigil (,)', 'aria-label': 'Previous groove' });
+    nextBtn = UI.button('groove ▶', () => step(1), { title: 'Next groove of this sigil (.)', 'aria-label': 'Next groove' });
+
+    for (const [k, label, title] of AMOUNTS) {
+      amounts[k] = UI.slider({ label, min: 0, max: 1, step: 0.01, value: S[k], format: pct, title,
+        onInput: (v) => {
+          S[k] = v; save();
+          if (k === 'dynamics') replanSoon(); else sync();        // dynamics is baked at compile, not in the part
+          showGroove();
+        } });
+    }
+
+    fxRow = UI.check({ label: 'The kit’s own FX chain (the D· knobs in Sound & Patch)', checked: S.fx,
+      title: 'Unticked, the kit bypasses drive, punch, body, crusher, filter, smash, room and echo',
+      onChange: (v) => { S.fx = v; save(); const e = liveEngine(); if (e) SigilPlan.refreshSections(e); } });
+
     duckRow = UI.slider({ label: 'Duck', min: 0, max: 1, step: 0.01, value: S.duck, format: pct,
       onInput: (v) => { S.duck = v; save(); } });
     scRow = UI.check({ label: 'Sidechain the music to the kick', checked: S.sidechain,
@@ -386,17 +546,29 @@ const DrumEngine = (() => {
     octRow = UI.select({ label: 'Kick octave', value: S.kickOct,
       options: [['auto', 'Auto'], ['low', 'Low'], ['high', 'High']],
       onChange: (v) => { S.kickOct = v; save(); } });
+
     el.append(
-      UI.note('The kit is chosen by Size and Colour in the Sound panel, and shaped there too. This panel sets how the drums move the music: how hard the kick ducks, and whether the duck follows the rite. The kick’s pitch follows the chord it lands on.'),
+      UI.note('The kit reads the sigil too. Its rhythms are the polygons at the hub, turned and mirrored with each section; each letter gives its sixteenth a weight; and at the end of a phrase the kit speaks the letters as drums. A sigil has a hundred grooves: 0 is its own.'),
+      styleRow,
+      h('div', { class: 'sgrow dr-groove' }, prevBtn, grooveLbl, nextBtn),
+      grooveInfo,
+      ...AMOUNTS.map(([k]) => amounts[k]),
+      fxRow,
+      h('div', { class: 'dr-h' }, 'How the kit moves the music'),
+      UI.note('The kit is chosen by Size and Colour in the Sound panel and shaped there, along with its FX. Here: how hard the kick ducks the music, and whether the duck follows the rite. Kick, toms and hats are tuned to the chord they land on.'),
       duckRow, scRow, secRow, tuneRow, octRow);
     refresh();
   } });
 
-  Sound.subscribe(refresh);
+  if (hasSound) Sound.subscribe(() => { sync(); refresh(); });
   Hooks.on('song', refresh);
+  Hooks.on('forget', () => setTimeout(refresh, 7200));      // once the sigil has burned, the panel forgets it too
   UI.whenReady(refresh);
 
-  return { chordAt, rootAt, settings: S };
+  UI.key(',', 'Previous groove', () => step(-1), { group: 'Drums', display: ',' });
+  UI.key('.', 'Next groove', () => step(1), { group: 'Drums', display: '.' });
+
+  return { chordAt, rootAt, settings: S, sync, step, optionsFor };
 })();
 
 if (typeof window !== 'undefined') window.DrumEngine = DrumEngine;

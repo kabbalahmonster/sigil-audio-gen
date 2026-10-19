@@ -80,12 +80,14 @@ const Sound = (() => {
     kSub: 1, kPunch: 1, kDecay: 1, kTone: 0,
     sBody: 1, sSnap: 1, sTone: 1,
     hTone: 1, hDecay: 1,
+    take: 0,                       // which groove the kit plays (05c); 0 is the sigil's own
   };
 
   function composePatch(sig, variant, overrides) {
     const derived = SD.derive(sig.hash, variant);
     const mood = (app.song && app.song.cfg && app.song.cfg.sound) || {};
-    const base = { ...DEFAULTS, ...derived, ...mood };
+    // The kit's FX (the D· knobs) are dealt from their own stream, so derive() stays as it was.
+    const base = { ...DEFAULTS, ...derived, ...SD.drumFx(sig.hash, variant), ...mood };
     return { base, P: { ...base, ...overrides }, tables: SD.tables(sig, variant) };
   }
 
@@ -1028,6 +1030,18 @@ const Sound = (() => {
     },
     view: () => cur,
     state: () => ({ key: cur.key, variant: cur.variant, o: cur.o, P: cur.P, base: cur.base, tables: cur.tables, mags: cur.mags }),
+    /**
+     * The knob overrides that WILL apply to a sigil once it is loaded: a shared link's patch,
+     * else this device's bank. For code that runs at composition time, before attach() has
+     * synced the live patch to the new sigil (the drum engine reads `take` this way).
+     */
+    overridesFor(sig) {
+      if (!sig) return {};
+      const key = keyOf(sig);
+      if (pending && pending.key === key) return { ...pending.o };
+      if (key === cur.key && cur.P) return { ...cur.o };
+      return { ...((bank[key] && bank[key].o) || {}) };
+    },
     get mode() { return prefs.mode; },
     get lite() { return prefs.lite; },
     get keysOn() { return prefs.keys; },
@@ -1060,6 +1074,8 @@ const Sound = (() => {
     toggleFreeze(force) { frozen = force ?? !frozen; notify(); return frozen; },
 
     set(name, v) { if (!app.sigil) return; cur.o[name] = v; persist(); recompute(); refreshEngine(); notify(); },
+    /** Return one knob to this sigil's own value (and drop it from the patch code). */
+    unset(name) { if (!app.sigil) return; delete cur.o[name]; persist(); recompute(); refreshEngine(); notify(); },
     reset() { cur.o = {}; cur.mut = 0; persist(); recompute(); refreshEngine(); notify(); },
     mutate() {
       if (!app.sigil) return;

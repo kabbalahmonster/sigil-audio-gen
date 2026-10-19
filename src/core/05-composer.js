@@ -468,6 +468,7 @@ function arpBar(ev, t0, c, sec, P, scale, leadBase, barIdx) {
  *   • Parameters are gathered into `cfg` and passed through the 'compose'
  *     filter (Moods, Hours & Moon, the Mixer's tempo lock).
  *   • The plan goes through the 'plan' filter.
+ *   • The finished event list goes through the 'score' filter (step 4b).
  *   • Optional `sigil.partners` (Fusion, M8) are extra melodic voices traced
  *     on the same wheel. They help choose the harmony (at passing-tone weight)
  *     but never override the primary melody.
@@ -629,7 +630,11 @@ function composeSong(sigil) {
                     dur: sec.end - sec.start, vel: 1 });
   });
 
-  events.sort((a, b) => a.beat - b.beat);
+  /* 4b ─ Module hook: the whole score, before it is sorted and indexed. A listener may return a
+          replacement array (the drum engine, m15, rewrites the kit's part here). It must NOT draw
+          from R. With no listener this is the identity, so the core's own output is unchanged. */
+  const score = Hooks.filter('score', events, { sigil, cfg, sections: plan, phrases, total: beat });
+  score.sort((a, b) => a.beat - b.beat);
 
   /* 5 ─ Derived data used by the HUD, renderer and reduction ceremony. */
   const chimeNotes = buildPhrase(sigil, { k: 0, m: 1, reverse: false }, 0).notes;
@@ -643,11 +648,11 @@ function composeSong(sigil) {
     leadBase, bassBase,
     P: cfg.P, voicing: cfg.voicing, levels: cfg.levels,
     validChords: validChords(scale),
-    sections: plan, phrases, events, total: beat,
+    sections: plan, phrases, events: score, total: beat,
 
     // Pre-extracted beat lists for the renderer's cheap pulse() lookups
-    kicks:  events.filter((e) => e.type === 'kick').map((e) => e.beat),
-    snares: events.filter((e) => e.type === 'snare' && e.vel > 0.5).map((e) => e.beat),
+    kicks:  score.filter((e) => e.type === 'kick').map((e) => e.beat),
+    snares: score.filter((e) => e.type === 'snare' && e.vel > 0.5).map((e) => e.beat),
 
     // One bell per letter, for the reduction ceremony
     chimes: sigil.nodes.map((_, i) => degToMidi(chimeNotes[i].deg, leadBase, scale) + 12),

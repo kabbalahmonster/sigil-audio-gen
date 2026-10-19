@@ -2,8 +2,9 @@
 /* ══════════════════════════════════════════════════════════════════════════
    m12 · SOUND UI v2
    --------------------------------------------------------------------------
-   • Sixteen drag-knobs. Drag (Shift = fine), wheel, arrow keys, double-click
-     resets to this sigil's own value.
+   • Drag-knobs in three groups: the voice, the kit's tone, and the kit's own
+     FX chain (the D· knobs, DSP §5b). Drag (Shift = fine), wheel, arrow keys,
+     double-click resets to this sigil's own value.
    • Cube map: the 9 × 5 wavetable with the current cell and the travel vector.
    • Scope: the true signal path — blended cell, sub, drive, fold, bit-depth
      and sample-hold — with the clean wave behind it as a ghost.
@@ -57,6 +58,28 @@ const SoundUI = (() => {
     { name: 'hDecay',  label: 'H·Decay', min: 0.2, max: 2,  step: 0.01, fmt: fmtNum },
   ];
 
+  /**
+   * The kit's own FX chain, in signal order. They are patch fields like every
+   * other knob here, so they are dealt per sigil, saved per sigil, follow the
+   * rite with the Sound arc, and travel in a patch code. HOW the kit plays
+   * (patterns, fills, ducking, and the chain's bypass) is the Drum Engine panel.
+   */
+  const ECHO_NAMES = ['1/16', '1/8', '3/16', '1/4'];
+  const fmtFilter = (v) => (Math.abs(v) < 0.005 ? 'open' : v < 0 ? `lp ${(-v).toFixed(2)}` : `hp ${v.toFixed(2)}`);
+  const DRUM_FX_KNOBS = [
+    { name: 'dDrive',  label: 'D·Drive',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum,    hint: 'saturation on the kit alone' },
+    { name: 'dPunch',  label: 'D·Punch',  min: -1, max: 1,  step: 0.01, fmt: fmtNum,    idle: 0, hint: 'the attack of every hit: left softens, right sharpens' },
+    { name: 'dBody',   label: 'D·Body',   min: -1, max: 1,  step: 0.01, fmt: fmtNum,    idle: 0, hint: 'the tail of every hit: left tightens, right lengthens' },
+    { name: 'dCrush',  label: 'D·Crush',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum,    hint: 'the kit’s own bit-crusher: how much of it' },
+    { name: 'dBits',   label: 'D·Bits',   min: 2,  max: 16, step: 1,    fmt: fmtInt,    hint: 'bit depth of the kit’s crusher' },
+    { name: 'dHold',   label: 'D·Hold',   min: 1,  max: 16, step: 1,    fmt: fmtInt,    hint: 'sample-hold of the kit’s crusher' },
+    { name: 'dFilter', label: 'D·Filter', min: -1, max: 1,  step: 0.01, fmt: fmtFilter, idle: 0, hint: 'left closes a low-pass, right opens a high-pass, centre is open' },
+    { name: 'dSmash',  label: 'D·Smash',  min: 0,  max: 1,  step: 0.01, fmt: fmtNum,    hint: 'parallel compression: weight under the hits' },
+    { name: 'dRoom',   label: 'D·Room',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum,    hint: 'the kit’s room; its size follows Size' },
+    { name: 'dEcho',   label: 'D·Echo',   min: 0,  max: 1,  step: 0.01, fmt: fmtNum,    hint: 'a ping-pong echo on the kit, in time' },
+    { name: 'dTime',   label: 'D·Time',   min: 0,  max: 3,  step: 1,    fmt: (v) => ECHO_NAMES[clamp(Math.round(v), 0, 3)], wheel: 1, hint: 'the echo’s note value' },
+  ];
+
   const KEYMAP = { a: 0, s: 1, d: 2, f: 3, h: 4, j: 5, k: 6, ';': 7, q: 8, w: 9, e: 10, r: 11, u: 12, i: 13, o: 14, p: 15 };
 
   const knobs = {};
@@ -66,7 +89,7 @@ const SoundUI = (() => {
   /* ── Knob ───────────────────────────────────────────────────────────── */
 
   function knob(def) {
-    const { name, label, min, max, step, fmt } = def;
+    const { name, label, min, max, step, fmt, hint, wheel = 4 } = def;
     let val = min, drag = null;
     const unit = Math.max(step, (max - min) / 80);
 
@@ -76,7 +99,7 @@ const SoundUI = (() => {
     const el = h('div', {
       class: 'kb', tabindex: '0', role: 'slider', 'aria-label': label,
       'aria-valuemin': min, 'aria-valuemax': max,
-      title: `${label}: drag, wheel or arrows · Shift for fine · double-click resets`,
+      title: `${label}${hint ? ' — ' + hint : ''}: drag, wheel or arrows · Shift for fine · double-click resets`,
     }, ring, cap);
     const wrap = h('div', { class: 'kb-wrap' }, el, h('span', { class: 'kb-label' }, label), out);
 
@@ -88,6 +111,7 @@ const SoundUI = (() => {
       cap.style.transform = `rotate(${-135 + p * 270}deg)`;
       out.textContent = fmt(val);
       el.setAttribute('aria-valuenow', String(val));
+      el.setAttribute('aria-valuetext', fmt(val));
     };
     const commit = (v) => {
       const nv = snap(v);
@@ -104,7 +128,7 @@ const SoundUI = (() => {
     const endDrag = () => (drag = null);
     el.addEventListener('pointerup', endDrag);
     el.addEventListener('pointercancel', endDrag);
-    el.addEventListener('wheel', (e) => { e.preventDefault(); commit(val - Math.sign(e.deltaY) * unit * (e.shiftKey ? 1 : 4)); }, { passive: false });
+    el.addEventListener('wheel', (e) => { e.preventDefault(); commit(val - Math.sign(e.deltaY) * unit * (e.shiftKey ? 1 : wheel)); }, { passive: false });
     el.addEventListener('dblclick', () => { const b = Sound.state().base; commit(b ? b[name] : min); });
     el.addEventListener('keydown', (e) => {
       const dir = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[e.key];
@@ -332,7 +356,9 @@ const SoundUI = (() => {
     raf = requestAnimationFrame(() => {
       if (!voiceSel) return;
       const st = Sound.state();
-      for (const d of KNOBS.concat(DRUM_KNOBS)) if (knobs[d.name]) knobs[d.name].set(st.P ? st.P[d.name] : d.min);
+      for (const d of KNOBS.concat(DRUM_KNOBS, DRUM_FX_KNOBS)) {
+        if (knobs[d.name]) knobs[d.name].set(st.P && st.P[d.name] != null ? st.P[d.name] : d.idle ?? d.min);
+      }
       voiceSel.input.value = st.P ? st.P.voice : 'auto';
       modeSel.input.value = Sound.mode;
       liteBox.input.checked = Sound.lite;
@@ -398,6 +424,7 @@ const SoundUI = (() => {
     const mk = (list) => h('div', { class: 'kb-grid' }, list.map((d) => { const k = knob(d); knobs[d.name] = k; return k.el; }));
     const grid = mk(KNOBS);
     const drumGrid = mk(DRUM_KNOBS);
+    const drumFxGrid = mk(DRUM_FX_KNOBS);
     scope = h('canvas', { class: 'snd-scope', width: 280, height: 168, 'aria-hidden': 'true' });
     cube = h('canvas', { class: 'snd-cube', width: 280, height: 46, 'aria-hidden': 'true' });
 
@@ -429,6 +456,9 @@ const SoundUI = (() => {
       grid,
       h('div', { class: 'snd-h' }, 'Drums · tone & texture'),
       drumGrid,
+      h('div', { class: 'snd-h' }, 'Drums · their own FX'),
+      UI.note('A chain for the kit alone, in this order: drive, punch and body, crusher, filter; then smash, room and echo beside the dry hit. Each sigil is dealt its own; the Drum Engine panel can bypass it.'),
+      drumFxGrid,
       h('div', { class: 'sgrow dream' },
         UI.button('◀ dream', () => Sound.dream(-1)), dreamLbl, UI.button('dream ▶', () => Sound.dream(1))),
       h('div', { class: 'sgrow' },

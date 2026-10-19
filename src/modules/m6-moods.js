@@ -43,6 +43,7 @@ const Moods = (() => {
         cfg.P.kick = euclid(4, 16, 0);
         cfg.P.swing = Math.min(cfg.P.swing, 0.12);
         cfg.levels = { drums: 1.1, arp: 1.15 };
+        cfg.drums = { steady: true };          // m15: the four-on-the-floor is the point, so the kick takes no liberties
       },
       plan(plan) {
         for (const s of plan) {
@@ -64,6 +65,7 @@ const Moods = (() => {
         cfg.voicing = { seventh: false, ninth: true };
         cfg.P.arp = 'pendulum';
         cfg.levels = { drums: 0.45, bass: 0.7, arp: 0.9 };
+        cfg.drums = { fills: 0.2, variation: 0.4 };   // m15: a hush does not fill
       },
       plan(plan) {
         for (const s of plan) {
@@ -204,6 +206,7 @@ const Moods = (() => {
         cfg.bpm = Math.round(cfg.bpm * 1.08);
         cfg.levels = { arp: 1.2, drums: 1.05, pad: 0.7 };
         cfg.sound = { grit: 0.6, bits: 6, hold: 3, chorus: 0.1, sweep: 0.15, drift: 0, layer: 7, sub: 0.3, drums: 1.1, kPunch: 1.5, sSnap: 1.4, hDecay: 0.5 };
+        cfg.drums = { human: 0, steady: true };   // the drum engine (m15): no drummer's hand, no liberties with the kick
       },
       plan(plan) {
         for (const s of plan) { s.halfTime = false; if (s.intensity > 0) s.intensity = 2; if (s.arp) s.arp = 'full'; }
@@ -216,6 +219,7 @@ const Moods = (() => {
         cfg.bpm = Math.round(cfg.bpm * 0.7);
         cfg.levels = { bass: 1.25, drone: 1.3, bell: 0.5, arp: 0.4, drums: 0.8 };
         cfg.sound = { bright: 0.16, layer: 4, sub: 1, tilt: 0.5, chorus: 0.5, echo: 0.7, grit: 0.2, bits: 10, drumX: 1, drumY: 0.2, kSub: 1.6, kDecay: 1.6, hTone: 0.4 };
+        cfg.drums = { fills: 0.25 };                  // m15: felt more than heard
       },
       plan(plan) { for (const s of plan) { s.drone = true; s.intensity = Math.min(1, s.intensity); s.density = 0; } },
     },
@@ -248,6 +252,7 @@ const Moods = (() => {
         cfg.bpm = Math.round(cfg.bpm * 0.82);
         cfg.levels = { drums: 0.25, pad: 1.2, harm: 1.25, drone: 1.2 };
         cfg.sound = { voice: 'bow', bright: 0.45, chorus: 0.7, sweep: 0.3, drift: 0.25, sub: 0.5, grit: 0, echo: 0.6, drums: 0.4, hDecay: 1.4 };
+        cfg.drums = { fills: 0, variation: 0.3 };     // m15: almost no percussion means no fills either
       },
       plan(plan) {
         for (const s of plan) { s.intensity = Math.min(1, s.intensity); s.drone = true; s.halfTime = false; }

@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════
-   SIGIL DSP CORE v2
+   SIGIL DSP CORE v3
    --------------------------------------------------------------------------
    Pure JavaScript synthesis. No Web Audio, no DOM, no imports. One file, three
    hosts, identical sound:
@@ -21,12 +21,16 @@
      events    Float64Array, STRIDE per event, sorted by beat  → see EV
      sections  Float64Array, PSTRIDE per section               → see PA
      tables    Float32Array, CELL floats per cube cell (NT mip tiers)
+
+   v3 adds the TOM voice and the drum FX chain (§5b). Both are inert until a
+   plan asks for them: with every D* column at its default the drum path is
+   sample-for-sample what v2 produced, which tests/drums.spec.mjs checks.
    ══════════════════════════════════════════════════════════════════════════ */
    (function (G) {
     'use strict';
   
     /* ── §1 CONSTANTS ──────────────────────────────────────────────────────── */
-    const VERSION = 2;
+    const VERSION = 3;
     const TAU = Math.PI * 2;
     const SQ2 = Math.SQRT2;
     const BLOCK = 128;                 // render quantum (Web Audio's, and ours offline)
@@ -43,7 +47,7 @@
   
     /** Voice kinds. LEAD is resolved at note-on by the patch's VOICE field. */
     const KIND = Object.freeze({ LEAD: 1, WAVE: 2, VOX: 3, FM: 4, BOW: 5, BELL: 6, PAD: 7,
-      DRONE: 8, KICK: 9, SNARE: 10, HAT: 11, NOISE: 12, FIRE: 13 });
+      DRONE: 8, KICK: 9, SNARE: 10, HAT: 11, NOISE: 12, FIRE: 13, TOM: 14 });
   
     /** Buses. 'fx' = live keys and ritual sounds; 'post' bypasses the master chain and the banish filter. */
     const BUS_NAMES = Object.freeze(['lead', 'harm', 'bell', 'pad', 'bass', 'arp', 'drums', 'drone', 'fx', 'post']);
@@ -67,14 +71,26 @@
       AUX: 8, P0: 9, P1: 10, P2: 11, P3: 12, P4: 13, P5: 14, SEED: 15 });
     const STRIDE = 16;
   
-    /** SECTION ROW (PSTRIDE = 24): the per-section sound patch, read at note-on and per block. */
+    /**
+     * SECTION ROW (PSTRIDE = 40): the per-section sound patch, read at note-on and per block.
+     * Columns 22+ are the drum FX chain (§5b). Their defaults are all "off", so a
+     * host that never writes them gets the kit exactly as it was before the chain existed.
+     *   DDRIVE 0…1 saturation                        DFILTER −1…1 (low-pass ↔ high-pass, 0 = open)
+     *   DPUNCH −1…1 transient (soften ↔ sharpen)     DBODY  −1…1 tail (tighten ↔ lengthen)
+     *   DCRUSH 0…1 crusher mix · DBITS 2…16 · DHOLD 1…16 (sample-hold)
+     *   DSMASH 0…1 parallel compression              DROOM 0…1 room send · DSIZE 0…1 its decay
+     *   DECHO  0…1 ping-pong echo send · DTIME its time in beats
+     */
     const PA = Object.freeze({ START: 0, BRIGHT: 1, SUB: 2, BREATH: 3, THROAT: 4, WAVE: 5, LAYER: 6,
       SWEEP: 7, DRIFT: 8, VOWEL: 9, VOICE: 10, DRUMS: 11, HDECAY: 12, CHORUS: 13, ECHO: 14,
-      GRIT: 15, BITS: 16, HOLD: 17, FOLD: 18, DRIVE: 19, DUCK: 20, INTENSITY: 21 });
-    const PSTRIDE = 24;
+      GRIT: 15, BITS: 16, HOLD: 17, FOLD: 18, DRIVE: 19, DUCK: 20, INTENSITY: 21,
+      DPUNCH: 22, DBODY: 23, DDRIVE: 24, DCRUSH: 25, DBITS: 26, DHOLD: 27, DFILTER: 28,
+      DSMASH: 29, DROOM: 30, DSIZE: 31, DECHO: 32, DTIME: 33 });
+    const PSTRIDE = 40;
     const DEFAULT_PATCH = new Float64Array(PSTRIDE);
     Object.entries({ BRIGHT: 0.6, SUB: 0.2, BREATH: 0.2, WAVE: 2, LAYER: 1, SWEEP: 0.5, DRIFT: 0.3,
-      DRUMS: 1, HDECAY: 1, CHORUS: 0.3, ECHO: 0.3, BITS: 16, HOLD: 1, DUCK: 0.5, INTENSITY: 1 })
+      DRUMS: 1, HDECAY: 1, CHORUS: 0.3, ECHO: 0.3, BITS: 16, HOLD: 1, DUCK: 0.5, INTENSITY: 1,
+      DBITS: 16, DHOLD: 1, DSIZE: 0.5, DTIME: 0.75 })
       .forEach(([k, v]) => { DEFAULT_PATCH[PA[k]] = v; });
   
     /* Mirrors of SoundDesign tables, so the core has no dependencies. */
@@ -751,6 +767,55 @@
       if (e < 1e-4 || kf < 1e-3) v.active = false;
     }
   
+    /* ── TOM: a tuned membrane. Fundamental plus the (1,1) mode a major sixth-ish
+       above it (×1.593), both falling into pitch, and a stick click.
+       It never writes the sidechain key: a fill should not pump the music.
+       Row: F Hz · P0 drop (starts at F·(1+P0)) · P1 drop s · P2 decay s · P3 stick level
+            · P4 stick Hz · P5 drive 0–1 */
+    function initTom(c, v, src, o, pb) {
+      const sr = c.sr, S = c.sec, P = v.p;
+      common(c, v, src, o, 0); v.gate = -1;
+      v.kind = KIND.TOM; v.stage = 2;
+      v.lvl = S[pb + PA.DRUMS] * 0.6;                         // a tom at full velocity sits level with the snare
+      const f = Math.min(v.f, sr * 0.12), dec = Math.max(0.03, src[o + EV.P2]);
+      P[0] = clamp(src[o + EV.P0], 0, 2);
+      P[1] = 1 + 2 * clamp(src[o + EV.P5], 0, 1);
+      P[2] = 1 / sat(P[1]);
+      P[3] = Math.max(1, 0.0015 * sr);
+      v.inc[0] = f / sr; v.inc[1] = (1.593 * f) / sr;
+      v.lv[0] = 0.9; v.lv[1] = 0.28; v.lv[2] = Math.max(0, src[o + EV.P3]); v.lv[3] = 1;
+      v.dk[0] = decayOf(dec, sr); v.dk[1] = decayOf(dec * 0.35, sr); v.dk[2] = decayOf(0.006, sr);
+      v.dk[3] = decayOf(Math.max(0.004, src[o + EV.P1] / 3), sr);
+      svfSet(v.cf, 0, sr, src[o + EV.P4] || 2400, 1.2);
+    }
+    function rTom(c, v, L, R, from, n) {
+      const P = v.p, lv = v.lv, dk = v.dk;
+      const i0 = v.inc[0], i1 = v.inc[1], db = dk[0], dv = dk[1], dc = dk[2], dg = dk[3];
+      const gx = P[0], drv = P[1], nrm = P[2], aB = P[3];
+      const a1 = v.cf[0], a2 = v.cf[1], a3 = v.cf[2], kq = v.cf[3], kd = v.kd;
+      const gain = v.vel * v.lvl, gL = v.gl * gain, gR = v.gr * gain;
+      let p0 = v.ph[0], p1 = v.ph[1], lb = lv[0], lo = lv[1], lc = lv[2], ge = lv[3];
+      let s1 = v.fs[0], s2 = v.fs[1], r = v.rng | 0, age = v.age, kf = v.kf;
+      for (let i = from; i < n; i++, age++) {
+        ge *= dg;
+        const m = 1 + gx * ge;
+        p0 += i0 * m; if (p0 >= 1) p0 -= 1;
+        p1 += i1 * m; if (p1 >= 1) p1 -= 1;
+        let y = (sinAt(p0) * lb + sinAt(p1) * lo) * (age < aB ? age / aB : 1); lb *= db; lo *= dv;
+        if (lc > 1e-5) {
+          r ^= r << 13; r ^= r >>> 17; r ^= r << 5;
+          const x = r * NZ, v3 = x - s2, v1 = a1 * s1 + a2 * v3, v2 = s2 + a2 * s1 + a3 * v3;
+          s1 = 2 * v1 - s1; s2 = 2 * v2 - s2;
+          y += v1 * kq * lc; lc *= dc;
+        }
+        y = sat(y * drv) * nrm * kf; kf *= kd;
+        L[i] += y * gL; R[i] += y * gR;
+      }
+      v.ph[0] = p0; v.ph[1] = p1; lv[0] = lb; lv[1] = lo; lv[2] = lc; lv[3] = ge;
+      v.fs[0] = s1; v.fs[1] = s2; v.rng = r; v.age = age; v.kf = kf;
+      if ((lb < 1e-4 && lc < 1e-4) || kf < 1e-3) v.active = false;
+    }
+
     /* ── NOISE: filtered noise, swept F start→end over DUR
        Row: P0 mode (0 LP · 1 BP · 2 HP) · P1 Hz start · P2 Hz end · P3 Q · P4 attack s
             · P5 decay tc s · AUX shape (0 percussive · 1 swell) · VEL = peak */
@@ -835,7 +900,7 @@
     RENDER[KIND.LEAD] = rWave; RENDER[KIND.WAVE] = rWave; RENDER[KIND.VOX] = rVox; RENDER[KIND.FM] = rFm;
     RENDER[KIND.BOW] = rBow; RENDER[KIND.BELL] = rBell; RENDER[KIND.PAD] = rPad; RENDER[KIND.DRONE] = rDrone;
     RENDER[KIND.KICK] = rKick; RENDER[KIND.SNARE] = rSnare; RENDER[KIND.HAT] = rHat;
-    RENDER[KIND.NOISE] = rNoise; RENDER[KIND.FIRE] = rFire;
+    RENDER[KIND.NOISE] = rNoise; RENDER[KIND.FIRE] = rFire; RENDER[KIND.TOM] = rTom;
   
     /* ── §5 EFFECTS ────────────────────────────────────────────────────────── */
     /** 8-line FDN (Hadamard) + early reflections tapped from the sigil's strokes. */
@@ -958,6 +1023,236 @@
       }
     }
   
+    /* ── §5b DRUM FX: the kit's own chain ──────────────────────────────────────
+         drums bus → drive → shape → crush → filter ─┬→ glue ───────────┬→ master
+                                                     ├→ smash (parallel)─┤
+                                                     ├→ room ────────────┤
+                                                     └→ echo (ping-pong)─┘
+       The music has its own crusher, delay and hall; these are the kit's, so the
+       drums can be destroyed without destroying the choir. Drive comes before the
+       shaper so that Punch can give back the attack that saturation rounds off. Every stage is skipped
+       at zero: an untouched patch costs nothing and changes nothing. Nothing here
+       allocates, and coefficients move once per block.
+       ────────────────────────────────────────────────────────────────────────── */
+
+    /**
+     * Transient shaper: three envelopes of one detector, compared as RATIOS so the
+     * effect does not depend on how loud the kit is.
+     *   fast   follows the peaks of the hit
+     *   slow   chases `fast` upward with a 15 ms lag (and falls with it), so
+     *          (fast − slow) / fast is large only while a hit is ARRIVING  → PUNCH
+     *   peak   is pinned to `fast` at each onset and then held, so
+     *          (peak − fast) / peak is how far the hit has DIED AWAY       → BODY
+     * The detector is high-passed at 500 Hz (two poles): it hears clicks, noise
+     * and cymbals but not the kick's sub, which would otherwise wobble the gain at
+     * twice its own frequency. A dead zone ignores what ripple remains. The gain
+     * is applied to the full signal, so the sub is shaped with the rest.
+     */
+    class Shaper {
+      constructor(sr) {
+        this.hc = 1 - Math.exp((-TAU * 500) / sr);
+        this.fA = coefOf(0.0003, sr); this.fR = coefOf(0.06, sr);
+        this.sA = coefOf(0.015, sr); this.pR = coefOf(2.5, sr);
+        this.gA = coefOf(0.0004, sr); this.gR = coefOf(0.012, sr);
+        this.clear();
+      }
+      clear() {
+        this.l1 = 0; this.l2 = 0; this.r1 = 0; this.r2 = 0;
+        this.eF = 0; this.eS = 0; this.eP = 0; this.ga = 0; this.gs = 0;
+      }
+      run(L, R, n, punch, body) {
+        const hc = this.hc, fA = this.fA, fR = this.fR, sA = this.sA, pR = this.pR, gA = this.gA, gR = this.gR;
+        const pa = punch >= 0 ? punch * 1.6 : punch * 0.8, ps = body >= 0 ? body * 1.8 : body * 0.92;
+        let l1 = this.l1, l2 = this.l2, r1 = this.r1, r2 = this.r2;
+        let eF = this.eF, eS = this.eS, eP = this.eP, ga = this.ga, gs = this.gs;
+        for (let i = 0; i < n; i++) {
+          const l = L[i], r = R[i];
+          l1 += hc * (l - l1); let d = l - l1; l2 += hc * (d - l2); d -= l2;
+          r1 += hc * (r - r1); let e = r - r1; r2 += hc * (e - r2); e -= r2;
+          if (d < 0) d = -d; if (e < 0) e = -e; if (e > d) d = e;
+          eF += (d > eF ? fA : fR) * (d - eF);
+          if (eF > eS) eS += sA * (eF - eS); else eS = eF;
+          let a = (eF - eS) / (eF + 1e-4);
+          a = a > 0.2 ? (a - 0.2) * 1.25 : 0;                  // dead zone: ripple is not an onset
+          if (a > 0.15 || eF > eP) eP = eF; else eP -= pR * eP;
+          const t = (eP - eF) / (eP + 1e-4);
+          ga += (a > ga ? gA : gR) * (a - ga);
+          gs += (t < gs ? gA : gR) * (t - gs);                 // lets go at once when the next hit lands
+          const g = (1 + pa * ga) * (1 + ps * gs);
+          L[i] = l * g; R[i] = r * g;
+        }
+        const q = 1e-12;
+        this.l1 = l1 > -q && l1 < q ? 0 : l1; this.l2 = l2 > -q && l2 < q ? 0 : l2;
+        this.r1 = r1 > -q && r1 < q ? 0 : r1; this.r2 = r2 > -q && r2 < q ? 0 : r2;
+        this.eF = eF < q ? 0 : eF; this.eS = eS < q ? 0 : eS; this.eP = eP < q ? 0 : eP;
+        this.ga = ga < q ? 0 : ga; this.gs = gs < q ? 0 : gs;
+      }
+    }
+
+    /** Bit-depth + sample-hold, with its own hold phase and dither stream (the kit's crusher). */
+    class Crusher {
+      constructor(seed) { this.seed = seed | 0 || 1; this.clear(); }
+      clear() { this.n = 0; this.l = 0; this.r = 0; this.rng = this.seed; }
+      run(L, R, n, mix, bits, hold) {
+        const levels = Math.pow(2, bits - 1), inv = 1 / levels;
+        let cn = this.n, hl = this.l, hr = this.r, r = this.rng | 0;
+        for (let i = 0; i < n; i++) {
+          if (cn <= 0) {
+            cn = hold;
+            r ^= r << 13; r ^= r >>> 17; r ^= r << 5;
+            const d = r * NZ * 0.5 * inv;
+            let a = L[i], b = R[i];
+            a = a < -1 ? -1 : a > 1 ? 1 : a; b = b < -1 ? -1 : b > 1 ? 1 : b;
+            // round to nearest without a call: the offset keeps the operand positive, so |0 is floor
+            hl = ((((a + d) * levels + 65536.5) | 0) - 65536) * inv; hr = ((((b + d) * levels + 65536.5) | 0) - 65536) * inv;
+          }
+          cn--;
+          L[i] += (hl - L[i]) * mix; R[i] += (hr - R[i]) * mix;
+        }
+        this.n = cn; this.l = hl; this.r = hr; this.rng = r;
+      }
+    }
+
+    /**
+     * A small room for the kit: two diffusers into eight short Hadamard lines.
+     * The lines are a few milliseconds long (the hall's are 30–73), so the
+     * reflections arrive as one thickening of the hit rather than as echoes.
+     * SIZE moves the decay and the damping, never the line lengths, so it can be
+     * swept while the kit plays.
+     */
+    class Room {
+      constructor(sr) {
+        this.sr = sr;
+        const MS = [5.3, 7.9, 10.1, 12.7, 15.1, 18.3, 22.9, 27.7];
+        this.len = new Int32Array(8); this.base = new Int32Array(8); this.pos = new Int32Array(8);
+        let total = 0;
+        for (let j = 0; j < 8; j++) { this.len[j] = Math.round((MS[j] * sr) / 1000) | 1; this.base[j] = total; total += this.len[j]; }
+        this.buf = new Float32Array(total);
+        this.g = new Float64Array(8); this.z = new Float64Array(8); this.y = new Float64Array(8);
+        let ps = 1; while (ps < sr * 0.02) ps <<= 1;
+        this.pre = new Float32Array(ps); this.pM = ps - 1; this.pW = 0; this.preN = Math.round(0.006 * sr);
+        this.d1 = new Float32Array(Math.round(0.0017 * sr) | 1); this.d2 = new Float32Array(Math.round(0.0031 * sr) | 1);
+        this.i1 = 0; this.i2 = 0;
+        this.hc = 1 - Math.exp((-TAU * 170) / sr); this.hz = 0;
+        this.dc = 0.5; this.dn = 1e-20; this.size = -1; this.ring = 0;
+        this.span = this.preN + this.len[7] + this.d1.length + this.d2.length;   // the longest way through, in samples
+        this.setSize(0.5);
+      }
+      setSize(size) {
+        size = clamp(+size || 0, 0, 1);
+        if (Math.abs(size - this.size) < 0.004) return;
+        this.size = size;
+        const rt = 0.2 + 0.75 * size;
+        for (let j = 0; j < 8; j++) this.g[j] = Math.pow(10, (-3 * this.len[j]) / (rt * this.sr));
+        this.dc = 0.62 - 0.22 * size;                          // a bigger room is a darker one
+      }
+      clear() {
+        this.buf.fill(0); this.pre.fill(0); this.d1.fill(0); this.d2.fill(0); this.z.fill(0);
+        this.hz = 0; this.ring = 0;
+      }
+      /**
+       * in = the dry kit; `send` scales what enters the room, `wet` what comes back. Adds into out.
+       * `ring` counts down the samples until the room could be silent (see PingPong.run).
+       */
+      run(inL, inR, outL, outR, n, send, wet) {
+        const buf = this.buf, len = this.len, base = this.base, pos = this.pos, g = this.g, z = this.z, y = this.y;
+        const pre = this.pre, pM = this.pM, preN = this.preN, d1 = this.d1, d2 = this.d2, n1 = d1.length, n2 = d2.length;
+        const hc = this.hc, dc = this.dc, S8 = 0.3535533905932738, s = send * 0.5;
+        let w = this.pW, i1 = this.i1, i2 = this.i2, hz = this.hz, pk = 0;
+        this.dn = -this.dn; const dn = this.dn;
+        for (let i = 0; i < n; i++) {
+          const m = (inL[i] + inR[i]) * s;
+          hz += hc * (m - hz);                                 // keep the sub out of the room
+          let x = m - hz;
+          const qi = x < 0 ? -x : x; if (qi > pk) pk = qi;
+          let d = d1[i1], a = d - 0.6 * x; d1[i1] = x + 0.6 * a; if (++i1 >= n1) i1 = 0; x = a;
+          d = d2[i2]; a = d - 0.6 * x; d2[i2] = x + 0.6 * a; if (++i2 >= n2) i2 = 0;
+          pre[w] = a;
+          x = pre[(w - preN) & pM] + dn;
+          w = (w + 1) & pM;
+          for (let j = 0; j < 8; j++) y[j] = buf[base[j] + pos[j]];
+          const a0 = y[0] + y[1], a1 = y[0] - y[1], a2 = y[2] + y[3], a3 = y[2] - y[3];
+          const a4 = y[4] + y[5], a5 = y[4] - y[5], a6 = y[6] + y[7], a7 = y[6] - y[7];
+          const b0 = a0 + a2, b1 = a1 + a3, b2 = a0 - a2, b3 = a1 - a3;
+          const b4 = a4 + a6, b5 = a5 + a7, b6 = a4 - a6, b7 = a5 - a7;
+          z[0] += dc * ((b0 + b4) * S8 + x - z[0]); z[1] += dc * ((b1 + b5) * S8 - x - z[1]);
+          z[2] += dc * ((b2 + b6) * S8 + x - z[2]); z[3] += dc * ((b3 + b7) * S8 - x - z[3]);
+          z[4] += dc * ((b0 - b4) * S8 + x - z[4]); z[5] += dc * ((b1 - b5) * S8 - x - z[5]);
+          z[6] += dc * ((b2 - b6) * S8 + x - z[6]); z[7] += dc * ((b3 - b7) * S8 - x - z[7]);
+          for (let j = 0; j < 8; j++) { buf[base[j] + pos[j]] = z[j] * g[j]; if (++pos[j] >= len[j]) pos[j] = 0; }
+          const ol = y[0] + y[2] + y[4] + y[6], or = y[1] + y[3] + y[5] + y[7];
+          outL[i] += ol * wet; outR[i] += or * wet;
+          const q = ol < 0 ? -ol : ol; if (q > pk) pk = q;
+        }
+        this.pW = w; this.i1 = i1; this.i2 = i2; this.hz = hz > -1e-12 && hz < 1e-12 ? 0 : hz;
+        if (pk > 1e-5) this.ring = this.span + n; else if (this.ring > 0) this.ring -= n;
+      }
+    }
+
+    /**
+     * The kit's echo: a tempo-synced ping-pong. The send is high-passed (a kick in a
+     * delay line is mud), the loop is low-passed (each repeat is further away), and
+     * the input enters on the left and crosses over on every repeat.
+     */
+    class PingPong {
+      constructor(sr) {
+        this.sr = sr;
+        let s = 1; while (s < sr * 1.7) s <<= 1;               // one beat at 40 bpm is 1.5 s
+        this.bL = new Float32Array(s); this.bR = new Float32Array(s); this.M = s - 1; this.w = 0;
+        this.d = Math.round(0.45 * sr); this.dT = this.d; this.slew = 1 - Math.exp(-1 / (0.12 * sr));
+        this.fb = 0.42; this.lc = 1 - Math.exp((-TAU * 3200) / sr); this.hc = 1 - Math.exp((-TAU * 320) / sr);
+        this.zl = 0; this.zr = 0; this.hz = 0; this.dn = 1e-20; this.ring = 0;
+      }
+      /** Whole samples, so that at rest the line is read without interpolation. */
+      setTime(sec) { this.dT = clamp(Math.round(sec * this.sr), 8, this.M - 4); }
+      clear() { this.bL.fill(0); this.bR.fill(0); this.zl = 0; this.zr = 0; this.hz = 0; this.ring = 0; }
+      /**
+       * Adds the repeats into out. `ring` is how many samples remain until the line could be silent:
+       * a repeat is IN FLIGHT for a whole delay time before it is heard, so silence at the output
+       * does not mean the line is empty. The core rests the echo only when ring has run out.
+       */
+      run(inL, inR, outL, outR, n, send, ret) {
+        const bL = this.bL, bR = this.bR, M = this.M, dT = this.dT, fb = this.fb, lc = this.lc, hc = this.hc;
+        const s = send * 0.5;
+        let w = this.w, d = this.d, zl = this.zl, zr = this.zr, hz = this.hz, pk = 0;
+        this.dn = -this.dn; const dn = this.dn;
+        if (d === dT) {                                        // at rest: an integer delay
+          const D = dT | 0;
+          for (let i = 0; i < n; i++) {
+            const i0 = (w - D) & M;
+            zl += lc * (bL[i0] - zl) + dn; zr += lc * (bR[i0] - zr) + dn;
+            const m = (inL[i] + inR[i]) * s;
+            hz += hc * (m - hz);
+            const x = m - hz + zr * fb;
+            bL[w] = x; bR[w] = zl * fb;
+            w = (w + 1) & M;
+            outL[i] += zl * ret; outR[i] += zr * ret;
+            const q = x < 0 ? -x : x, u = zl < 0 ? -zl : zl;   // what went in, and what came round
+            if (q > pk) pk = q; if (u > pk) pk = u;
+          }
+        } else {                                               // the tempo or the note value moved: glide there
+          const sl = this.slew, size = M + 1;
+          for (let i = 0; i < n; i++) {
+            d += (dT - d) * sl;
+            const rp = w - d + size, ip = rp | 0, fr = rp - ip, i0 = ip & M, i1 = (ip + 1) & M;   // rp > 0, so |0 is floor
+            zl += lc * (bL[i0] + (bL[i1] - bL[i0]) * fr - zl) + dn;
+            zr += lc * (bR[i0] + (bR[i1] - bR[i0]) * fr - zr) + dn;
+            const m = (inL[i] + inR[i]) * s;
+            hz += hc * (m - hz);
+            const x = m - hz + zr * fb;
+            bL[w] = x; bR[w] = zl * fb;
+            w = (w + 1) & M;
+            outL[i] += zl * ret; outR[i] += zr * ret;
+            const q = x < 0 ? -x : x, u = zl < 0 ? -zl : zl;   // what went in, and what came round
+            if (q > pk) pk = q; if (u > pk) pk = u;
+          }
+          if (d - dT < 0.02 && dT - d < 0.02) d = dT;         // arrived
+        }
+        this.w = w; this.d = d; this.zl = zl; this.zr = zr; this.hz = hz > -1e-12 && hz < 1e-12 ? 0 : hz;
+        if (pk > 1e-5) this.ring = dT + n; else if (this.ring > 0) this.ring -= n;
+      }
+    }
+
     /* ── §6 CORE: transport, scheduler, voice pool, mix ───────────────────── */
     class Core {
       constructor(sr, opts) {
@@ -986,6 +1281,17 @@
         this.glueEnv = 0; this.glueG = 1; this.glueA = 1 - Math.exp(-BLOCK / (0.003 * sr)); this.glueR = 1 - Math.exp(-BLOCK / (0.12 * sr));
         this.compEnv = 0; this.compG = 1; this.compA = 1 - Math.exp(-BLOCK / (0.008 * sr)); this.compR = 1 - Math.exp(-BLOCK / (0.25 * sr));
         this.fxC = 1 - Math.exp(-BLOCK / (0.05 * sr)); this.lvlC = 1 - Math.exp(-BLOCK / (0.03 * sr));
+        // drum FX (§5b): smoothed amounts, then each stage's state
+        this.dPunchS = 0; this.dBodyS = 0; this.dDriveS = 0; this.dCrushS = 0; this.dFiltS = 0;
+        this.dSmashS = 0; this.dRoomS = 0; this.dEchoS = 0; this.dBits = 16; this.dHold = 1;
+        this.shaper = new Shaper(sr); this.shapeOn = false;
+        this.dcrush = new Crusher(0x51f15e11);
+        this.dfC = new Float64Array(4); this.dfS = new Float64Array(4); this.dfOn = false; this.dfLP = false;
+        this.smEnv = 0; this.smA = coefOf(0.0002, sr); this.smR = coefOf(0.09, sr);
+        this.room = new Room(sr); this.roomOn = false;
+        this.decho = new PingPong(sr); this.echoOn = false;
+        this.tL = mk(); this.tR = mk();
+        this.dLive = 0; this.dHang = Math.ceil((0.25 * sr) / BLOCK);   // the chain rests 250 ms after the kit does
         // transport
         this.playing = false; this.beat = 0; this.bps = 1; this.total = 0; this.pass = 0; this.passMax = 0;
         this.regOn = false; this.regLo = 0; this.regHi = 0; this.ptr = 0; this.dirtyT = false;
@@ -1096,6 +1402,7 @@
           case KIND.HAT: initHat(this, v, src, o, pb); break;
           case KIND.NOISE: initNoise(this, v, src, o, pb); break;
           case KIND.FIRE: initFire(this, v, src, o); break;
+          case KIND.TOM: initTom(this, v, src, o, pb); break;
           default: v.active = false; return;
         }
         v.active = true;
@@ -1229,6 +1536,9 @@
         for (const v of this.voices) v.active = false;
         this.nLive = 0;
         this.reverb.clear(); this.delay.clear(); this.chorus.clear();
+        this.shaper.clear(); this.dcrush.clear(); this.room.clear(); this.decho.clear();
+        this.dfS.fill(0); this.smEnv = 0; this.shapeOn = false; this.dfOn = false; this.roomOn = false; this.echoOn = false;
+        this.dLive = 0;
         this.duckEnv = 0; this.glueEnv = 0; this.compEnv = 0; this.glueG = 1; this.compG = 1;
         this.meters.fill(0);
       }
@@ -1268,14 +1578,30 @@
         this.duckS += (S[pb + PA.DUCK] - this.duckS) * c;
         this.revS += (this.revT - this.revS) * c;
         this.mg += (this.mgT - this.mg) * c;
+        // drum FX
+        this.dPunchS += (S[pb + PA.DPUNCH] - this.dPunchS) * c;
+        this.dBodyS += (S[pb + PA.DBODY] - this.dBodyS) * c;
+        this.dDriveS += (S[pb + PA.DDRIVE] - this.dDriveS) * c;
+        const dcr = S[pb + PA.DCRUSH];
+        this.dCrushS += (dcr - this.dCrushS) * c;
+        this.dBits = dcr > 0 ? clamp(Math.round(S[pb + PA.DBITS]), 2, 16) : 16;
+        this.dHold = clamp(Math.round(S[pb + PA.DHOLD]), 1, 32);
+        this.dFiltS += (S[pb + PA.DFILTER] - this.dFiltS) * c;
+        this.dSmashS += (S[pb + PA.DSMASH] - this.dSmashS) * c;
+        this.dRoomS += (S[pb + PA.DROOM] - this.dRoomS) * c;
+        this.dEchoS += (S[pb + PA.DECHO] - this.dEchoS) * c;
+        this.room.setSize(S[pb + PA.DSIZE]);
+        const dt = S[pb + PA.DTIME];
+        this.decho.setTime((dt > 0 ? dt : 0.75) / this.bps);
       }
-      snapFx() { this.updateFx(1); this.busG.set(this.busT); }
+      snapFx() { this.updateFx(1); this.busG.set(this.busT); this.decho.d = this.decho.dT; }
       mixdown(outL, outR, n, postL, postR) {
         const mL = this.mL, mR = this.mR, dL = this.dL, dR = this.dR, pL = this.pL, pR = this.pR;
         const rL = this.rL, rR = this.rR, yL = this.yL, yR = this.yR, hL = this.hL, hR = this.hR;
         mL.fill(0, 0, n); mR.fill(0, 0, n); dL.fill(0, 0, n); dR.fill(0, 0, n); pL.fill(0, 0, n); pR.fill(0, 0, n);
         rL.fill(0, 0, n); rR.fill(0, 0, n); yL.fill(0, 0, n); yR.fill(0, 0, n); hL.fill(0, 0, n); hR.fill(0, 0, n);
         this.updateFx(this.fxC);
+        if (this.used[B_DRUMS]) this.dLive = this.dHang; else if (this.dLive > 0) this.dLive--;
         // 1 · buses → music / drums / post, plus sends
         for (let b = 0; b < NBUS; b++) {
           let g = this.busG[b];
@@ -1318,8 +1644,8 @@
         }
         // 4 · crusher (music only, so the kit stays clean)
         if (this.gritS > 0.001) this.crush(mL, mR, n);
-        // 5 · drum glue: 4:1 above −14 dB, detected per block, gain ramped per sample
-        this.glue(dL, dR, n);
+        // 5 · the kit's own chain (§5b), around the glue: 4:1 above −14 dB, detected per block
+        this.drumFx(dL, dR, n);
         // 6 · master
         this.master(outL, outR, n, postL, postR);
       }
@@ -1342,6 +1668,97 @@
           L[i] += (hl - L[i]) * mix; R[i] += (hr - R[i]) * mix;
         }
         this.crN = cn; this.crL = hl; this.crR = hr; this.crRng = r;
+      }
+      /**
+       * §5b in order. Each stage is skipped at zero, so a default patch reaches glue() untouched;
+       * and the whole chain rests while the kit is silent (a section without drums costs nothing).
+       */
+      drumFx(L, R, n) {
+        const EPS = 0.002, live = this.dLive > 0;
+        const pu = this.dPunchS, bo = this.dBodyS, fl = this.dFiltS;
+        if (live) {
+          if (this.dDriveS > EPS) this.drumDrive(L, R, n, this.dDriveS);
+          if (pu > EPS || pu < -EPS || bo > EPS || bo < -EPS) { this.shaper.run(L, R, n, pu, bo); this.shapeOn = true; }
+          else if (this.shapeOn) { this.shaper.clear(); this.shapeOn = false; }
+          if (this.dCrushS > EPS) this.dcrush.run(L, R, n, this.dCrushS > 1 ? 1 : this.dCrushS, this.dBits, this.dHold);
+          if (fl > EPS || fl < -EPS) this.drumFilter(L, R, n, fl);
+          else if (this.dfOn) { this.dfS.fill(0); this.dfOn = false; }
+        } else {
+          if (this.shapeOn) { this.shaper.clear(); this.shapeOn = false; }
+          if (this.dfOn) { this.dfS.fill(0); this.dfOn = false; }
+        }
+        // sends are taken after the tone stages and before the glue, so tails are not pumped
+        const sm = live && this.dSmashS > EPS;
+        const rm = this.roomOn || (live && this.dRoomS > EPS), ec = this.echoOn || (live && this.dEchoS > EPS);
+        const tL = this.tL, tR = this.tR;
+        if (sm || rm || ec) for (let i = 0; i < n; i++) { tL[i] = L[i]; tR[i] = R[i]; }
+        this.glue(L, R, n);
+        if (sm) this.smash(tL, tR, L, R, n, this.dSmashS);
+        else this.smEnv = 0;
+        if (rm) {
+          const a = live && this.dRoomS > EPS ? this.dRoomS : 0;
+          this.room.run(tL, tR, L, R, n, a, 0.5);
+          this.roomOn = a > 0 || this.room.ring > 0;           // ring out, then rest
+          if (!this.roomOn) this.room.clear();
+        }
+        if (ec) {
+          const a = live && this.dEchoS > EPS ? this.dEchoS : 0;
+          this.decho.run(tL, tR, L, R, n, a, 0.9);
+          this.echoOn = a > 0 || this.decho.ring > 0;
+          if (!this.echoOn) this.decho.clear();
+        }
+      }
+      /**
+       * Saturation that is unity at the kit's working level (0.28): louder hits are rounded off,
+       * quieter ones come up to meet them. It thickens the kit rather than merely turning it up.
+       */
+      drumDrive(L, R, n, amt) {
+        const k = 1 + amt * 5, nrm = 0.28 / sat(0.28 * k), w = amt < 0.1 ? amt * 10 : 1;
+        for (let i = 0; i < n; i++) {
+          const l = L[i], r = R[i];
+          L[i] = l + (sat(l * k) * nrm - l) * w; R[i] = r + (sat(r * k) * nrm - r) * w;
+        }
+      }
+      /** One knob: below zero a low-pass closes from 20 kHz to 120 Hz, above zero a high-pass opens from 20 Hz to 6 kHz. */
+      drumFilter(L, R, n, f) {
+        const lp = f < 0, a = lp ? (f < -1 ? 1 : -f) : (f > 1 ? 1 : f), cf = this.dfC, st = this.dfS;
+        if (!this.dfOn || lp !== this.dfLP) {                  // entering, or crossing zero: start from a state
+          st[0] = 0; st[2] = 0;                                // that passes the signal, so there is no tick
+          st[1] = lp ? L[0] : 0; st[3] = lp ? R[0] : 0;
+          this.dfLP = lp;
+        }
+        svfSet(cf, 0, this.sr, lp ? 20000 * Math.pow(0.006, a) : 20 * Math.pow(300, a), 0.75 + 0.55 * a);
+        const a1 = cf[0], a2 = cf[1], a3 = cf[2], k = cf[3];
+        let l1 = st[0], l2 = st[1], r1 = st[2], r2 = st[3];
+        for (let i = 0; i < n; i++) {
+          let x = L[i], v3 = x - l2, v1 = a1 * l1 + a2 * v3, v2 = l2 + a2 * l1 + a3 * v3;
+          l1 = 2 * v1 - l1; l2 = 2 * v2 - l2;
+          L[i] = lp ? v2 : x - k * v1 - v2;
+          x = R[i]; v3 = x - r2; v1 = a1 * r1 + a2 * v3; v2 = r2 + a2 * r1 + a3 * v3;
+          r1 = 2 * v1 - r1; r2 = 2 * v2 - r2;
+          R[i] = lp ? v2 : x - k * v1 - v2;
+        }
+        const t = 1e-15;
+        st[0] = l1 > -t && l1 < t ? 0 : l1; st[1] = l2 > -t && l2 < t ? 0 : l2;
+        st[2] = r1 > -t && r1 < t ? 0 : r1; st[3] = r2 > -t && r2 < t ? 0 : r2;
+        this.dfOn = true;
+      }
+      /**
+       * Parallel compression: a hard-squashed copy (12:1 above −29 dB, +8 dB make-up) added under
+       * the kit, and the sum trimmed so that a full-level hit leaves as loud as it arrived. Peaks
+       * stay where they were; everything between them comes up. Weight without losing the hit.
+       */
+      smash(inL, inR, outL, outR, n, amt) {
+        const A = this.smA, Rl = this.smR, thr = 0.035, add = amt * 2.6, trim = 1 / (1 + 0.38 * amt);
+        let e = this.smEnv;
+        for (let i = 0; i < n; i++) {
+          const l = inL[i], r = inR[i];
+          let a = l < 0 ? -l : l; const b = r < 0 ? -r : r; if (b > a) a = b;
+          e += (a > e ? A : Rl) * (a - e);
+          const g = (e > thr ? (thr + (e - thr) * 0.0833) / e : 1) * add;
+          outL[i] = (outL[i] + l * g) * trim; outR[i] = (outR[i] + r * g) * trim;
+        }
+        this.smEnv = e < 1e-9 ? 0 : e;
       }
       glue(L, R, n) {
         let pk = 0;
@@ -1393,7 +1810,7 @@
         row[EV.F] = 220; row[EV.DUR] = 0.5; row[EV.VEL] = 0.3; row[EV.AUX] = 2000;
         row[EV.P0] = 1.5; row[EV.P1] = 0.05; row[EV.P2] = 0.3; row[EV.P3] = 1; row[EV.P4] = 1; row[EV.P5] = 4; row[EV.SEED] = 7;
         const kinds = [KIND.LEAD, KIND.WAVE, KIND.VOX, KIND.FM, KIND.BOW, KIND.BELL, KIND.PAD, KIND.DRONE,
-          KIND.KICK, KIND.SNARE, KIND.HAT, KIND.NOISE, KIND.FIRE];
+          KIND.KICK, KIND.SNARE, KIND.HAT, KIND.NOISE, KIND.FIRE, KIND.TOM];
         for (let rep = 0; rep < 3; rep++) {
           for (const k of kinds) { row[EV.KIND] = k; row[EV.BUS] = k >= KIND.KICK ? B_DRUMS : 0; this.spawn(row, 0, 0, 0, 0); }
           for (let b = 0; b < 16; b++) this.process(sL, sR, BLOCK);

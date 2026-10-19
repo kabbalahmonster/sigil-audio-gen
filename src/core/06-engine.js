@@ -121,6 +121,14 @@ class Engine {
   }
   _onMessage(d) {
     switch (d.type) {
+      case 'ready':
+        // The page and the worklet must agree on the table layouts (STRIDE, PSTRIDE). A stale
+        // cached worklet would misread every section row, silently; say so instead.
+        if (d.version !== SigilDSP.VERSION) {
+          this.stats.errors++;
+          console.error(`[engine] DSP worklet is v${d.version} but the page expects v${SigilDSP.VERSION}. Hard-reload to clear the cached worklet.`);
+        }
+        break;
       case 'transport': this.clock.push(d); break;
       case 'tick':
         Object.assign(this.stats, { voices: d.voices, budget: d.budget, steals: d.steals, load: d.load, meters: d.meters, beat: d.beat });

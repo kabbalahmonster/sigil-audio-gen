@@ -3,15 +3,17 @@
    m14 · STEMS & EVOLVE — built on top of m7's renderer
    --------------------------------------------------------------------------
    STEMS   Renders once per bus with every other bus silenced, and downloads
-           one file each. The silencing happens in a 'buses' hook at priority
-           100, so it runs after the Mixer and after Sound's attachment.
+           one file each. The silencing is a `levels` table handed to the
+           renderer (m7 → SigilPlan.renderJob): the job is otherwise the full
+           mix's, lane for lane, so a stem's knobs move exactly as the mix's do.
+           Stems keep the mix's balance by default (one gain for all of them),
+           so laid side by side at unity they are the song.
 
    EVOLVE  Renders each pass with a later dream variant and a gentle macro
            drift, then concatenates the passes with a short equal-power
-           crossfade. A three-pass render becomes a three-act piece.
-
-   Requires one small edit in m7 (see the instructions) so renderSong can take
-   { loops } rather than always using the panel's value.
+           crossfade. A three-pass render becomes a three-act piece. Each pass
+           is also told which pass it is, so the movers (05d) evolve through
+           the acts as they do on the stage, by the Evolution set in Motion.
    ══════════════════════════════════════════════════════════════════════════ */
 
 const RenderPlus = (() => {
@@ -24,13 +26,13 @@ const RenderPlus = (() => {
   ];
   const XF = 0.15;   // seconds of crossfade between evolved passes
 
-  const S = { passes: 3, spread: 1, stems: Object.fromEntries(STEMS.map(([k]) => [k, true])), ...Prefs.get('renderplus', {}) };
+  const S = { passes: 3, spread: 1, normStems: false, stems: Object.fromEntries(STEMS.map(([k]) => [k, true])), ...Prefs.get('renderplus', {}) };
   const save = () => Prefs.set('renderplus', S);
 
   let activeStem = null;   // null = full mix
   let busy = false, bar, status, evolveBtn, stemBtn, info;
 
-  /** Silence every bus except the active stem. Runs last, so nothing overrides it. */
+  /** Silence every bus except the active stem, should the live engine be (re)loaded mid-render. */
   Hooks.on('buses', (buses) => {
     if (!activeStem) return;
     for (const k of Object.keys(buses)) if (k !== activeStem) buses[k].gain.value = 0;
@@ -55,13 +57,13 @@ const RenderPlus = (() => {
     };
   }
 
-  /** Render `passes` passes, each with its own spec, and stitch them together. */
-  async function renderEvolved(song, sr, onProgress, levels){
+  /** Render `passes` passes, each with its own spec, and stitch them together. `levels` isolates a stem. */
+  async function renderEvolved(song, sr, onProgress, levels) {
     const out = [];
     for (let p = 0; p < S.passes; p++) {
       Sound.setRenderSpec(specForPass(p));
       // eslint-disable-next-line no-await-in-loop
-      const r = await Render.renderSong(song, sr, (f) => onProgress((p + f) / S.passes), { loops: 1, levels });
+      const r = await Render.renderSong(song, sr, (f) => onProgress((p + f) / S.passes), { loops: 1, levels, pass0: p });
       out.push(r);
     }
     Sound.clearRenderSpec();
@@ -114,10 +116,15 @@ const RenderPlus = (() => {
         activeStem = busKey;
         status.textContent = `Rendering ${label}…`;
         await frame();
+        // A stem is the same job as the mix with every other bus at zero: same events, same lanes, same passes.
+        const levels = busKey ? stemLevels(busKey) : undefined;
+        const progress = (f) => { bar.classList.remove('busy'); setBar((i + f * 0.9) / list.length); };
         const r = mode === 'stems' && S.passes <= 1
-          ? await Render.renderSong(app.song, 44100, (f) => { bar.classList.remove('busy'); setBar((i + f * 0.9) / list.length); }, { loops: 1, levels })
-          : await renderEvolved(app.song, 44100, (f) => { bar.classList.remove('busy'); setBar((i + f * 0.9) / list.length); });
-        peakNormalise(r);
+          ? await Render.renderSong(app.song, 44100, progress, { loops: 1, levels })
+          : await renderEvolved(app.song, 44100, progress, levels);
+        // The mix is brought up to full scale. Stems are left as the engine balanced them (so they sum
+        // to the song) unless each is asked to be normalised on its own.
+        if (!busKey || S.normStems) peakNormalise(r);
         const blob = await Render.encodeWav(r.L, r.R, r.sr, 24);
         download(blob, `sigil-${UI.fileKey()}${busKey ? '-' + busKey : '-evolved'}.wav`);
         setBar((i + 1) / list.length);
@@ -142,7 +149,7 @@ const RenderPlus = (() => {
     evolveBtn.disabled = !on;
     stemBtn.disabled = !on;
     info.textContent = app.song
-      ? `${S.passes} pass${S.passes === 1 ? '' : 'es'}, each a dream ${S.spread} further on. Stems are 24-bit WAV, one file per bus.`
+      ? `${S.passes} pass${S.passes === 1 ? '' : 'es'}${S.passes > 1 ? `, each a dream ${S.spread} further on and the movers a pass further evolved` : ''}. Stems are 24-bit WAV, one file per bus.`
       : 'Cast a sigil to render.';
   }
 
@@ -165,6 +172,8 @@ const RenderPlus = (() => {
       info,
       h('div', { class: 'sgrow' }, STEMS.map(([k, label]) =>
         UI.check({ label, checked: S.stems[k], onChange: (v) => { S.stems[k] = v; save(); } }))),
+      UI.check({ label: 'Normalise each stem on its own (they will no longer sum to the mix)', checked: S.normStems,
+        onChange: (v) => { S.normStems = v; save(); } }),
       h('div', { class: 'sgrow' }, evolveBtn, stemBtn), bar, status);
     refresh();
   } });

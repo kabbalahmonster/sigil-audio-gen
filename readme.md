@@ -134,6 +134,25 @@ The toms are tuned to the root, fifth and octave of the chord they land on, so a
 is always in key. The composer's original bars (one bar per section, repeated) remain
 available as **Classic** in the Drum Engine panel, and are reproduced exactly.
 
+**Motion.** A patch is a still photograph of a sound; the sigil's letters make it move
+(`05d-motion.js`, shown and steered by M19). A handful of letters each take hold of one
+parameter and move it in time:
+
+| The sigil | The motion |
+|---|---|
+| What kind of consonant a letter is | What it moves. Liquids the **flow** (wave, layer, chorus, sweep, drift) · fricatives the **air** (bright, echo, breath, grit) · nasals the **body** (sub, throat, the kit's room and body) · plosives the **strike** (the kit's punch, drive, smash, echo, filter, level). So different sigils move different things |
+| The letter's ring | How far: outer letters reach further |
+| The way its stroke turns round the wheel | The way the knob turns |
+| The pen, the breath, the phrase, the section, the rite | How it moves: nine gestures, every one a function of the beat (the pen's height and sway as it draws, the Charge ring's eight-beat breath, a swell per phrase, a climb per section, a gathering into each new section, a throw at each phrase's end…) |
+| The rite coming round again | **Evolution.** Pass 1 is the rite as written. After it each mover leans further, turns into a second gesture it was dealt, lets its resting point drift, and two more letters wake |
+
+There is one table of movers and one reader of it. The worklet, every offline render
+job (full mix or stem) and the interface all ask the same pure function the same
+question, *what is mover j doing at this beat of this pass?*, so a knob's bead is not a
+picture of the automation but the automation itself, and a render moves exactly as the
+stage did. **Motion** (how far), **Evolution** (how much each pass differs) and the
+deal of movers are patch fields: saved per sigil, carried in a shared link.
+
 ---
 
 ## Features
@@ -155,10 +174,11 @@ available as **Classic** in the Drum Engine panel, and are reproduced exactly.
 | **M4 Form & Loop** | Section jump list, gapless section looping, keyboard navigation, loop band on the progress bar |
 | **M5 Access** | Reduced motion, high contrast (wins over all palettes), larger text, screen-reader section announcements, `describe()` of the current sigil, progress bar as an ARIA slider |
 | **M6 Moods** | Arrangement presets — Ritual, Ambient, Pulse, Lullaby, Dirge, Ecstatic — applied as `compose`/`plan` filters; re-composes live and resumes at the current section |
-| **M7 Render & Export** | Offline faster-than-realtime render, **parallelised across CPU cores** with section-aligned cuts and crossfades, → WAV 16/24, MP3 (worker LAME), AAC (ADTS) and Opus (hand-written Ogg muxer) via WebCodecs |
+| **M7 Render & Export** | Offline faster-than-realtime render, **parallelised across CPU cores** with section-aligned cuts and crossfades, → WAV 16/24, MP3 (worker LAME), AAC (ADTS) and Opus (hand-written Ogg muxer) via WebCodecs. Every mover moves as it does on the stage; over more than one pass the rite evolves, by the Evolution set in Motion |
 | **M8 Fusion** | Up to three desires on one wheel as counterpoint; partners weigh into harmony at passing-tone strength |
 | **M9 Live Lens** | Drag the wheel to transpose, double-tap to mirror — in real time, affecting melody, harmony, bass and arpeggios, and propagating to MIDI/audio export |
 | **M10 Hours & Moon** | Planetary hours (true sunrise equation if you share location), moon phase, optional attunement of mode/timbre/tempo/palette to the hour, and timed charging sessions |
+| **M19 Motion** | The movers, shown and steered. A row per mover (its letter, what it moves and how, a live meter, a switch to hold it still); `◀ motion ▶` for another deal; **Motion** 0–200 % and **Evolution** 0–100 %, which governs the live loop and the passes of a render alike. In Sound & Patch each moved knob wears its letter, a band for the span it travels and a bead that travels it; on the wheel a ray grows at each moving letter |
 | **M15 Drum Engine** | How the kit plays: Sigil or Classic patterns, a hundred grooves per sigil (`◀ groove ▶`; the number travels in the share link), Variation / Fills / Ghosts / Humanise / Dynamics, sidechain ducking, and a bypass for the kit's own FX chain. The chain itself (drive → punch/body transient shaper → crusher → filter, with parallel compression, a room and a tempo-synced ping-pong echo beside the dry hit) runs in the DSP worklet; its `D·` knobs are in Sound & Patch, dealt per sigil and saved with the patch |
 
 ---
@@ -216,6 +236,7 @@ index.html
 | `04-theory.js` | §4 | `MODES`, `degToMidi`, `mtof`, `fold`, `euclid` |
 | `05-composer.js` | §5 | `makePlan`, `buildPhrase`, `addPassing`, `harmonize`, `padVoicing`, `bassPitch`, `arpTones`, drum/bass/arp bar emitters, **`composeSong`**, time-lookup helpers |
 | `05c-groove.js` | §5c | `Groove`: the drum part written from the sigil (polygons under each section's transform, letter accents, fills). Pure; `apply` / `restore` rewrite a song's kit in place |
+| `05d-motion.js` | §5d | `Motion`: which letter moves which parameter (`deal`), the nine gestures, and the baked table of curves the core and the interface both read (`bake`). Pure |
 | `06-engine.js` | §6 | `Engine`: buses, FX, voices, lookahead scheduler, transport, ritual sounds |
 | `07-renderer.js` | §7 | `Renderer`: frame composition, wheel, rhythm polygons, pen, particles, burn |
 | `08-app.js` | §8 | `cast`, `performReduction`, HUD, controls, `exportSeal`, `toggleRecord`, `share`, `forget`, boot |
@@ -260,7 +281,9 @@ Listeners run in ascending priority and are individually try/caught.
 
 `beforeCast(ctx)` · `cast(sigil, song, opts)` · `song(sigil, song, info)` ·
 `buses(buses, engine)` · `section(sec, si, song)` · `drawPlaying(ctx)` ·
-`stop(reason)` · `forget(sigil)` · `link({members, preset})`
+`stop(reason)` · `forget(sigil)` · `link({members, preset})` ·
+`motion(engine)` (the engine holds a new table of movers; read `engine.auto`,
+and ask `engine.motionNow()` what they are doing at the audible beat)
 
 `drawPlaying` receives `{ r, g, F, T, beat, song, sig, ph, pi, sec, si, kp, sp, lines, app }`.
 Push your stroke point arrays into `lines` so that **Forget** burns them too.
@@ -341,9 +364,17 @@ This is the most important rule in the project.
    field (more Fills adds fills, it does not reshuffle the song). The composer's `R`
    is never touched: with no `score` listener its output is bit-for-bit what it was.
 
-`npm run golden` pins all of the above; `npm run drums` checks the groove's
-invariants and that the engine with the kit's FX bypassed is, to the sample, the
-engine before they existed.
+6. Motion obeys it too. `Motion.deal` draws from `stream(hash, 'motion')` (or
+   `'motion:<n>'`) in a frozen order; `Motion.bake` draws nothing. What a mover does is
+   a pure function of (beat, pass) evaluated by `SigilDSP.autoPass` / `autoCurve` /
+   `autoApply`, and **those three are the only place it is ever evaluated**: on the audio
+   thread, in a render worker, and on the page. A note reads its patch at its own beat,
+   never at its block's, so a sound cannot depend on where 128-sample boundaries fell.
+   Do not add a second implementation "for the UI".
+
+`npm run golden` pins all of the above. `npm run drums` and `npm run motion` check the
+invariants, and that with the kit's FX bypassed and Motion and Evolution at zero the
+engine is, to the sample, the engine before any of this existed.
 
 ---
 

@@ -7,7 +7,9 @@
      • boots the worklet and queues messages until it is ready
      • compiles the score into a plan (via SigilPlan, 06b) and transfers it
      • owns transport commands (play/stop/seek/region/tempo)
-     • owns the VISUAL CLOCK (TransportClock): beat at the AUDIBLE time
+     • owns the VISUAL CLOCK (TransportClock): beat and pass at the AUDIBLE time
+     • keeps the page's copy of the motion table the core was sent, and answers
+       "what is every mover doing now" with the core's own functions (motionNow)
      • exposes bus "proxies" with AudioParam-like gains, so the Mixer (M2) and
        Stems (m14) keep working without knowing the buses live in a worklet
 
@@ -58,6 +60,23 @@ class TransportClock {
     return b;
   }
   beat() { return this.beatAt(this.now()); }
+  /**
+   * Which pass of the rite is AUDIBLE at t (0 = the first). The core says so at every wrap; between
+   * a wrap and its message arriving, the wraps are counted here. A looped section is not a new pass.
+   */
+  passAt(t) {
+    const S = this.segs;
+    if (!S.length) return 0;
+    let s = S[0];
+    for (let i = S.length - 1; i >= 0; i--) if (S[i].t <= t) { s = S[i]; break; }
+    let p = s.pass | 0;
+    if (!s.reg && s.hi > s.lo && s.bps > 0) {
+      const b = s.beat + Math.max(0, t - s.t) * s.bps;
+      if (b >= s.hi) p += Math.floor((b - s.lo) / (s.hi - s.lo));
+    }
+    return p;
+  }
+  pass() { return this.passAt(this.now()); }
 }
 
 /* ── §6.2 Engine ─────────────────────────────────────────────────────────── */
@@ -86,6 +105,9 @@ class Engine {
     this.spb = 0.6; this.running = false; this.buses = null; this.region = null;
     this.levels = {};
     this.params = { reverb: 0.85, master: 1, waveOff: 0 };
+    this.auto = null;        // the motion table the core holds (06b motionSync): { key, n, step, len, lanes, curves, meta }
+    this.sections = null;    // a copy of the section table it holds
+    this.moved = [];         // motionNow()'s reused result
     this.stats = { ready: false, voices: 0, budget: 0, steals: 0, load: -1, meters: null, beat: 0, errors: 0 };
     this.revReturn = { gain: Engine.param(0.85, (v) => this.setParams({ reverb: v })), connect() {}, disconnect() {} };
 
@@ -131,7 +153,8 @@ class Engine {
         break;
       case 'transport': this.clock.push(d); break;
       case 'tick':
-        Object.assign(this.stats, { voices: d.voices, budget: d.budget, steals: d.steals, load: d.load, meters: d.meters, beat: d.beat });
+        Object.assign(this.stats, { voices: d.voices, budget: d.budget, steals: d.steals, load: d.load, meters: d.meters, beat: d.beat,
+          pass: d.pass | 0, moved: d.moved || null });
         for (const fn of this._tickSubs) { try { fn(d); } catch (e) { console.error('[engine:tick]', e); } }
         break;
       case 'error': this.stats.errors++; console.error('[dsp]', d.msg); break;
@@ -150,18 +173,19 @@ class Engine {
     this._flushLevels();
     SigilPlan.sendSong(this, song, sigil);       // plan + sections + tables + reverb
   }
-  start() {
+  /** `pass`: which pass of the rite to begin on (0 = the first). UI.recompose hands back the one it was on. */
+  start(_fade, pass = 0) {
     this.running = true;
     if (this.region) this.setRegion(null);
-    this._play(0);
+    this._play(0, Math.max(0, pass | 0));
   }
   /** play is deferred to a microtask so start()+seek() in one tick is ONE jump, not two. */
-  _play(beat) {
-    if (this._pending) { this._pending.beat = beat; this._pending.cancel = false; return; }
-    const m = (this._pending = { beat, cancel: false });
+  _play(beat, pass = 0) {
+    if (this._pending) { this._pending.beat = beat; this._pending.pass = pass; this._pending.cancel = false; return; }
+    const m = (this._pending = { beat, pass, cancel: false });
     queueMicrotask(() => {
       this._pending = null;
-      if (!m.cancel) this.post({ type: 'play', beat: m.beat, chase: true });
+      if (!m.cancel) this.post({ type: 'play', beat: m.beat, pass: m.pass, chase: true });
     });
   }
   stop(fade = 0.8) {
@@ -189,6 +213,28 @@ class Engine {
   }
   /** Musical time AT THE SPEAKER. Pinned per frame by Stage, so every reader agrees. */
   beatNow() { return this.song ? this.clock.beat() : 0; }
+  /** The pass of the rite at the speaker: 0 is the first time through. */
+  passNow() { return this.song ? this.clock.pass() : 0; }
+  /**
+   * What every mover is adding AT THE SPEAKER, worked out by the very functions the audio thread
+   * uses (SigilDSP.autoPass / autoCurve) on the very table it was sent. So a bead drawn from this
+   * is not a picture of the automation; it is the automation. Returns a reused array, one entry
+   * per mover in table order: { off (column units), curve −1…1, depth, morph 0…1, shift }.
+   */
+  motionNow(beat = this.beatNow(), pass = this.passNow()) {
+    const a = this.auto, out = this.moved;
+    if (!a || !this.song) { out.length = 0; return out; }
+    const T = Engine._mt, motion = this.params.motion ?? 1, evolve = this.params.evolve ?? 0;
+    for (let j = 0; j < a.n; j++) {
+      const m = out[j] || (out[j] = { off: 0, curve: 0, depth: 0, morph: 0, shift: 0 });
+      SigilDSP.autoPass(a.lanes, j, pass, motion, evolve, T);
+      m.depth = T[0]; m.morph = T[1]; m.shift = T[2];
+      m.curve = SigilDSP.autoCurve(a.curves, a.len, a.step, j, beat, T[1]);
+      m.off = m.curve * T[0] + T[2];
+    }
+    out.length = a.n;
+    return out;
+  }
   ts() { return clamp(this.spb / 0.6, 0.35, 1); }
 
   /* ── mix ── */
@@ -265,6 +311,7 @@ Engine.param = function (initial, onSet) {
   return p;
 };
 Engine.voiceBudget = () => Prefs.get('audio.voices', (navigator.hardwareConcurrency || 4) <= 2 ? 32 : 48);
+Engine._mt = new Float64Array(3);   // scratch for motionNow()
 Engine.sharedIR = () => null;
 
 /* Patch registry (kept for modules that still call Engine.claim). */

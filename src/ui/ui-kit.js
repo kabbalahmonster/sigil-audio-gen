@@ -269,12 +269,13 @@ const UI = (() => {
     if (app.mode !== 'playing' || !app.sigil || app.busy) return;
 
     const si = renderer.info ? renderer.info.si : 0;
+    const pass = app.engine.passNow ? app.engine.passNow() : 0;   // the rite keeps its place in its own evolution
     const song = composeSong(app.sigil);
 
     app.engine.stop(0.9);
     app.song = song;
     app.engine.load(song);
-    app.engine.start(0.1);
+    app.engine.start(0.1, pass);
     app.engine.seek(song.sections[Math.min(si, song.sections.length - 1)].start);
 
     applyPalette(app.sigil.palette);

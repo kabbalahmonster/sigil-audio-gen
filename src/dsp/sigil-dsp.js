@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════
-   SIGIL DSP CORE v3
+   SIGIL DSP CORE v4
    --------------------------------------------------------------------------
    Pure JavaScript synthesis. No Web Audio, no DOM, no imports. One file, three
    hosts, identical sound:
@@ -25,12 +25,19 @@
    v3 adds the TOM voice and the drum FX chain (§5b). Both are inert until a
    plan asks for them: with every D* column at its default the drum path is
    sample-for-sample what v2 produced, which tests/drums.spec.mjs checks.
+
+   v4 adds MOTION (§5c): automation lanes laid over the section patch. A lane is
+   a baked curve on a sixteenth-note grid, so a value is a pure function of
+   (beat, pass) and nothing else. That is the whole reason a live performance,
+   a full render and a stem render move their knobs identically: all three ask
+   the same table the same question. With no lanes, or with Motion and Evolve at
+   rest, this file does exactly what v3 did.
    ══════════════════════════════════════════════════════════════════════════ */
    (function (G) {
     'use strict';
   
     /* ── §1 CONSTANTS ──────────────────────────────────────────────────────── */
-    const VERSION = 3;
+    const VERSION = 4;
     const TAU = Math.PI * 2;
     const SQ2 = Math.SQRT2;
     const BLOCK = 128;                 // render quantum (Web Audio's, and ours offline)
@@ -93,6 +100,19 @@
       DBITS: 16, DHOLD: 1, DSIZE: 0.5, DTIME: 0.75 })
       .forEach(([k, v]) => { DEFAULT_PATCH[PA[k]] = v; });
   
+    /**
+     * AUTOMATION LANE (ASTRIDE numbers per lane), up to LANES of them. Written by 05d-motion.js.
+     *   COL    the section column (PA.*) this lane moves     LO, HI  that column's limits
+     *   DEPTH  how far it moves, in the column's own units   SEED    int, for this lane's per-pass wander
+     *   GAIN   how much deeper it moves as passes go by      MORPH   how far it turns into its second curve
+     *   SHIFT  how far its resting value drifts as the passes go by, in the column's own units (signed)
+     *   LATENT 1 = asleep on the first pass; only Evolve wakes it
+     *   GATE   1 = moves only what the patch already has on (a column resting at exactly 0 is left there)
+     * Each lane has two curves (A then B), `len` points each, normalised to −1…1, one point per `step` beats.
+     */
+    const AU = Object.freeze({ COL: 0, LO: 1, HI: 2, DEPTH: 3, GAIN: 4, MORPH: 5, SHIFT: 6, LATENT: 7, SEED: 8, GATE: 9 });
+    const ASTRIDE = 12, LANES = 8;
+
     /* Mirrors of SoundDesign tables, so the core has no dependencies. */
     const VOW_F = [[800, 1150, 2900, 3900], [530, 1840, 2480, 3500], [270, 2290, 3010, 3500],
                    [450, 800, 2830, 3800], [325, 700, 2530, 3500]];
@@ -122,6 +142,69 @@
       cf[j] = a1; cf[j + 1] = g * a1; cf[j + 2] = g * g * a1; cf[j + 3] = k;
     }
   
+    /* ── §2b MOTION: the two questions, asked identically by the core and by the page ─────────
+       These are pure. The core calls them on the audio thread; the interface calls the SAME
+       functions to draw a knob's bead, so what is seen is what is heard, by construction. */
+
+    /** Uniform [0,1) from three integers. Stateless: a pass's wander does not depend on the passes before it. */
+    function hash01(a, b, c) {
+      let h = (a | 0) ^ Math.imul((b | 0) + 1, 0x9e3779b1) ^ Math.imul((c | 0) + 1, 0x85ebca6b);
+      h ^= h >>> 16; h = Math.imul(h, 0x7feb352d);
+      h ^= h >>> 15; h = Math.imul(h, 0x846ca68b);
+      h ^= h >>> 16;
+      return (h >>> 0) / 4294967296;
+    }
+
+    /**
+     * How far along its evolution a pass is, 0…1: nothing on the first pass, more than half by the
+     * second, all but settled by the fifth (0 · .58 · .82 · .93 · .97 …). After that only the wander moves.
+     */
+    const autoTrend = (pass) => (pass > 0 ? 1 - Math.pow(2, -pass / 0.8) : 0);
+
+    /**
+     * What a pass does to lane `j`: out[0] depth (column units, Motion applied), out[1] morph 0…1
+     * between its two curves, out[2] the drift of its resting value (column units).
+     * Pass 0 is the rite as written: no morph, no drift, latent lanes asleep. From there Evolve
+     * leans each lane toward its own ends (a trend that settles after a few passes) and adds a
+     * small bounded wander, so a rite left to loop keeps changing without ever running away.
+     */
+    function autoPass(lanes, j, pass, motion, evolve, out) {
+      const o = j * ASTRIDE, p = pass > 0 ? pass : 0, E = clamp(+evolve || 0, 0, 1), M = motion > 0 ? +motion : 0;
+      const seed = lanes[o + AU.SEED] | 0;
+      const t = E * autoTrend(p);
+      const w1 = p ? hash01(seed, p, 1) * 2 - 1 : 0, w2 = p ? hash01(seed, p, 2) * 2 - 1 : 0, w3 = p ? hash01(seed, p, 3) * 2 - 1 : 0;
+      let dm = lanes[o + AU.LATENT] > 0 ? t * (0.75 + 0.25 * w1) : 1 + t * lanes[o + AU.GAIN] + t * 0.25 * w1;
+      if (dm < 0) dm = 0;
+      out[0] = lanes[o + AU.DEPTH] * M * dm;
+      out[1] = clamp(t * lanes[o + AU.MORPH] + t * 0.3 * w2, 0, 1);
+      out[2] = lanes[o + AU.SHIFT] * t * (1 + 0.4 * w3);
+      return out;
+    }
+
+    /**
+     * Lay a mover's offset over a column's resting value. At a limit the motion TURNS BACK instead
+     * of going flat: a knob already near the top of its travel still moves all the time, downward.
+     */
+    function autoApply(base, off, lo, hi) {
+      let v = base + off;
+      if (v > hi) v = hi - (v - hi); else if (v < lo) v = lo + (lo - v);
+      return v < lo ? lo : v > hi ? hi : v;
+    }
+
+    /** Lane `j`'s curve at `beat`, −1…1: its two baked curves, read between grid points and blended by `morph`. */
+    function autoCurve(curves, len, step, j, beat, morph) {
+      const x = beat / step;
+      let k = x | 0;
+      if (k < 0) k = 0; else if (k > len - 2) k = len - 2;
+      let f = x - k;
+      if (f < 0) f = 0; else if (f > 1) f = 1;
+      const a0 = 2 * j * len + k, b0 = a0 + len;
+      const a = curves[a0] + (curves[a0 + 1] - curves[a0]) * f;
+      if (!(morph > 0)) return a;
+      const b = curves[b0] + (curves[b0 + 1] - curves[b0]) * f;
+      return a + (b - a) * morph;
+    }
+
     const SIN = new Float32Array(TLEN1);
     for (let i = 0; i < TLEN1; i++) SIN[i] = Math.sin((TAU * i) / TLEN);
     /** sin(2π·p) for p in [0,1), by table. */
@@ -1297,6 +1380,10 @@
         this.regOn = false; this.regLo = 0; this.regHi = 0; this.ptr = 0; this.dirtyT = false;
         this.ev = new Float64Array(0); this.nEv = 0; this.sec = DEFAULT_PATCH; this.nSec = 1;
         this.blockTime = 0; this.onTransport = null; this.waveOff = 0;
+        // motion (§5c): the lanes, this pass's scalars for each, and the row they are laid over
+        this.au = null; this.motion = 1; this.evolve = 0; this.pass0 = 0; this.auOn = false;
+        this.auD = new Float64Array(LANES); this.auM = new Float64Array(LANES); this.auS = new Float64Array(LANES);
+        this.auT = new Float64Array(3); this.xr = new Float64Array(PSTRIDE); this.rowS = DEFAULT_PATCH;
         // tables
         this.cube = new Array(NCELL).fill(null); this.anyCell = null;
         this.saw = seriesTable((h) => 1 / h); this.glottal = seriesTable((h) => Math.pow(h, -1.5));
@@ -1334,6 +1421,41 @@
         let lo = 0, hi = this.nEv;
         while (lo < hi) { const m = (lo + hi) >> 1; if (E[m * STRIDE] < beat) lo = m + 1; else hi = m; }
         return lo;
+      }
+
+      /* ── motion (§5c) ── */
+      /** Work out what this pass does to every lane. Called when the pass, the table or an amount changes, never per sample. */
+      autoSet() {
+        const au = this.au;
+        this.auOn = false;
+        if (!au) return;
+        const p = this.pass + this.pass0, T = this.auT;
+        for (let j = 0; j < au.n; j++) {
+          autoPass(au.lanes, j, p, this.motion, this.evolve, T);
+          this.auD[j] = T[0]; this.auM[j] = T[1]; this.auS[j] = T[2];
+          if (T[0] !== 0 || T[2] !== 0) this.auOn = true;
+        }
+      }
+      /**
+       * The section row in force at `beat`, with this pass's motion laid over it. Sets this.rowS and
+       * returns the row's offset into it. With nothing moving it hands back the plan's own table,
+       * untouched, so an engine at rest reads exactly what it read before motion existed.
+       */
+      rowAt(beat) {
+        const S = this.sec, pb = this.secBase(beat);
+        if (!this.auOn) { this.rowS = S; return pb; }
+        const au = this.au, L = au.lanes, X = this.xr;
+        for (let i = 0; i < PSTRIDE; i++) X[i] = S[pb + i];
+        for (let j = 0; j < au.n; j++) {
+          const d = this.auD[j];
+          const off = (d !== 0 ? autoCurve(au.curves, au.len, au.step, j, beat, this.auM[j]) * d : 0) + this.auS[j];
+          if (off === 0) continue;
+          const o = j * ASTRIDE, c = L[o + AU.COL] | 0;
+          if (L[o + AU.GATE] > 0 && X[c] === 0) continue;
+          X[c] = autoApply(X[c], off, L[o + AU.LO], L[o + AU.HI]);
+        }
+        this.rowS = X;
+        return 0;
       }
   
       /* ── voices ── */
@@ -1386,7 +1508,10 @@
         const v = this.alloc();
         v.clear();
         v.off = off; v.order = ++this.order; v.id = id | 0; v.live = src !== this.ev;
-        const pb = this.secBase(v.live ? this.beat : src[o]);
+        // A note reads its patch at ITS OWN beat (not the block's), so its sound does not depend on
+        // where the block boundaries fell: a live note and a rendered one are given the same row.
+        const pb = this.rowAt(v.live ? this.beat : src[o]), plan = this.sec;
+        this.sec = this.rowS;
         switch (src[o + EV.KIND] | 0) {
           case KIND.LEAD: initLead(this, v, src, o, pb, el); break;
           case KIND.WAVE: initWave(this, v, src, o, pb, el, src[o + EV.P0], src[o + EV.P1],
@@ -1403,8 +1528,9 @@
           case KIND.NOISE: initNoise(this, v, src, o, pb); break;
           case KIND.FIRE: initFire(this, v, src, o); break;
           case KIND.TOM: initTom(this, v, src, o, pb); break;
-          default: v.active = false; return;
+          default: v.active = false; this.sec = plan; return;
         }
+        this.sec = plan;
         v.active = true;
       }
       /** After a seek, restart the sustained notes (pads, drones) the playhead landed inside. */
@@ -1450,6 +1576,7 @@
         if (!reg) {
           this.pass++;
           if (this.passMax > 0 && this.pass >= this.passMax) { this.beat = hi; this.playing = false; this.emitT(pos); return; }
+          this.autoSet();                                     // a new pass: the lanes evolve
         }
         const span = hi - lo, over = this.beat - hi;
         this.beat = lo + (span > 0 && over > 0 ? over % span : 0);
@@ -1461,7 +1588,7 @@
         if (!this.onTransport) return;
         const reg = this.regOn;
         this.onTransport(this.blockTime + pos / this.sr, this.beat, this.playing ? this.bps : 0,
-          reg ? this.regLo : 0, reg ? this.regHi : this.total);
+          reg ? this.regLo : 0, reg ? this.regHi : this.total, this.pass + this.pass0, reg);
       }
   
       /* ── messages (between blocks) ── */
@@ -1475,8 +1602,14 @@
             if (m.passes != null) this.passMax = m.passes | 0;
             if (m.keep) this.ptr = this.lower(this.beat);
             else { this.playing = false; this.beat = 0; this.ptr = 0; this.pass = 0; this.regOn = false; }
+            if (m.auto !== undefined) this.setAuto(m.auto);
+            this.autoSet();
             this.dirtyT = true; break;
-          case 'sections': if (m.nSec > 0) { this.sec = m.sections; this.nSec = m.nSec; } break;
+          case 'sections':
+            if (m.nSec > 0) { this.sec = m.sections; this.nSec = m.nSec; }
+            if (m.auto !== undefined) { this.setAuto(m.auto); this.autoSet(); }
+            break;
+          case 'auto': this.setAuto(m.auto); this.autoSet(); break;
           case 'tables':
             if (m.reset) { this.cube.fill(null); this.anyCell = null; }
             this.installCells(m.cells, m.data); break;
@@ -1495,9 +1628,14 @@
             if (m.master != null) this.mgT = +m.master;
             if (m.waveOff != null) this.waveOff = +m.waveOff;
             if (m.voices != null) this.budget = clamp(m.voices | 0, 8, POOL - 8);
+            if (m.motion != null) this.motion = Math.max(0, +m.motion || 0);
+            if (m.evolve != null) this.evolve = clamp(+m.evolve || 0, 0, 1);
+            if (m.pass0 != null) this.pass0 = Math.max(0, m.pass0 | 0);
+            if (m.motion != null || m.evolve != null || m.pass0 != null) { this.autoSet(); this.dirtyT = true; }
             break;
           case 'play':
             this.beat = +m.beat || 0; this.pass = m.pass | 0; this.ptr = this.lower(this.beat);
+            this.autoSet();
             this.playing = this.total > 0;
             if (m.chase) this.chase(this.beat);
             this.dirtyT = true; break;
@@ -1518,6 +1656,12 @@
           case 'trigger': this.queueLive(m.row, +m.when || 0, 0); break;
           case 'panic': this.panic(); break;
         }
+      }
+      /** Install (or clear, with null) the automation table: { n, step, len, lanes, curves }. */
+      setAuto(a) {
+        const ok = a && a.n > 0 && a.len > 1 && a.step > 0 && a.lanes && a.curves
+          && a.lanes.length >= a.n * ASTRIDE && a.curves.length >= a.n * 2 * a.len;
+        this.au = ok ? { n: Math.min(a.n | 0, LANES), step: +a.step, len: a.len | 0, lanes: a.lanes, curves: a.curves } : null;
       }
       installCells(cells, data) {
         for (let i = 0; i < cells.length; i++) {
@@ -1566,7 +1710,7 @@
         this.mixdown(outL, outR, n, postL, postR);
       }
       updateFx(c) {
-        const S = this.sec, pb = this.secBase(this.beat);
+        const pb = this.rowAt(this.beat), S = this.rowS;
         this.choS += (S[pb + PA.CHORUS] * 0.85 - this.choS) * c;
         this.echoS += (0.2 + S[pb + PA.ECHO] * 0.6 - this.echoS) * c;
         const grit = S[pb + PA.GRIT];
@@ -1801,8 +1945,17 @@
       tickInfo(t, load) {
         const m = this.meters, meters = new Array(m.length);
         for (let i = 0; i < m.length; i++) { meters[i] = m[i]; m[i] = 0; }
-        return { type: 'tick', t, beat: this.beat, playing: this.playing, voices: this.act,
-          budget: this.budget, steals: this.steals, duck: this.duckG, load, meters };
+        // What each lane adds right now (column units): lets the page check that it and the core agree.
+        let moved = null;
+        if (this.auOn) {
+          const au = this.au;
+          moved = new Array(au.n);
+          for (let j = 0; j < au.n; j++) {
+            moved[j] = (this.auD[j] !== 0 ? autoCurve(au.curves, au.len, au.step, j, this.beat, this.auM[j]) * this.auD[j] : 0) + this.auS[j];
+          }
+        }
+        return { type: 'tick', t, beat: this.beat, pass: this.pass + this.pass0, playing: this.playing, voices: this.act,
+          budget: this.budget, steals: this.steals, duck: this.duckG, load, meters, moved };
       }
       /** Run every voice kind briefly so the JIT compiles the hot loops before the first note. */
       warmup() {
@@ -1826,7 +1979,7 @@
       core.command({ type: 'cube', spectra: job.spectra, tilt: job.tilt, density: job.density });
       if (job.reverb) core.command({ type: 'reverb', rt60: job.reverb.rt60, damp: job.reverb.damp, taps: job.reverb.taps });
       core.command({ type: 'plan', events: job.events, count: job.count, sections: job.sections, nSec: job.nSec,
-        total: job.total, bpm: job.bpm, passes: job.passes });
+        total: job.total, bpm: job.bpm, passes: job.passes, auto: job.auto || null });
       core.command({ type: 'levels', levels: job.levels || {}, snap: true });
       core.command(Object.assign({ type: 'params' }, job.params || {}));
       const spb = 60 / job.bpm, passSec = job.total * spb, pass = Math.floor(from / passSec + 1e-9);
@@ -1851,6 +2004,7 @@
     G.SigilDSP = Object.freeze({
       VERSION, BLOCK, TLEN, TLEN1, TIERS, NT, CELL, H, UPPER, FX, FY, NCELL,
       KIND, BUS, BUS_NAMES, BUS_DEFAULT, EV, STRIDE, PA, PSTRIDE, DEFAULT_PATCH,
+      AU, ASTRIDE, LANES, autoPass, autoCurve, autoApply, autoTrend, hash01,
       Core, buildTables, buildCell, renderRange,
     });
   })(typeof globalThis !== 'undefined' ? globalThis : self);

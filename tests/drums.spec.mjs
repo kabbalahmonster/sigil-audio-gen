@@ -10,8 +10,9 @@
         it always was, and the composer's bars can always be put back exactly.
      2. The groove is deterministic, well-formed for any sigil and any plan,
         and its amounts are thresholds (more never means "different").
-     3. The engine with the chain bypassed is, bit for bit, the engine before
-        the chain existed (hashes recorded from the last commit without it).
+     3. The engine with the chain bypassed (and the movers of 05d at rest) is,
+        bit for bit, the engine before the chain existed (hashes recorded from
+        the last commit without it).
      4. The chain is finite, deterministic, silent when off, and converges
         inside the offline renderer's pre-roll (m7's seam contract).
    ══════════════════════════════════════════════════════════════════════════ */
@@ -22,7 +23,7 @@
    
    const root = join(dirname(fileURLToPath(import.meta.url)), '..');
    const FILES = ['src/core/00-utils.js', 'src/core/01-crypto.js', 'src/core/02-reduction.js', 'src/core/03-geometry.js',
-     'src/core/04-theory.js', 'src/core/05-composer.js', 'src/core/05b-timbre.js', 'src/core/05c-groove.js',
+     'src/core/04-theory.js', 'src/core/05-composer.js', 'src/core/05b-timbre.js', 'src/core/05c-groove.js', 'src/core/05d-motion.js',
      'src/dsp/sigil-dsp.js', 'src/core/06b-compiler.js'];
    const QUICK = process.argv.includes('--quick');
    
@@ -315,16 +316,17 @@
        const run = fresh();
        run(`globalThis.hash = ${HASH};
          globalThis.around = (word, sr, drums, groove) => {
-           const sig = buildSigil(word), song = composeSong(sig);
+           const sig = buildSigil(word), song = composeSong(sig), spec = SigilPlan.defaultSpec(sig, song);
+           spec.P.motion = 0; spec.P.evolve = 0;            // the movers (05d) at rest: this group is about the kit alone
            if (groove) Groove.apply(song, sig, groove);
-           const job = SigilPlan.renderJob(song, sig, { sr, spb: song.spb, passes: 1, lens: false, spec: SigilPlan.defaultSpec(sig, song), levels: null, drums });
+           const job = SigilPlan.renderJob(song, sig, { sr, spb: song.spb, passes: 1, lens: false, spec, levels: null, drums });
            const s = song.sections[2].start, a = (s - 8) * song.spb, b = (s + 8) * song.spb;   // the fill into the Exaltation, and two bars of it
            return SigilDSP.renderRange(job, a, b, a);
          };`);
        /* Recorded from the commit before the chain existed (SigilDSP v2), same range, same hash. */
        const BEFORE = { KRSTVM: [48000, '3e9ebb88'], THWLBDNS: [44100, '83a0a5e'] };
        for (const [w, [sr, want]] of Object.entries(BEFORE)) {
-         eq(run(`hash(around(${JSON.stringify(w)}, ${sr}, { fx: false }))`), want, `${w} @ ${sr}: composer’s bars + chain bypassed = the v2 engine, bit for bit`);
+         eq(run(`hash(around(${JSON.stringify(w)}, ${sr}, { fx: false }))`), want, `${w} @ ${sr}: composer’s bars + chain bypassed + movers at rest = the v2 engine, bit for bit`);
        }
        ok(run(`hash(around('KRSTVM', 48000, { fx: true })) !== '3e9ebb88'`), 'with the chain on, the sigil’s dealt FX are audible');
        ok(run(`hash(around('KRSTVM', 48000, { fx: false }, {})) !== '3e9ebb88'`), 'with a groove, the part is audibly a different one');

@@ -61,6 +61,16 @@ function drumFxFingerprint(reduced, variant) {
   return toHex(hashStr(JSON.stringify(SoundDesign.drumFx(buildSigil(reduced).hash, variant)))).slice(0, 32);
 }
 
+/**
+ * Motion fingerprint (05d): who moves what (the deal), and the baked curves of the whole song,
+ * quantised to 1e-4. `variant` 0 is the sigil's own deal.
+ */
+function motionFingerprint(reduced, variant) {
+  const s = buildSigil(reduced), t = Motion.bake(composeSong(s), s, { variant });
+  const parts = [JSON.stringify(t.lanes), t.len, Array.from(t.curves, (x) => Math.round(x * 1e4)).join(',')];
+  return toHex(hashStr(parts.join('#'))).slice(0, 32);
+}
+
 /** Everything the CI compares, as a flat object of name → value. */
 function computeAll() {
   const out = {};
@@ -71,6 +81,7 @@ function computeAll() {
   for (const w of GOLDEN_INPUTS) {
     for (const take of [0, 3]) out[`groove:${w}:take${take}`] = grooveFingerprint(w, take);
     for (const v of GOLDEN_VARIANTS) out[`drumfx:${w}:dream${v}`] = drumFxFingerprint(w, v);
+    for (const v of GOLDEN_VARIANTS) out[`motion:${w}:deal${v}`] = motionFingerprint(w, v);
   }
   const patch = { wave: 2.5, voice: 'vox', grit: 0.4 };
   out['codec:encode'] = SoundDesign.encodePatch(patch, 3);

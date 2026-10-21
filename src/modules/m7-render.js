@@ -85,7 +85,9 @@ const Render = (() => {
      const spb = S.tempo && app.engine && app.engine.song === song ? app.engine.spb : song.spb;
      const passes = opts.loops || S.loops;
      const lens = S.lens && typeof LiveLens !== 'undefined' && LiveLens.active();
-     const job = SigilPlan.renderJob(song, app.sigil, { sr, spb, passes, lens, levels: opts.levels });
+     // opts.pass0: which pass of the rite this render begins at (m14 renders its passes one at a time),
+     // so that the movers evolve across them exactly as they would in one long render or on the stage.
+     const job = SigilPlan.renderJob(song, app.sigil, { sr, spb, passes, lens, levels: opts.levels, pass0: opts.pass0 });
      const music = passes * song.total * spb, total = music + TAIL;
      const lanes = S.fast ? clamp((navigator.hardwareConcurrency || 2) - 1, 1, 4) : 1;
      const K = Math.max(1, Math.min(lanes * 2, Math.floor(music / 20)));
@@ -546,7 +548,7 @@ self.onmessage = function (e) {
       onChange: (v) => { S.kbps[S.format] = +v; save(); refresh(); } });
 
     el.append(
-      UI.note('Renders the performance offline, faster than real time, including your mix, tempo and live lens. Lossless WAV, or compressed MP3 / AAC / Opus.'),
+      UI.note('Renders the performance offline, faster than real time, including your mix, tempo and live lens, and every mover exactly as it moves on the stage. Over more than one pass the rite evolves, by the amount set in Motion. Lossless WAV, or compressed MP3 / AAC / Opus.'),
       fmtRow, kbpsRow,
       UI.select({ label: 'Length', value: S.loops,
         options: [['1', 'One pass'], ['2', 'Two passes'], ['3', 'Three passes']],

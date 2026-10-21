@@ -7,6 +7,8 @@
     "check": "find src -name '*.js' -exec node --check {} \\;",
     "bench": "node tests/dsp-bench.mjs",
     "drums": "node tests/drums.spec.mjs",
-    "drums:quick": "node tests/drums.spec.mjs --quick"
+    "drums:quick": "node tests/drums.spec.mjs --quick",
+    "motion": "node tests/motion.spec.mjs",
+    "motion:quick": "node tests/motion.spec.mjs --quick"
   }
 }

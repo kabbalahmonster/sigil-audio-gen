@@ -81,6 +81,7 @@ const Sound = (() => {
     sBody: 1, sSnap: 1, sTone: 1,
     hTone: 1, hDecay: 1,
     take: 0,                       // which groove the kit plays (05c); 0 is the sigil's own
+    motion: 1, evolve: 0.5, mVar: 0, mMute: 0,   // the movers (05d): depth, change per pass, which deal, which are held
   };
 
   function composePatch(sig, variant, overrides) {

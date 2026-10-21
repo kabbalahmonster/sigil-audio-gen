@@ -18,7 +18,8 @@
        this.failed = false;
        this.perf = typeof performance !== 'undefined' && typeof performance.now === 'function';
        this.load = 0;
-       this.core.onTransport = (t, beat, bps, lo, hi) => this.port.postMessage({ type: 'transport', t, beat, bps, lo, hi });
+       this.core.onTransport = (t, beat, bps, lo, hi, pass, reg) =>
+         this.port.postMessage({ type: 'transport', t, beat, bps, lo, hi, pass, reg: !!reg });
        this.port.onmessage = (e) => {
          try { this.core.command(e.data); }
          catch (err) { this.port.postMessage({ type: 'error', msg: String((err && err.stack) || err) }); }

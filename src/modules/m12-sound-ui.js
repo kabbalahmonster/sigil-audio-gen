@@ -12,7 +12,11 @@
    • Patch library, import and export.
    • Play the sigil: X toggles keys (A S D F H J K ; and Q–P), V freezes,
      and clicking any HUD letter sounds its note.
-   Redraws are event-driven, never per frame.
+   • Movers: a knob that one of the sigil's letters is moving (05d, m19) wears
+     that letter, a band showing how far it will travel this pass, and a bead
+     that travels it in time. The knob itself stays where it was set: the bead
+     is what the engine hears. m19 drives this through mark() and bead().
+   Redraws are event-driven, never per frame (the beads are one transform each).
    ══════════════════════════════════════════════════════════════════════════ */
 
 const SoundUI = (() => {
@@ -96,12 +100,49 @@ const SoundUI = (() => {
     const ring = h('div', { class: 'kb-ring' });
     const cap = h('div', { class: 'kb-cap' }, h('i'));
     const out = h('output', { class: 'kb-val' });
+    const how = 'drag, wheel or arrows · Shift for fine · double-click resets';
+    const baseTitle = `${label}${hint ? ' — ' + hint : ''}: ${how}`;
     const el = h('div', {
       class: 'kb', tabindex: '0', role: 'slider', 'aria-label': label,
-      'aria-valuemin': min, 'aria-valuemax': max,
-      title: `${label}${hint ? ' — ' + hint : ''}: drag, wheel or arrows · Shift for fine · double-click resets`,
+      'aria-valuemin': min, 'aria-valuemax': max, title: baseTitle,
     }, ring, cap);
     const wrap = h('div', { class: 'kb-wrap' }, el, h('span', { class: 'kb-label' }, label), out);
+
+    /* A mover's dress, made the first time this knob is moved and kept after. */
+    let span = null, bead = null, by = null, lastDeg = NaN, lastBand = '';
+    const norm = (v) => clamp((v - min) / (max - min), 0, 1);
+    /** info: { letter, what, who, resting, why } or null to undress. */
+    const mark = (info) => {
+      if (!info) {
+        wrap.classList.remove('kb-moved', 'kb-rest');
+        el.title = baseTitle; el.setAttribute('aria-label', label);
+        return;
+      }
+      if (!span) {
+        span = h('div', { class: 'kb-span', 'aria-hidden': 'true' });
+        bead = h('div', { class: 'kb-bead', 'aria-hidden': 'true' });
+        by = h('span', { class: 'kb-by', 'aria-hidden': 'true' });
+        el.append(span, bead, by);
+      }
+      by.textContent = info.letter;
+      wrap.classList.add('kb-moved');
+      wrap.classList.toggle('kb-rest', !!info.resting);
+      const state = info.resting ? `${info.who}, but at rest${info.why ? ' (' + info.why + ')' : ''}` : `${info.who}: ${info.what}`;
+      el.title = `${label} — ${state}. The knob sets where it rests; the bead is the value the engine is using now. ${how}`;
+      el.setAttribute('aria-label', `${label}, ${info.resting ? 'mover at rest' : info.who}`);
+      lastDeg = NaN; lastBand = '';
+    };
+    /** Where the engine has this parameter now (value units), and the span it travels in this section. One transform. */
+    const move = (v, lo, hi) => {
+      if (!bead) return;
+      const deg = Math.round((-135 + norm(v) * 270) * 4) / 4;
+      if (deg !== lastDeg) { lastDeg = deg; bead.style.transform = `rotate(${deg}deg)`; }
+      const a = Math.round(norm(lo) * 270), b = Math.max(a + 2, Math.round(norm(hi) * 270)), band = a + '|' + b;
+      if (band !== lastBand) {
+        lastBand = band;
+        span.style.background = `conic-gradient(from 225deg, transparent 0deg ${a}deg, rgba(var(--accent),.5) ${a}deg ${b}deg, transparent ${b}deg 360deg)`;
+      }
+    };
 
     const snap = (v) => clamp(Math.round((v - min) / step) * step + min, min, max);
     const paint = () => {
@@ -137,7 +178,7 @@ const SoundUI = (() => {
       commit(val + dir * unit * (e.shiftKey ? 0.2 : 1));
     });
 
-    return { el: wrap, set: (v) => { val = snap(v); paint(); } };
+    return { el: wrap, set: (v) => { val = snap(v); paint(); }, get: () => val, mark, move, min, max };
   }
 
   /* ── Scope: the true signal path ─────────────────────────────────────── */
@@ -412,6 +453,15 @@ const SoundUI = (() => {
     .kb-cap i{position:absolute;left:50%;top:3px;width:1.5px;height:9px;margin-left:-.75px;background:rgb(var(--accent))}
     .kb-label{opacity:.6;letter-spacing:.08em;text-transform:uppercase}
     .kb-val{font-variant-numeric:tabular-nums;opacity:.55}
+    .kb-span,.kb-bead{position:absolute;inset:-6px;border-radius:50%;pointer-events:none;display:none}
+    .kb-span{-webkit-mask:radial-gradient(circle closest-side,transparent 85%,#000 88%,#000 96%,transparent 99%);mask:radial-gradient(circle closest-side,transparent 85%,#000 88%,#000 96%,transparent 99%)}
+    .kb-bead::after{content:'';position:absolute;left:50%;top:-.5px;width:5px;height:5px;margin-left:-2.5px;border-radius:50%;background:rgb(var(--accent));box-shadow:0 0 7px rgba(var(--accent),.95)}
+    .kb-by{position:absolute;right:-9px;top:-9px;font-size:11px;font-style:italic;line-height:1;color:rgb(var(--accent));display:none;pointer-events:none;text-transform:none;letter-spacing:0}
+    .kb-moved .kb-span,.kb-moved .kb-bead,.kb-moved .kb-by{display:block}
+    .kb-moved .kb-label{opacity:.85;color:rgb(var(--accent))}
+    .kb-rest .kb-span,.kb-rest .kb-bead{display:none}.kb-rest .kb-by{opacity:.4}.kb-rest .kb-label{opacity:.6;color:inherit}
+    .kb-wrap.kb-flash .kb{animation:kbflash 1.2s ease-out}
+    @keyframes kbflash{0%{box-shadow:0 0 0 0 rgba(var(--accent),.9)}100%{box-shadow:0 0 0 14px rgba(var(--accent),0)}}
     .snd-scope{width:100%;height:168px;display:block;margin:6px 0 2px}
     .snd-cube{width:100%;height:84px;display:block;margin:0 0 6px;opacity:.9}
     .dream{align-items:center}
@@ -454,6 +504,7 @@ const SoundUI = (() => {
       scope,
       cube,
       grid,
+      UI.note('A knob wearing a letter is being moved by that letter, in time: the band is how far it travels, the bead is where it is now. The knob still sets where it rests. Steer this in Motion.'),
       h('div', { class: 'snd-h' }, 'Drums · tone & texture'),
       drumGrid,
       h('div', { class: 'snd-h' }, 'Drums · their own FX'),
@@ -529,7 +580,30 @@ const SoundUI = (() => {
     if (v) setTimeout(() => v.release(), 650);
   });
 
-  return { refresh, knobs };
+  /* ── Movers (driven by m19; the knobs are this module's, so the dressing is done here) ── */
+
+  /** Dress (or, with null, undress) the knob a mover has hold of. Unknown names are ignored. */
+  function mark(name, info) { if (knobs[name]) knobs[name].mark(info); }
+  /** Put a mover's bead at `v` (the knob's own units) and its band across lo…hi. */
+  function bead(name, v, lo, hi) { if (knobs[name]) knobs[name].move(v, lo, hi); }
+  /** True while the knobs can actually be seen: the drawer open, this panel open. Beads need not move otherwise. */
+  function visible() {
+    const d = document.getElementById('tool-sound'), dr = document.getElementById('drawer');
+    return !!(d && d.open && dr && dr.classList.contains('open'));
+  }
+  /** Bring a knob into view and let it be seen: open the panel, scroll, focus, one ring of light. */
+  function show(name) {
+    const k = knobs[name];
+    if (!k) return;
+    UI.open('sound');
+    setTimeout(() => {
+      k.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      k.el.querySelector('.kb').focus({ preventScroll: true });
+      k.el.classList.remove('kb-flash'); void k.el.offsetWidth; k.el.classList.add('kb-flash');
+    }, 120);
+  }
+
+  return { refresh, knobs, mark, bead, visible, show };
 })();
 
 window.SoundUI = SoundUI;

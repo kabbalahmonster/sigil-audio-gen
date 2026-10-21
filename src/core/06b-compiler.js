@@ -19,13 +19,23 @@
    that stroke sounds like: the kit cell, the chord it is tuned to, the letter
    that colours it, and (when the song carries a groove, 05c) how velocity
    reshapes the hit. A song without a groove compiles exactly as it always did.
+
+   MOTION. The movers (05d) are compiled into the core's lane table here, and
+   the SAME table goes to the live worklet (sendSong) and into every offline
+   job (renderJob), full mix or stem. That is what makes a render move exactly
+   as the performance did: there is only one table, and only one reader of it.
    ══════════════════════════════════════════════════════════════════════════ */
 const SigilPlan = (() => {
   'use strict';
   const D = SigilDSP, SD = SoundDesign;
-  const { EV, STRIDE, KIND, BUS, PA, PSTRIDE } = D;
+  const { EV, STRIDE, KIND, BUS, PA, PSTRIDE, AU, ASTRIDE } = D;
 
-  const DEFAULTS = { tilt: 0, density: 1, kSub: 1, kPunch: 1, kDecay: 1, kTone: 0, sBody: 1, sSnap: 1, sTone: 1, hTone: 1, hDecay: 1 };
+  const DEFAULTS = { tilt: 0, density: 1, kSub: 1, kPunch: 1, kDecay: 1, kTone: 0, sBody: 1, sSnap: 1, sTone: 1, hTone: 1, hDecay: 1,
+    motion: 1, evolve: 0.5, mVar: 0, mMute: 0 };
+  /** Mover (patch field) → the section column it moves. Only columns the core reads can be moved. */
+  const LANE_COL = { wave: 'WAVE', layer: 'LAYER', sweep: 'SWEEP', drift: 'DRIFT', chorus: 'CHORUS', bright: 'BRIGHT',
+    breath: 'BREATH', echo: 'ECHO', grit: 'GRIT', throat: 'THROAT', sub: 'SUB', drums: 'DRUMS', dRoom: 'DROOM', dBody: 'DBODY',
+    dPunch: 'DPUNCH', dDrive: 'DDRIVE', dSmash: 'DSMASH', dEcho: 'DECHO', dFilter: 'DFILTER' };
   const TIMBRE = { glass: 0, reed: 1, koto: 2 };
   const VOICE = { auto: 0, wave: 1, vox: 2, fm: 3, bow: 4, bell: 5 };
   const CONS = { liquid: 0, plosive: 1, fricative: 2, nasal: 3 };
@@ -286,11 +296,39 @@ const SigilPlan = (() => {
     return { events: out.slice(0, n * STRIDE), count: n };
   }
 
+  /* ── Motion ─────────────────────────────────────────────────────────── */
+  /**
+   * The movers as the core wants them: { key, n, step, len, lanes (Float64Array, ASTRIDE each),
+   * curves, meta }. The curves are 05d's, shared and cached per song; the packed lanes ride on
+   * that cache. A mover at rest (held still, or a kit mover while the kit's FX are bypassed) is
+   * packed with no depth and no drift, so it adds exactly nothing.
+   */
+  function motionTable(song, sigil, spec, DS) {
+    if (typeof Motion === 'undefined' || !song.cfg) return null;
+    const P = spec.P, t = Motion.bake(song, sigil, { variant: num(P.mVar, 0), mute: num(P.mMute, 0), kit: DS.fx !== false });
+    if (!t.packed) {
+      const L = new Float64Array(t.n * ASTRIDE);
+      t.lanes.forEach((ln, j) => {
+        const o = j * ASTRIDE;
+        L[o + AU.COL] = PA[LANE_COL[ln.name]]; L[o + AU.LO] = ln.lo; L[o + AU.HI] = ln.hi;
+        L[o + AU.DEPTH] = ln.resting ? 0 : ln.depth; L[o + AU.SHIFT] = ln.resting ? 0 : ln.shift * ln.depth;
+        L[o + AU.GAIN] = ln.gain; L[o + AU.MORPH] = ln.morph;
+        L[o + AU.LATENT] = ln.latent ? 1 : 0; L[o + AU.GATE] = ln.gate ? 1 : 0; L[o + AU.SEED] = ln.seed;
+      });
+      t.packed = L;
+    }
+    return { key: t.key, n: t.n, step: t.step, len: t.len, lanes: t.packed, curves: t.curves, meta: t.lanes };
+  }
+  /** What is sent: the numbers only. (Not transferred: the page keeps reading the same arrays.) */
+  const autoMsg = (a) => (a ? { n: a.n, step: a.step, len: a.len, lanes: a.lanes, curves: a.curves } : null);
+
   /** Compile a song. opts: { spec, lens, events:false (sections only), drums (settings override) } */
   function compile(song, sigil, opts = {}) {
     const spec = opts.spec || soundSpec(sigil, song);
     const Ps = patches(song, spec), DS = drumSettings(opts.drums);
-    const p = { spec, Ps, sections: sectionsTable(song, sigil, spec, Ps, DS), nSec: Ps.length, total: song.total };
+    const p = { spec, Ps, sections: sectionsTable(song, sigil, spec, Ps, DS), nSec: Ps.length, total: song.total,
+      auto: motionTable(song, sigil, spec, DS),
+      motion: clamp(num(spec.P.motion, 1), 0, 2), evolve: clamp(num(spec.P.evolve, 0.5), 0, 1) };
     if (opts.events !== false) {
       const lens = opts.lens ?? (typeof LiveLens !== 'undefined' && LiveLens.active());
       Object.assign(p, compileEvents(song, sigil, spec, Ps, lens, DS));
@@ -362,11 +400,25 @@ const SigilPlan = (() => {
   }
 
   /* ── Engine operations ──────────────────────────────────────────────── */
+  /**
+   * Keep the page's copy of what the core was sent (the interface draws from it), and say whether
+   * the lane table is new. The amounts are cheap and always sent; the table only when it changed.
+   */
+  function motionSync(eng, p) {
+    const fresh = (p.auto ? p.auto.key : '') !== (eng.auto ? eng.auto.key : '');
+    eng.auto = p.auto;
+    eng.sections = p.sections.slice();                // the transfer below detaches p.sections
+    if (eng.params.motion !== p.motion || eng.params.evolve !== p.evolve) eng.setParams({ motion: p.motion, evolve: p.evolve });
+    if (fresh) Hooks.emit('motion', eng);
+    return fresh;
+  }
   function sendSong(eng, song, sigil) {
     const p = compile(song, sigil);
+    eng.auto = null;                                  // a new song: its table is always sent
+    motionSync(eng, p);
     eng.post({ type: 'plan', events: p.events, count: p.count, sections: p.sections, nSec: p.nSec,
-      total: p.total, bpm: 60 / eng.spb, passes: 0, keep: false }, [p.events.buffer, p.sections.buffer]);
-    eng.setParams({ waveOff: waveOffset() });
+      total: p.total, bpm: 60 / eng.spb, passes: 0, keep: false, auto: autoMsg(p.auto) }, [p.events.buffer, p.sections.buffer]);
+    eng.setParams({ waveOff: waveOffset(), motion: p.motion, evolve: p.evolve });
     sendTables(eng, p.spec, p.Ps);
     sendReverb(eng, sigil);
     return p;
@@ -374,16 +426,18 @@ const SigilPlan = (() => {
   /** Recompile and swap the events at the current playhead. Sounding voices ring on. */
   function replan(eng) {
     if (!eng || !eng.song || !hasApp() || !app.sigil) return;
-    const p = compile(eng.song, app.sigil);
-    eng.post({ type: 'plan', events: p.events, count: p.count, sections: p.sections, nSec: p.nSec,
-      total: p.total, keep: true }, [p.events.buffer, p.sections.buffer]);
+    const p = compile(eng.song, app.sigil), msg = { type: 'plan', events: p.events, count: p.count, sections: p.sections,
+      nSec: p.nSec, total: p.total, keep: true };
+    if (motionSync(eng, p)) msg.auto = autoMsg(p.auto);
+    eng.post(msg, [p.events.buffer, p.sections.buffer]);
     sendTables(eng, p.spec, p.Ps);
   }
   /** Section patch only: what knob drags call. Cheap enough for every pointermove. */
   function refreshSections(eng) {
     if (!eng || !eng.song || !hasApp() || !app.sigil) return;
-    const p = compile(eng.song, app.sigil, { events: false });
-    eng.post({ type: 'sections', sections: p.sections, nSec: p.nSec }, [p.sections.buffer]);
+    const p = compile(eng.song, app.sigil, { events: false }), msg = { type: 'sections', sections: p.sections, nSec: p.nSec };
+    if (motionSync(eng, p)) msg.auto = autoMsg(p.auto);
+    eng.post(msg, [p.sections.buffer]);
     sendTables(eng, p.spec, p.Ps);
   }
 
@@ -418,13 +472,17 @@ const SigilPlan = (() => {
       events: p.events, count: p.count, sections: p.sections, nSec: p.nSec, total: p.total,
       spectra: spectra(p.spec.cube), tilt: num(p.spec.P.tilt, 0), density: num(p.spec.P.density, 1),
       reverb: reverbSpec(sigil, p.spec), levels: o.levels || currentLevels(song),
-      params: { reverb: eng && eng.params ? eng.params.reverb : 0.85, waveOff: waveOffset() },
+      // The live engine's own lane table and amounts: a render, whole or stem, moves as the stage does.
+      // pass0 starts the evolution further on (m14 renders its passes one at a time).
+      auto: autoMsg(p.auto),
+      params: { reverb: eng && eng.params ? eng.params.reverb : 0.85, waveOff: waveOffset(),
+        motion: p.motion, evolve: p.evolve, pass0: Math.max(0, o.pass0 | 0) },
     };
   }
 
   return {
     compile, sendSong, replan, refreshSections, sendTables, sendReverb,
     soundSpec, defaultSpec, waveOffset, row, liveNote, renderJob, spectra,
-    KIND, BUS,
+    KIND, BUS, LANE_COL,
   };
 })();

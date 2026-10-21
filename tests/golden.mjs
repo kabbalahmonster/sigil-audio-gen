@@ -23,6 +23,7 @@
      'src/core/05-composer.js',
      'src/core/05b-timbre.js',
      'src/core/05c-groove.js',
+     'src/core/05d-motion.js',
      'tests/golden-core.js',
    ];
    

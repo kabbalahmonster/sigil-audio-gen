@@ -4,6 +4,8 @@
    --------------------------------------------------------------------------
    Storage: localStorage 'sigil.grimoire' = { v:1, keep, burnDays, entries[] }
      entry = { key:'KRST+MNL', mood, created, played, plays, burnAt|null }
+     `mood` is the whole working the sigil was last cast in: "mood.style.element"
+     (m21; an older entry holds the mood alone, which is the same word, shorter).
 
    The desire text is NEVER stored. Only the reduced consonants, which is the
    sigil itself. Forget() removes the entry: forgetting means forgetting.
@@ -25,6 +27,9 @@ const Grimoire = (() => {
 
   let grid, empty, currentKey = null;
   const keyOf = (sig) => sig.fusionKey || sig.reduced;
+  /** The working a song was composed in: mood, style and element as one word (m21), or the mood alone. */
+  const working = (cfg) => (typeof Styles !== 'undefined' ? Styles.tag(cfg) : cfg.mood) || 'ritual';
+  const wordsOf = (w) => (typeof Styles !== 'undefined' ? Styles.words(w) : w && w !== 'ritual' ? w : '');
 
   /** Remove entries whose burnAt has passed. @returns how many faded. */
   function purge() {
@@ -108,7 +113,8 @@ const Grimoire = (() => {
       const cv = h('canvas', { width: Math.round(96 * dpr), height: Math.round(96 * dpr), 'aria-hidden': 'true' });
       try { drawThumb(cv, e.key); } catch (err) { console.warn('[grimoire thumb]', err); }
 
-      const sub = `${e.mood && e.mood !== 'ritual' ? e.mood + ' · ' : ''}${ago(e.played)}${e.burnAt ? ' · fades' : ''}`;
+      const dress = wordsOf(e.mood);
+      const sub = `${dress ? dress.toLowerCase() + ' · ' : ''}${ago(e.played)}${e.burnAt ? ' · fades' : ''}`;
 
       grid.append(h('div', { class: 'g-card' + (e.key === currentKey ? ' current' : '') },
         h('button', {
@@ -185,13 +191,13 @@ const Grimoire = (() => {
 
   Hooks.on('cast', (sig, song) => {
     currentKey = keyOf(sig);
-    if (db.keep) upsert(currentKey, song.cfg.mood); else render();
+    if (db.keep) upsert(currentKey, working(song.cfg)); else render();
   });
 
   Hooks.on('song', (sig, song, info) => {
     if (info && info.recompose && db.keep) {
       const e = db.entries.find((x) => x.key === keyOf(sig));
-      if (e) { e.mood = song.cfg.mood || 'ritual'; save(); render(); }
+      if (e) { e.mood = working(song.cfg); save(); render(); }
     }
   });
 

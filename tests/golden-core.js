@@ -76,6 +76,28 @@ function finishFingerprint(reduced, variant) {
   return toHex(hashStr(JSON.stringify(Mastering.character(buildSigil(reduced), variant)))).slice(0, 32);
 }
 
+/**
+ * A styled song (05f), in the Ritual mood: every event of the score, with the style's kit (through
+ * Groove's feel), bass, chords and feel, and the element's lean on the tempo. The hooks are the ones
+ * m15 and m21 register in the app, put on for the length of one composition.
+ */
+function styleFingerprint(reduced, style, element) {
+  const s = buildSigil(reduced);
+  const off = [
+    Hooks.on('compose', (cfg) => { Style.before(cfg); }, -20),
+    Hooks.on('compose', (cfg, sigil) => { Style.compose(cfg, sigil, style, element); }, 20),
+    Hooks.on('plan', (plan, cfg) => { Style.plan(plan, cfg); }, 20),
+    Hooks.on('score', (events, c) => Groove.score(events, c, { ...((c.cfg && c.cfg.drums) || {}) })),
+    Hooks.on('score', (events, c) => Style.parts(events, c), 10),
+  ];
+  let song;
+  try { song = composeSong(s); } finally { off.forEach((f) => f()); }
+  const rows = song.events.map((e) => [e.type, Math.round(e.beat * 960), e.midi ?? (e.midis || []).join('/'), Math.round((e.vel ?? 0) * 1000),
+    Math.round((e.dur ?? 0) * 960), e.tom ?? '', e.open ? 1 : 0].join(':'));
+  const set = (song.cfg.styleSound && song.cfg.styleSound.set) || {};
+  return toHex(hashStr([song.bpm, song.sections.map((x) => `${x.intensity}${x.halfTime ? 'h' : ''}${x.arp || ''}`).join(','), set.voice, set.layer, rows.join(';')].join('#'))).slice(0, 32);
+}
+
 /** Everything the CI compares, as a flat object of name → value. */
 function computeAll() {
   const out = {};
@@ -89,6 +111,10 @@ function computeAll() {
     for (const v of GOLDEN_VARIANTS) out[`motion:${w}:deal${v}`] = motionFingerprint(w, v);
     for (const v of GOLDEN_VARIANTS) out[`finish:${w}:deal${v}`] = finishFingerprint(w, v);
   }
+  // One working per sigil is enough to pin the layer; tests/style.spec.mjs walks the rest.
+  [['punk', 'fire'], ['trap', 'water'], ['edm', 'air'], ['jazz', 'earth']].forEach(([st, el], i) => {
+    out[`style:${GOLDEN_INPUTS[i]}:${st}.${el}`] = styleFingerprint(GOLDEN_INPUTS[i], st, el);
+  });
   const patch = { wave: 2.5, voice: 'vox', grit: 0.4 };
   out['codec:encode'] = SoundDesign.encodePatch(patch, 3);
   out['codec:roundtrip'] = JSON.stringify(SoundDesign.decodePatch(SoundDesign.encodePatch(patch, 3)));

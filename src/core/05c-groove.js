@@ -43,12 +43,15 @@ const Groove = (() => {
   'use strict';
 
   /** Event types this file owns. Everything else in the score is left alone. */
-  const TYPES = new Set(['kick', 'snare', 'hat', 'shaker', 'crash', 'swell', 'tom', 'rim']);
+  const TYPES = new Set(['kick', 'snare', 'hat', 'shaker', 'crash', 'swell', 'tom', 'rim', 'clap', 'ride']);   // clap, ride: only a style (05f) writes them
 
   /**
    * take: which groove (0 = the sigil's own). The amounts are 0…1.
    * steady: the kick keeps strictly to its polygon (no answering kicks, no dropped half-bars).
    *         Not a panel control: a mood asks for it through cfg.drums (Pulse, Clockwork).
+   * feel:   a style's way of playing the kit (05f): { id, write(m, sigil, opts) }. When a song has
+   *         one, the part is written by the style, from the same polygons, letters and amounts;
+   *         without one (every song before styles existed) this file writes it, exactly as it did.
    */
   const DEFAULTS = { take: 0, variation: 0.6, fills: 0.6, ghosts: 0.5, human: 0.4, steady: false };
 
@@ -201,6 +204,7 @@ const Groove = (() => {
    */
   function write(m, sigil, opts) {
     const o = { ...DEFAULTS, ...(opts || {}) };
+    if (o.feel && typeof o.feel.write === 'function') return o.feel.write(m, sigil, o);   // a style plays the kit its own way
     const v = clamp(+o.variation || 0, 0, 1), f = clamp(+o.fills || 0, 0, 1);
     const g = clamp(+o.ghosts || 0, 0, 1), hu = clamp(+o.human || 0, 0, 1);
     const kv = o.steady ? 0 : 1;                                   // scales every liberty the kick may take
@@ -442,7 +446,8 @@ const Groove = (() => {
   /** The options as one string: what a part was written with. Two equal strings mean the same part. */
   const sigOf = (o) => {
     const x = { ...DEFAULTS, ...(o || {}) };
-    return [x.take | 0, x.variation, x.fills, x.ghosts, x.human].map((q) => +(+q).toFixed(3)).join('|') + (x.steady ? '|steady' : '');
+    return [x.take | 0, x.variation, x.fills, x.ghosts, x.human].map((q) => +(+q).toFixed(3)).join('|') + (x.steady ? '|steady' : '')
+      + (x.feel && x.feel.id ? `|${x.feel.id}` : '');
   };
 
   /** Swap the kit's events in a score for a freshly written part. Returns a NEW, unsorted array. */
@@ -453,6 +458,8 @@ const Groove = (() => {
   function stamp(cfg, info, opts) {
     cfg.groove = { ...info, sig: sigOf(opts) };
   }
+  /** The song's own measure of itself, for a writer: a style needs the tonic and the mode as well as the polygons. */
+  const measure = (cfg, sections, phrases, P, total) => ({ sections, phrases, P, bpm: cfg.bpm, total, cfg });
 
   /**
    * The 'score' filter body: called by composeSong before the score is sorted.
@@ -460,8 +467,7 @@ const Groove = (() => {
    */
   function score(events, ctx, opts) {
     if (!CLASSIC.has(ctx.cfg)) CLASSIC.set(ctx.cfg, events.filter((e) => TYPES.has(e.type)));
-    const w = write({ sections: ctx.sections, phrases: ctx.phrases, P: ctx.cfg.P, bpm: ctx.cfg.bpm, total: ctx.total },
-                    ctx.sigil, opts);
+    const w = write(measure(ctx.cfg, ctx.sections, ctx.phrases, ctx.cfg.P, ctx.total), ctx.sigil, opts);
     stamp(ctx.cfg, w.info, opts);
     return merge(events, w.events);
   }
@@ -477,8 +483,7 @@ const Groove = (() => {
   function apply(song, sigil, opts) {
     const cfg = song.cfg;
     if (!CLASSIC.has(cfg)) CLASSIC.set(cfg, song.events.filter((e) => TYPES.has(e.type)));
-    const w = write({ sections: song.sections, phrases: song.phrases, P: song.P, bpm: cfg.bpm, total: song.total },
-                    sigil, opts);
+    const w = write(measure(cfg, song.sections, song.phrases, song.P, song.total), sigil, opts);
     song.events = merge(song.events, w.events);
     stamp(cfg, w.info, opts);
     reindex(song);
@@ -502,11 +507,11 @@ const Groove = (() => {
     if (!gr) return { short: 'classic', detail: 'the composer’s own bars: one bar per section, repeated' };
     return {
       short: `groove ${gr.take}`,
-      detail: `kick E(${gr.kick},16) · hats E(${gr.hat},16) · ghosts E(${gr.ghost},16) · ${gr.nFills} fill${gr.nFills === 1 ? '' : 's'}`,
+      detail: `${gr.style ? `played as ${gr.style}, from ` : ''}kick E(${gr.kick},16) · hats E(${gr.hat},16) · ghosts E(${gr.ghost},16) · ${gr.nFills} fill${gr.nFills === 1 ? '' : 's'}`,
     };
   }
 
-  return { TYPES, DEFAULTS, dna, turn, turnSteps, recite, limb, write, score, apply, restore, sigOf, describe, noise };
+  return { TYPES, DEFAULTS, CH, dna, turn, turnSteps, anchor, recite, limb, boundary, fillWidth, write, score, apply, restore, sigOf, describe, noise };
 })();
 
 if (typeof window !== 'undefined') window.Groove = Groove;

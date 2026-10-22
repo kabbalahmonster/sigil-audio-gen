@@ -163,6 +163,7 @@
     <script src="src/core/05d-motion.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/dsp/sigil-dsp.js"   onerror="SIGIL_FAIL(this)"></script>      <!-- MOVED here -->
     <script src="src/core/05e-master.js" onerror="SIGIL_FAIL(this)"></script>      <!-- reads SigilDSP's tables -->
+    <script src="src/core/05f-style.js"  onerror="SIGIL_FAIL(this)"></script>      <!-- styles and elements; needs 05c -->
     
     <!-- Core: runtime layer -->
     <script src="src/core/06-engine.js"   onerror="SIGIL_FAIL(this)"></script>
@@ -200,6 +201,7 @@
     <script src="src/modules/m18-dsp-engine.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m19-motion.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m20-master.js" onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/modules/m21-styles.js" onerror="SIGIL_FAIL(this)"></script>
     
     <!-- ═══════════════════════════════════════════════════════════════════════
          PREFLIGHT. Runs after everything above, even if some of it threw.
@@ -223,6 +225,7 @@
         ['src/core/05d-motion.js',   ['Motion']],
         ['src/dsp/sigil-dsp.js',     ['SigilDSP']],
         ['src/core/05e-master.js',   ['Mastering']],
+        ['src/core/05f-style.js',    ['Style']],
         ['src/core/06-engine.js',    ['Engine', 'TransportClock']],
         ['src/core/06b-compiler.js', ['SigilPlan']],
         ['src/core/06c-stage.js',    ['Stage']],
@@ -249,6 +252,7 @@
         ['src/modules/m18-dsp-engine.js',   ['DspEngine']],
         ['src/modules/m19-motion.js', ['MotionPanel']],
         ['src/modules/m20-master.js', ['Master']],
+        ['src/modules/m21-styles.js', ['Styles']],
         
       ];
     

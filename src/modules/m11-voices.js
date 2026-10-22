@@ -86,9 +86,9 @@ const Sound = (() => {
 
   function composePatch(sig, variant, overrides) {
     const derived = SD.derive(sig.hash, variant);
-    const mood = (app.song && app.song.cfg && app.song.cfg.sound) || {};
     // The kit's FX (the D· knobs) are dealt from their own stream, so derive() stays as it was.
-    const base = { ...DEFAULTS, ...derived, ...SD.drumFx(sig.hash, variant), ...mood };
+    // Then the song dresses the patch: a style's signature, a mood's values, an element's lean (SD.shape).
+    const base = SD.shape({ ...DEFAULTS, ...derived, ...SD.drumFx(sig.hash, variant) }, app.song && app.song.cfg);
     return { base, P: { ...base, ...overrides }, tables: SD.tables(sig, variant) };
   }
 

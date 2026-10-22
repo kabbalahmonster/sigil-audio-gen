@@ -70,8 +70,8 @@ const SigilPlan = (() => {
 
   /* ── Inputs from optional modules (all soft dependencies) ───────────── */
   function defaultSpec(sigil, song) {
-    const mood = (song && song.cfg && song.cfg.sound) || {};
-    return { P: { ...DEFAULTS, ...SD.derive(sigil.hash, 0), ...SD.drumFx(sigil.hash, 0), ...mood }, cube: SD.tables(sigil, 0),
+    // The sigil's own patch, dressed by the song: a style's signature, a mood's values, an element's lean (SD.shape).
+    return { P: SD.shape({ ...DEFAULTS, ...SD.derive(sigil.hash, 0), ...SD.drumFx(sigil.hash, 0) }, song && song.cfg), cube: SD.tables(sigil, 0),
       variant: 0, arc: true, frozen: false, verb: true, vowels: null };
   }
   /** The sound patch: the live Sound module's (knobs, dream, mood, render spec) or a derived one. */
@@ -119,7 +119,8 @@ const SigilPlan = (() => {
       const grit = num(P.grit, 0);
       out[o + PA.GRIT] = grit; out[o + PA.BITS] = grit > 0 ? num(P.bits, 8) : 16;
       set('HOLD', P.hold, 1); set('FOLD', P.fold, 0); set('DRIVE', P.drive, 0);
-      out[o + PA.DUCK] = DS.sidechain ? num(DS.duck, 0.5) * (DS.sectionAware ? (SECTION_DUCK[si] ?? 1) : 1) : 0;
+      // (a style may ask for more or less of the pump: cfg.duck)
+      out[o + PA.DUCK] = DS.sidechain ? clamp(num(DS.duck, 0.5) * (DS.sectionAware ? (SECTION_DUCK[si] ?? 1) : 1) * num(song.cfg && song.cfg.duck, 1), 0, 1.5) : 0;
       out[o + PA.INTENSITY] = sec.intensity || 0;
 
       /* The kit's FX chain (DSP §5b). Left at rest, these columns reproduce the pre-chain kit exactly. */
@@ -196,8 +197,19 @@ const SigilPlan = (() => {
         }
         case 'bell': { const o = put(ev, KIND.BELL, BUS.bell, mtof(ev.midi)); out[o + EV.AUX] = ev.deg ?? 0; break; }
         case 'bass': {
+          // A style's bass (05f) may slide in from the note before it, and say how dark and how deep it is.
           const o = put(ev, KIND.WAVE, BUS.bass, mtof(ev.midi));
-          out[o + EV.P0] = 0.18; out[o + EV.P1] = 0.3; out[o + EV.P2] = 0.4; out[o + EV.P3] = 0; out[o + EV.P4] = 0;
+          if (ev.from != null) out[o + EV.F0] = mtof(ev.from);
+          out[o + EV.P0] = num(ev.tone, 0.18); out[o + EV.P1] = num(ev.sub, 0.3); out[o + EV.P2] = 0.4; out[o + EV.P3] = 0; out[o + EV.P4] = 0;
+          break;
+        }
+        case 'comp': {
+          /* A style's chords (05f): one row per note of each strum, stab or chug. 'bell' is struck and
+             rings (keys, a nylon guitar); 'wave' is held for as long as it is written (a stab, a power chord). */
+          const bell = ev.voice === 'bell', o = put(ev, bell ? KIND.BELL : KIND.WAVE, BUS[ev.bus] ?? BUS.arp, mtof(ev.midi));
+          out[o + EV.PAN] = ev.pan || 0;
+          if (bell) { out[o + EV.VEL] = (ev.vel ?? 0.6) * 0.7; out[o + EV.P5] = 0.22; }   // struck, and damped soon after
+          else { out[o + EV.P0] = num(ev.bright, -1); out[o + EV.P1] = -1; out[o + EV.P2] = 0.24; out[o + EV.P3] = 0; out[o + EV.P4] = 0; }
           break;
         }
         case 'arp': {
@@ -220,8 +232,10 @@ const SigilPlan = (() => {
           out[o + EV.P4] = 0; out[o + EV.P5] = 0.1; out[o + EV.AUX] = 1;
           break;
         }
-        case 'kick': case 'snare': case 'hat': case 'shaker': case 'crash': case 'tom': case 'rim': {
-          const kit = SD.drumKit(sigil.hash, num(P.drumX, 0.5), num(P.drumY, 0.5));
+        case 'kick': case 'snare': case 'hat': case 'shaker': case 'crash': case 'tom': case 'rim': case 'clap': case 'ride': {
+          // The kit cell is the sigil's; a style may insist on the character of its kick, snare or hat (cfg.kit).
+          const cell = SD.drumKit(sigil.hash, num(P.drumX, 0.5), num(P.drumY, 0.5));
+          const kit = song.cfg && song.cfg.kit ? { ...cell, ...song.cfg.kit } : cell;
           const root = rootAt(song, ev.beat, DS);
           const tone = SD.CLASS_TONE[SD.CONSONANT_CLASS[red[mod(Math.round(ev.beat * 4), RL)]] || 'fricative'];
           const hTone = num(P.hTone, 1), hDecay = num(P.hDecay, 1);
@@ -286,6 +300,23 @@ const SigilPlan = (() => {
             if (h !== 1) {                                // a light tap: shorter and duller
               out[o + EV.P0] *= 0.65 + 0.35 * h; out[o + EV.P1] *= 0.86 + 0.14 * h; out[o + EV.P2] *= 0.9 + 0.1 * h;
             }
+          } else if (ev.type === 'clap') {
+            /* A clap is several hands: three short bursts of band-passed noise a hundredth of a second
+               apart, and a last one that is let ring. (The snare voice, with no body and no wire.) */
+            const gap = (0.011 * song.bpm) / 60;
+            for (let j = 0; j < 4; j++) {
+              const o = put({ ...ev, beat: ev.beat + j * gap, midi: j }, KIND.SNARE, BUS.drums, 200);
+              out[o + EV.VEL] = (ev.vel ?? 0.7) * (j === 3 ? 1 : 0.7);
+              out[o + EV.F0] = 0.62 * tone[2]; out[o + EV.P0] = 0; out[o + EV.P1] = j === 3 ? 0.085 * num(P.sSnap, 1) : 0.008;
+              out[o + EV.P2] = 0.08; out[o + EV.P3] = (1050 + 450 * num(P.sTone, 1)) * tone[0]; out[o + EV.P4] = 0.01; out[o + EV.P5] = 0;
+              out[o + EV.AUX] = 5200;
+            }
+          } else if (ev.type === 'ride') {
+            /* A ride: the hat's metal, lower and left to ring. */
+            const o = put(ev, KIND.HAT, BUS.drums, (DS.tuneToKey ? mtof(root + 31) : 340) * tone[0]);
+            out[o + EV.PAN] = ev.pan || 0;
+            out[o + EV.P0] = Math.min(0.3, (0.1 + 0.08 * kit.hatDecay) * hDecay); out[o + EV.P1] = 5000 + 1500 * hTone; out[o + EV.P2] = 7400 + 2400 * hTone;
+            out[o + EV.P3] = 0.085 * tone[2]; out[o + EV.P4] = 1; out[o + EV.P5] = 6;
           } else if (ev.type === 'shaker') {
             const o = put(ev, KIND.NOISE, BUS.drums, 0), f = 5200 + 2600 * hTone;
             out[o + EV.VEL] = (ev.vel ?? 0.5) * 0.12; out[o + EV.PAN] = ev.pan || 0;
@@ -395,14 +426,19 @@ const SigilPlan = (() => {
   }
 
   /* ── Reverb from the sigil's strokes ───────────────────────────────── */
-  function reverbSpec(sigil, spec) {
-    if (!sigil || !spec || !spec.verb) return { rt60: 2.6, damp: 0.55, taps: null };
+  /** `hall` (a song's cfg.hall, from its element): { size: × the decay, damp: + the damping }. */
+  function reverbSpec(sigil, spec, hall) {
+    const size = clamp(num(hall && hall.size, 1), 0.3, 2.5), dd = num(hall && hall.damp, 0);
+    if (!sigil || !spec || !spec.verb) return { rt60: 2.6 * size, damp: clamp(0.55 + dd, 0.05, 0.95), taps: null };
     const r = SD.irSpec(sigil, spec.variant), taps = new Float64Array(r.taps.length * 3);
     r.taps.forEach((t, i) => { taps[i * 3] = t.t; taps[i * 3 + 1] = t.gain; taps[i * 3 + 2] = t.pan; });
-    return { rt60: r.seconds * 0.6, damp: r.damp, taps };
+    return { rt60: r.seconds * 0.6 * size, damp: clamp(r.damp + dd, 0.05, 0.95), taps };
   }
+  const hallOf = (song) => (song && song.cfg && song.cfg.hall) || null;
+  /** How much of the hall a song asks for, against the usual (a style's or an element's cfg.space). */
+  const spaceOf = (song) => clamp(num(song && song.cfg && song.cfg.space, 1), 0, 3);
   function sendReverb(eng, sigil = hasApp() ? app.sigil : null) {
-    const rv = reverbSpec(sigil, sigil ? soundSpec(sigil, eng.song) : null);
+    const rv = reverbSpec(sigil, sigil ? soundSpec(sigil, eng.song) : null, hallOf(eng.song));
     eng.post({ type: 'reverb', rt60: rv.rt60, damp: rv.damp, taps: rv.taps }, rv.taps ? [rv.taps.buffer] : []);
   }
 
@@ -496,11 +532,11 @@ const SigilPlan = (() => {
       sr: o.sr, bpm: 60 / o.spb, passes: Math.max(1, o.passes | 0), voices: 80,
       events: p.events, count: p.count, sections: p.sections, nSec: p.nSec, total: p.total,
       spectra: spectra(p.spec.cube), tilt: num(p.spec.P.tilt, 0), density: num(p.spec.P.density, 1),
-      reverb: reverbSpec(sigil, p.spec), levels: o.levels || currentLevels(song),
+      reverb: reverbSpec(sigil, p.spec, hallOf(song)), levels: o.levels || currentLevels(song),
       // The live engine's own lane table and amounts: a render, whole or stem, moves as the stage does.
       // pass0 starts the evolution further on (m14 renders its passes one at a time).
       auto: autoMsg(p.auto),
-      params: { reverb: eng && eng.params ? eng.params.reverb : 0.85, waveOff: waveOffset(),
+      params: { reverb: eng && eng.params && eng.song === song ? eng.params.reverb : 0.85 * spaceOf(song), waveOff: waveOffset(),
         motion: p.motion, evolve: p.evolve, pass0: Math.max(0, o.pass0 | 0) },
       // How the song asks to be finished, and (if the caller has one) the plan that finishes it.
       mix: mixInfo(song, sigil, p.spec), master: o.master || null,
@@ -509,7 +545,7 @@ const SigilPlan = (() => {
 
   return {
     compile, sendSong, replan, refreshSections, sendTables, sendReverb,
-    soundSpec, defaultSpec, waveOffset, row, liveNote, renderJob, spectra, mixInfo,
+    soundSpec, defaultSpec, waveOffset, row, liveNote, renderJob, spectra, mixInfo, spaceOf,
     KIND, BUS, LANE_COL,
   };
 })();

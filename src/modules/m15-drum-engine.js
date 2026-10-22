@@ -393,8 +393,12 @@ const DrumEngine = (() => {
              ...((cfg && cfg.drums) || {}) };
   }
 
-  // Composition: write the part into the score. Classic leaves the composer's bars alone.
-  Hooks.on('score', (events, ctx) => (S.style === 'sigil' ? Groove.score(events, ctx, optionsFor(ctx.sigil, ctx.cfg)) : undefined));
+  /** Who writes the kit: a style (05f), if the song has one; else the sigil, or (Classic) the composer. */
+  const styled = (cfg) => !!(cfg && cfg.drums && cfg.drums.feel);
+  const written = (cfg) => S.style === 'sigil' || styled(cfg);
+
+  // Composition: write the part into the score. Classic leaves the composer's bars alone (unless a style plays).
+  Hooks.on('score', (events, ctx) => (written(ctx.cfg) ? Groove.score(events, ctx, optionsFor(ctx.sigil, ctx.cfg)) : undefined));
 
   const liveEngine = () => {
     const e = app.engine;
@@ -415,7 +419,7 @@ const DrumEngine = (() => {
   function sync(song = app.song, sigil = app.sigil, replan = true) {
     if (!song || !sigil || !song.cfg) return false;
     const opts = optionsFor(sigil, song.cfg);
-    const want = S.style === 'sigil' ? Groove.sigOf(opts) : null;
+    const want = written(song.cfg) ? Groove.sigOf(opts) : null;
     const have = song.cfg.groove ? song.cfg.groove.sig : null;
     if (want === have) return false;
     if (want === null) Groove.restore(song); else Groove.apply(song, sigil, opts);
@@ -453,7 +457,7 @@ const DrumEngine = (() => {
 
   /** Step to another groove of this sigil. The number lives in the patch, so Sound keeps and shares it. */
   function step(d) {
-    if (!hasSound || !app.sigil || !app.song || S.style !== 'sigil') return;
+    if (!hasSound || !app.sigil || !app.song || !written(app.song.cfg)) return;
     const n = mod(takeFor(app.sigil, app.song.cfg) + d, 100);
     if (n) Sound.set('take', n); else Sound.unset('take');   // either notifies; the subscription below does the rest
     const now = Groove.describe(app.song);
@@ -485,12 +489,14 @@ const DrumEngine = (() => {
           return a ? `${a[1].toLowerCase()} at ${pct(v)}` : '';
         }).filter(Boolean)
       : [];
-    grooveInfo.textContent = d.detail + (held.length ? ` · the mood holds ${held.join(', ')}` : '');
+    // A style writes the kit whatever Pattern says; say that too, for the same reason.
+    const over = app.song && S.style !== 'sigil' && styled(app.song.cfg) ? ' · a style is playing, so it writes the kit' : '';
+    grooveInfo.textContent = d.detail + (held.length ? ` · the mood holds ${held.join(', ')}` : '') + over;
   }
 
   function refresh() {
     if (!duckRow) return;
-    const sigil = S.style === 'sigil';
+    const sigil = written(app.song && app.song.cfg);             // the amounts act on any written part, a style's included
     styleRow.input.value = S.style;
     for (const [k] of AMOUNTS) { amounts[k].set(S[k]); amounts[k].input.disabled = !sigil; }
     fxRow.input.checked = S.fx;

@@ -115,7 +115,8 @@ class Engine {
     this.master = null;      // the master plan the core holds (05e), or null: the mix leaves as it always did
     this.masterSig = 0;      // its fingerprint: the core reports the one it holds with every tick (stats.master.sig)
     this.stats = { ready: false, voices: 0, budget: 0, steals: 0, load: -1, meters: null, beat: 0, errors: 0 };
-    this.revReturn = { gain: Engine.param(0.85, (v) => this.setParams({ reverb: v })), connect() {}, disconnect() {} };
+    this.space = 1;          // how much of the hall the song itself asks for (cfg.space: a style's, an element's)
+    this.revReturn = { gain: Engine.param(0.85, (v) => this.setParams({ reverb: v * this.space })), connect() {}, disconnect() {} };
 
     this.node = null; this._queue = []; this._noteId = 0; this._pending = null; this._lvPending = false;
     this._tickSubs = new Set();
@@ -173,8 +174,10 @@ class Engine {
   load(song, sigil = app.sigil) {
     this.song = song; this.spb = song.spb; this.events = song.events; this.sigil = sigil;
     this.region = null;
+    this.space = SigilPlan.spaceOf(song);
     this.buses = this._makeBuses(song.levels);
     Hooks.emit('buses', this.buses, this);       // M2 records _base and applies user levels
+    this.revReturn.gain.value = this.revReturn.gain.value;   // the hall's return, by the listener's Space and the song's own
     Hooks.emit('region', null);
     this._flushLevels();
     SigilPlan.sendSong(this, song, sigil);       // plan + sections + tables + reverb

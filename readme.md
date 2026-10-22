@@ -179,6 +179,48 @@ what you render is what you heard; stems take the plan's trims and caps and leav
 the chain, so that side by side they are the mix that entered it. Switched off, the mix
 leaves exactly as it did before any of this existed.
 
+**Mood × Style × Element.** The sigil writes a melody, its chords and a form. Three
+choices then decide how that is *performed*. Each owns a different part of the answer,
+which is why any three can be combined and still make one piece of music
+(`05f-style.js`, M6, M21):
+
+| | Decides | Never touches |
+|---|---|---|
+| **Mood** (28) | How it feels: the mode, the lean of the tempo, how much of the band plays in each section, where the faders sit | The idiom |
+| **Style** (19) | The idiom it is played in: the tempo that idiom lives at, its swing, what a drummer of that idiom plays at each level of the mood's contour, what the bass does, how the chords are played (held, strummed, stabbed, chugged), how the lead is phrased, the sound such a band has | The melody, the chords, the form |
+| **Element** (4) | What it is made of: brighter or darker, drier or wetter, heavier or lighter; the colours of the wheel | The notes |
+
+*Styles:* Hip hop · Trap · Lo-fi · Pop · Punk · Grunge · Metal · EDM · House · Techno ·
+Drum & bass · Synthwave · Funk · Reggae · Jazz · Bossa · Folk · Chiptune · Dembow (and
+None). *Elements:* Fire · Water · Air · Earth (and Aether, the sigil's own matter).
+*Moods:* the twenty there were, and Triumph · Reverie · Wrath · Longing · Mischief ·
+Hymn · Dread · Storm.
+
+The rules that keep every combination coherent:
+
+- **Tempo.** The sigil deals 74–98 bpm. A style maps that span onto its own (a fast
+  sigil is a fast punk song, a slow one a slow punk song) and the mood's lean is applied
+  inside it, damped. Punk, metal, drum & bass and trap are *felt* at twice the written
+  tempo: the band plays double-time under a melody that stays singable.
+- **Contour.** The mood decides how intense each section is; the style decides what each
+  level *means* in its idiom and may reshape the contour only inside the range the mood
+  left. A Lullaby stays hushed in any style, an Ambient rite drumless, Pulse keeps its
+  four on the floor.
+- **Sound.** The sigil's own patch is drawn part of the way to the style's signature (two
+  sigils in one style are still two sounds); what a mood sets outright it still sets; the
+  element is laid over the result as a relative lean, so it is always heard. The style
+  names the voices that suit it, the element puts them in its order, the sigil picks.
+- **The sigil is still read.** A style's kit is built from the same Euclidean polygons,
+  turned by the same section transforms, accented by the same letters, and its fills
+  still speak the sigil. The style decides where a polygon's syncopation *may* fall; the
+  sigil decides where it does.
+- **Swing is applied to the whole score as one**, and to the pen's own timetable, so a
+  shuffle swings the lead, the bass, the kit and the drawing together.
+
+With None and Aether chosen, none of this runs and the song is, event for event, what it
+was. **Cast lots** (`Y`) draws a mood, a style and an element at random; the link then
+says which: `#KRSTVM~dirge.trap.water`.
+
 ---
 
 ## Features
@@ -200,12 +242,13 @@ leaves exactly as it did before any of this existed.
 | **M3 Grimoire** | Local gallery of cast sigils (consonants only), generated thumbnails, replay, optional fade-after-N-days, JSON import/export |
 | **M4 Form & Loop** | Section jump list, gapless section looping, keyboard navigation, loop band on the progress bar |
 | **M5 Access** | Reduced motion, high contrast (wins over all palettes), larger text, screen-reader section announcements, `describe()` of the current sigil, progress bar as an ARIA slider |
-| **M6 Moods** | Arrangement presets — Ritual, Ambient, Pulse, Lullaby, Dirge, Ecstatic — applied as `compose`/`plan` filters; re-composes live and resumes at the current section |
+| **M6 Moods** | Twenty-eight arrangement presets (Ritual, Ambient, Pulse, Lullaby, Dirge, Ecstatic … Triumph, Reverie, Wrath, Longing, Mischief, Hymn, Dread, Storm), applied as `compose`/`plan` filters; re-composes live and resumes at the current section |
 | **M7 Render & Export** | Offline faster-than-realtime render, **parallelised across CPU cores** with section-aligned cuts and crossfades, → WAV 16/24, MP3 (worker LAME), AAC (ADTS) and Opus (hand-written Ogg muxer) via WebCodecs. Every mover moves as it does on the stage; over more than one pass the rite evolves, by the Evolution set in Motion. The file leaves through the same master as the stage, by the same plan, and the status line says what it measures (LUFS, true peak, range) |
 | **M8 Fusion** | Up to three desires on one wheel as counterpoint; partners weigh into harmony at passing-tone strength |
 | **M9 Live Lens** | Drag the wheel to transpose, double-tap to mirror — in real time, affecting melody, harmony, bass and arpeggios, and propagating to MIDI/audio export |
 | **M10 Hours & Moon** | Planetary hours (true sunrise equation if you share location), moon phase, optional attunement of mode/timbre/tempo/palette to the hour, and timed charging sessions |
 | **M19 Motion** | The movers, shown and steered. A row per mover (its letter, what it moves and how, a live meter, a switch to hold it still); `◀ motion ▶` for another deal; **Motion** 0–200 % and **Evolution** 0–100 %, which governs the live loop and the passes of a render alike. In Sound & Patch each moved knob wears its letter, a band for the span it travels and a bead that travels it; on the wheel a ray grows at each moving letter |
+| **M21 Style & Element** | Nineteen styles and four elements laid over the mood (see *Mood × Style × Element* above), in one chooser on the invocation screen and in Tools: three tabs, a line saying what the combination is, and **Cast lots** for a random three. The working travels in the link and the Grimoire as one word (`mood.style.element`); an element also recolours the wheel |
 | **M20 Master** | The rite is listened to, then finished (see *Mastering* above). **Loudness** (−16 / −14 / −12 / −10 LUFS), **Balance** (how far the parts are drawn to the house balance), **Noise** (how much of the crusher's grain is let through: cleaner ↔ rawer ↔ exactly as composed), **Dynamics** (how far the quiet sections sit under the loud), `◀ finish ▶` for another deal of the chain's character and **Character** for how strongly it colours. Live meters (loudness now and so far, true peak against the ceiling, gain held back) and a plain account of what the plan did: each part's trim, each section's ride and grain, the EQ. One switch turns it all off, for comparing |
 | **M15 Drum Engine** | How the kit plays: Sigil or Classic patterns, a hundred grooves per sigil (`◀ groove ▶`; the number travels in the share link), Variation / Fills / Ghosts / Humanise / Dynamics, sidechain ducking, and a bypass for the kit's own FX chain. The chain itself (drive → punch/body transient shaper → crusher → filter, with parallel compression, a room and a tempo-synced ping-pong echo beside the dry hit) runs in the DSP worklet; its `D·` knobs are in Sound & Patch, dealt per sigil and saved with the patch |
 
@@ -230,6 +273,7 @@ Press **?** for the in-app sheet.
 | `M` | Lens: mirror |
 | `0` | Lens: reset |
 | `,` `.` | Previous / next groove |
+| `Y` | Cast lots: a random mood, style and element |
 
 ---
 
@@ -237,8 +281,9 @@ Press **?** for the in-app sheet.
 
 - Nothing is transmitted. No analytics, no fonts, no CDN at runtime (the MP3 encoder
   falls back to a CDN **only** if you do not vendor `lame.min.js`).
-- The URL fragment contains the reduced consonants and, optionally, a mood:
-  `#KRSTVM+MNLP~ambient`. That is the *sigil*, not the desire behind it.
+- The URL fragment contains the reduced consonants and, optionally, what the rite is
+  dressed in (a mood, a style, an element): `#KRSTVM+MNLP~ambient`,
+  `#KRSTVM~dirge.trap.water`. That is the *sigil*, not the desire behind it.
 - The Grimoire stores consonant keys only, in `localStorage`, under the `sigil.*`
   namespace. **Forget** deletes the entry.
 
@@ -265,6 +310,7 @@ index.html
 | `05-composer.js` | §5 | `makePlan`, `buildPhrase`, `addPassing`, `harmonize`, `padVoicing`, `bassPitch`, `arpTones`, drum/bass/arp bar emitters, **`composeSong`**, time-lookup helpers |
 | `05c-groove.js` | §5c | `Groove`: the drum part written from the sigil (polygons under each section's transform, letter accents, fills). Pure; `apply` / `restore` rewrite a song's kit in place |
 | `05d-motion.js` | §5d | `Motion`: which letter moves which parameter (`deal`), the nine gestures, and the baked table of curves the core and the interface both read (`bake`). Pure |
+| `05f-style.js` | §5f | `Style`: the nineteen idioms and four elements, and the rules by which they are laid over a mood: `compose` (tempo, swing, voicing, sound signature, faders, master hints), `plan` (the contour, inside the mood's range), the kit writer (through `Groove`'s `feel`), `parts` (bass, chords, arpeggio, phrasing, and the swing over everyone), `pitch` (so the Live Lens can turn what a style wrote). Pure |
 | `05e-master.js` | §5e | `Mastering`: the master plan. `character` (the letters' finish), `solveA` / `solveB` (from the Probe's measurements to trims, caps, rides, EQ and gains), loudness arithmetic (`lufs`, `range`, `measure`), and the job plumbing the listening needs. Pure; loaded after the DSP core, whose tables it reads |
 | `06-engine.js` | §6 | `Engine`: buses, FX, voices, lookahead scheduler, transport, ritual sounds |
 | `07-renderer.js` | §7 | `Renderer`: frame composition, wheel, rhythm polygons, pen, particles, burn |
@@ -319,8 +365,14 @@ for it to work out the master plan anew; `engine.master` is the plan in force) �
 `master(engine, plan)` (a master plan was laid on, or taken away)
 
 A mood may speak to the master from its `compose` filter, as it does to the drummer:
-`cfg.master = { noise: +dB, tone: ×, level: ×, dynamics: × }` (more grain let through
-for a mood that *is* its crusher; less tonal correction for one that is dark on purpose).
+`cfg.master = { noise: +dB, tone: ×, level: ×, dynamics: ×, house: {part: dB}, lean: {…} }`
+(more grain let through for a mood that *is* its crusher; less tonal correction for one
+that is dark on purpose; a style moves the house balance so that its chords are a bed and
+not an ornament). A style (`05f`) reads what the moods did at a later priority
+(`compose` +20, `plan` +20, `score` +10), so a mood never needs to know which style is on.
+A new style is one entry in `Style.STYLES` (a tempo span, a sound signature, a contour,
+and three small functions of one bar: kit, bass, chords); a new element one entry in
+`Style.ELEMENTS`. Both tables are append-only: their order is the order of the lots.
 
 `drawPlaying` receives `{ r, g, F, T, beat, song, sig, ph, pi, sec, si, kp, sp, lines, app }`.
 Push your stroke point arrays into `lines` so that **Forget** burns them too.
@@ -419,11 +471,22 @@ This is the most important rule in the project.
    segments has settled well inside each segment's pre-roll. Without a plan the core
    runs the code path it always ran, untouched.
 
-`npm run golden` pins all of the above. `npm run drums`, `npm run motion` and
-`npm run master` check the invariants, and that with the kit's FX bypassed, Motion and
+8. And so do styles and elements. `Style.compose` draws from
+   `stream(hash, 'style:<style>:<element>')` in a frozen order (a seed, who sings, which
+   family of the cube); everything per bar is stateless noise keyed by musical position.
+   The composer's `R` is never touched: a style re-plays the accompaniment in the
+   `score` filter and leaves the melody, the chords and the form exactly as dealt. With
+   None and Aether the layer does not run at all. The one thing that is NOT the sigil's
+   is the lots, which only choose; the link records what was chosen.
+
+`npm run golden` pins all of the above. `npm run drums`, `npm run motion`,
+`npm run style` and `npm run master` check the invariants, and that with the kit's FX bypassed, Motion and
 Evolution at zero and no master plan the engine is, to the sample, the engine before
 any of this existed. `npm run master` also holds the meter to BS.1770 reference tones,
 the limiter to its ceiling, and a finished render to the loudness it was asked for.
+`npm run style` composes every mood × style and style × element, checks that each idiom
+is what it says (the strokes that make a style that style are where they should be) and
+that the mood's contour survives every style.
 
 ---
 

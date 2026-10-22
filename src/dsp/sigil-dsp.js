@@ -593,7 +593,9 @@
       v.kind = KIND.BELL; v.stage = 3; v.gate = -1;
       const bright = S[pb + PA.BRIGHT];
       c.pickCells(pb, 0, false); v.tab = c.c0; v.o0 = c.tier(v.f);
-      const ring = Math.max(dur * 1.6, 1.1) * (0.6 + 0.8 * S[pb + PA.HDECAY]);
+      // P5 (a BELL row's own; 0 everywhere it was never written): the shortest it may ring, in seconds.
+      // A bell rings for at least 1.1 s; a chord stabbed on bells (a style's comping, 05f) asks for less.
+      const ring = Math.max(dur * 1.6, src[o + EV.P5] > 0 ? src[o + EV.P5] : 1.1) * (0.6 + 0.8 * S[pb + PA.HDECAY]);
       const f = v.f / sr;
       v.inc[0] = f; v.inc[1] = f * 2.76; v.inc[2] = f * 3.01; v.inc[3] = f * 0.5;
       v.lv[0] = 0.5; v.lv[1] = 0.22 * (0.4 + bright); v.lv[2] = 0.1 * (0.3 + bright); v.lv[3] = S[pb + PA.SUB] * 0.3;

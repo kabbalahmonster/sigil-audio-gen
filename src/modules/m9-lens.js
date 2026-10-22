@@ -80,9 +80,19 @@ const LiveLens = (() => {
         const from = ev.fromDeg != null ? degToMidi(mapDeg(ev.fromDeg), ev.reg, sc) : ev.from;
         return { ...ev, midi, from };
       }
-      case 'pad':  return ev.chord == null ? ev : { ...ev, midis: padVoicing(mapChord(ev.chord, song), sc, song.leadBase, song.voicing) };
-      case 'bass': return ev.chord == null ? ev : { ...ev, midi: bassPitch(mapChord(ev.chord, song), ev.role, song.bassBase, sc) };
-      case 'arp':  return ev.chord == null ? ev : { ...ev, midi: arpTones(mapChord(ev.chord, song), sc, song.leadBase)[ev.idx] };
+      case 'pad': case 'bass': case 'arp': case 'comp': {
+        if (ev.chord == null) return ev;
+        const c = mapChord(ev.chord, song);
+        // A note a style wrote (05f) knows how to find its own pitch for a chord: a power chord stays a power chord.
+        if (ev.st && typeof Style !== 'undefined') {
+          const p = Style.pitch(ev, c, song, ev.chord2 != null ? mapChord(ev.chord2, song) : undefined);
+          return ev.type === 'pad' ? { ...ev, midis: p } : { ...ev, midi: p, from: undefined };
+        }
+        if (ev.type === 'pad') return { ...ev, midis: padVoicing(c, sc, song.leadBase, song.voicing) };
+        if (ev.type === 'bass') return { ...ev, midi: bassPitch(c, ev.role, song.bassBase, sc) };
+        if (ev.type === 'arp') return { ...ev, midi: arpTones(c, sc, song.leadBase)[ev.idx] };
+        return ev;
+      }
       default:     return ev;
     }
   }

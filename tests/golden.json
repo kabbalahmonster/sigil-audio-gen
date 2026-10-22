@@ -43,6 +43,10 @@
   "motion:PLMNKJHGFDSTRVWXYZBC:deal3": "05b764a15050b05ad586d60f304690d0",
   "finish:PLMNKJHGFDSTRVWXYZBC:deal0": "fa83e39d7a7ad04749680d88b593c4d5",
   "finish:PLMNKJHGFDSTRVWXYZBC:deal3": "f32fd9b907453e699f1debc748561b2a",
+  "style:KRSTVM:punk.fire": "e80987f3c42559d42d831e8c173b234c",
+  "style:THWLBDNS:trap.water": "331484995097bd45896f38eddf42afed",
+  "style:BCD:edm.air": "68bed1899cb6ffb7f44b1a5dbc1c4c18",
+  "style:PLMNKJHGFDSTRVWXYZBC:jazz.earth": "a2de22e9522900ade49e3e7a04116756",
   "codec:encode": "eyJ3IjoyLjUsInYiOiJ2b3giLCJnIjowLjQsImQiOjN9",
   "codec:roundtrip": "{\"o\":{\"wave\":2.5,\"voice\":\"vox\",\"grit\":0.4},\"variant\":3}"
 }

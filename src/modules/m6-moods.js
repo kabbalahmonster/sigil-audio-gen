@@ -11,6 +11,15 @@
 
    Runs AFTER M10 Astral (priority −10), so an explicit mood overrides the
    planetary mode.
+
+   A mood is one of three things a rite is dressed in. The STYLE (05f, m21) is
+   the idiom it is played in and the ELEMENT what it is made of; a mood decides
+   how it FEELS: the mode, the lean of the tempo, how much of the band plays in
+   each section, where the faders sit. A style re-reads what a mood did (after
+   it, at a later priority), so a mood never needs to know which style is on.
+   A mood may also speak to the drummer (cfg.drums), the master (cfg.master)
+   and, if its half-time is only there because it is fast, say so
+   (cfg.moodHalf = 'speed': a style that is not fast then lets it go).
    ══════════════════════════════════════════════════════════════════════════ */
 
 const Moods = (() => {
@@ -103,6 +112,7 @@ const Moods = (() => {
         if (cfg.P.arp === 'up') cfg.P.arp = 'broken';
         cfg.levels = { drums: 1.05, arp: 1.1, pad: 0.9 };
         cfg.formExtended = true;   // this mood lengthens its own form (below), so M2 stands down
+        cfg.moodHalf = 'speed';    // the half-time below is only there because 150 bpm needs it
       },
       plan(plan) {
         for (const s of plan) {
@@ -296,12 +306,169 @@ const Moods = (() => {
       },
       plan(plan) { for (const s of plan) { s.intensity = Math.min(1, s.intensity); s.arp = null; s.density = 0; } },
     },
+
+    /* ── Eight more, each a feeling rather than an idiom (the idioms are styles: 05f). ⚠ Append only:
+          the order here is the order of the pills and of the lots. ── */
+    triumph: {
+      label: 'Triumph', blurb: 'Major and unashamed. The choir in every chorus, bells doubling the line, nothing held back at the end.',
+      compose(cfg) {
+        const MAJ = { Aeolian: 'Ionian', Dorian: 'Mixolydian', Phrygian: 'Mixolydian', 'Harmonic minor': 'Ionian' };
+        cfg.modeName = MAJ[cfg.modeName] || cfg.modeName;
+        cfg.bpm = Math.round(cfg.bpm * 1.08);
+        cfg.voicing = { seventh: false, ninth: false };
+        cfg.levels = { harm: 1.3, bell: 1.15, drums: 1.05 };
+        cfg.sound = { bright: 0.85, chorus: 0.55, grit: 0, sub: 0.4, drums: 1.1 };
+        cfg.master = { dynamics: 1.2 };
+      },
+      plan(plan) {
+        for (const s of plan) {
+          if (s.id === 'intro' || s.id === 'outro') continue;
+          s.halfTime = false;
+          s.intensity = Math.max(2, s.intensity);
+          if (s.intensity >= 3 || s.id === 'verse2') { s.harm = true; s.octave = true; }
+        }
+      },
+    },
+    reverie: {
+      label: 'Reverie', blurb: 'Half asleep. Lydian or Dorian, a slow swing, arpeggios like light on water, the kit a long way off.',
+      compose(cfg, R) {
+        cfg.modeName = R.pick(['Lydian', 'Dorian']);
+        cfg.bpm = Math.round(cfg.bpm * 0.86);
+        cfg.P.arp = 'pendulum';
+        cfg.P.swing = Math.max(cfg.P.swing, 0.2);
+        cfg.voicing = { seventh: true, ninth: true };
+        cfg.levels = { drums: 0.55, arp: 1.15, pad: 1.15 };
+        cfg.sound = { chorus: 0.75, echo: 0.7, sweep: 0.7, drift: 0.5, bright: 0.5, grit: 0, sub: 0.35 };
+        cfg.drums = { fills: 0.3, ghosts: 0.2 };
+        cfg.master = { dynamics: 1.2 };
+      },
+      plan(plan) {
+        for (const s of plan) { s.intensity = Math.min(2, s.intensity); s.halfTime = false; if (s.intensity >= 1 && s.id !== 'outro') s.arp = 'light'; }
+      },
+    },
+    wrath: {
+      label: 'Wrath', blurb: 'Phrygian or harmonic minor, faster, everything struck hard. There is no quiet verse.',
+      compose(cfg, R) {
+        cfg.modeName = R.pick(['Phrygian', 'Harmonic minor']);
+        cfg.bpm = Math.min(168, Math.round(cfg.bpm * 1.18));
+        cfg.P.swing = 0;
+        cfg.levels = { drums: 1.15, bass: 1.1, pad: 0.8 };
+        cfg.sound = { drive: 0.6, grit: 0.5, bits: 16, hold: 1, fold: 0.25, bright: 0.75, drums: 1.2, kPunch: 1.5, sSnap: 1.4, dDrive: 0.4, dSmash: 0.6 };
+        cfg.drums = { fills: 0.9, variation: 0.8 };
+        cfg.master = { dynamics: 0.7 };
+      },
+      plan(plan) {
+        for (const s of plan) {
+          if (s.id === 'intro' || s.id === 'outro') { s.intensity = Math.max(1, s.intensity); continue; }
+          s.intensity = s.id === 'verse1' ? 2 : 3;
+          s.halfTime = s.id === 'bridge';
+          s.density = 1;
+        }
+      },
+    },
+    longing: {
+      label: 'Longing', blurb: 'Minor and unhurried. The lead alone in front, a soft pad behind it, drums only where they cannot be helped.',
+      compose(cfg) {
+        const MIN = { Ionian: 'Aeolian', Lydian: 'Dorian', Mixolydian: 'Dorian' };
+        cfg.modeName = MIN[cfg.modeName] || cfg.modeName;
+        cfg.bpm = Math.round(cfg.bpm * 0.9);
+        cfg.leadTimbre = 'reed';
+        cfg.voicing = { seventh: true, ninth: false };
+        cfg.levels = { lead: 1.1, drums: 0.7, arp: 0.7, pad: 1.05 };
+        cfg.sound = { echo: 0.6, chorus: 0.45, bright: 0.5, grit: 0, breath: 0.5 };
+        cfg.drums = { fills: 0.3 };
+        cfg.master = { dynamics: 1.3 };
+      },
+      plan(plan) {
+        const want = { verse1: 1, chorus1: 2, verse2: 1, bridge: 1, chorus2: 3 };
+        for (const s of plan) { if (want[s.id] != null) s.intensity = Math.min(s.intensity, want[s.id]); if (s.arp) s.arp = 'light'; }
+      },
+    },
+    mischief: {
+      label: 'Mischief', blurb: 'Bright, quick and swung. Short notes, a broken arpeggio, passing tones everywhere, a kit that keeps changing its mind.',
+      compose(cfg) {
+        const LIFT = { Aeolian: 'Mixolydian', Dorian: 'Mixolydian', Phrygian: 'Lydian', 'Harmonic minor': 'Mixolydian' };
+        cfg.modeName = LIFT[cfg.modeName] || cfg.modeName;
+        cfg.bpm = Math.round(cfg.bpm * 1.12);
+        cfg.P.swing = 0.3;
+        cfg.P.arp = 'broken';
+        cfg.levels = { arp: 1.15, pad: 0.8 };
+        cfg.sound = { bright: 0.75, chorus: 0.3, echo: 0.35, grit: 0, hDecay: 0.6, sSnap: 1.3 };
+        cfg.drums = { variation: 1, ghosts: 0.9, fills: 0.8 };
+      },
+      plan(plan) {
+        for (const s of plan) { s.halfTime = false; s.density = 1; if (s.intensity >= 1 && !s.final) s.arp = s.intensity >= 2 ? 'full' : 'light'; }
+      },
+    },
+    hymn: {
+      label: 'Hymn', blurb: 'The choir sings every line. Slow and plain, an organ under it, a drone in the floor, the kit left outside.',
+      compose(cfg) {
+        const PLAIN = { Phrygian: 'Dorian', 'Harmonic minor': 'Aeolian' };
+        cfg.modeName = PLAIN[cfg.modeName] || cfg.modeName;
+        cfg.bpm = Math.round(cfg.bpm * 0.7);
+        cfg.P.swing = 0;
+        cfg.voicing = { seventh: false, ninth: false };
+        cfg.levels = { harm: 1.6, pad: 1.25, drums: 0, arp: 0, drone: 1.1, bell: 1.1 };
+        cfg.sound = { voice: 'vox', chorus: 0.6, echo: 0.45, bright: 0.55, grit: 0, breath: 0.35, sub: 0.5 };
+        cfg.master = { dynamics: 1.2 };
+      },
+      plan(plan) {
+        for (const s of plan) {
+          s.intensity = Math.min(1, s.intensity); s.arp = null; s.drone = true; s.density = 0; s.halfTime = false;
+          if (s.voice === 'lead' || s.voice === 'alt') s.harm = true;
+        }
+      },
+    },
+    dread: {
+      label: 'Dread', blurb: 'Something is in the room. Phrygian and slow, a drone that never leaves, hits far apart and too close.',
+      compose(cfg) {
+        cfg.modeName = 'Phrygian';
+        cfg.bpm = Math.round(cfg.bpm * 0.68);
+        cfg.leadTimbre = 'reed';
+        cfg.P.swing = 0;
+        cfg.levels = { drone: 1.5, bass: 1.2, pad: 0.8, arp: 0.5, bell: 1.2 };
+        cfg.sound = { bright: 0.3, sub: 0.9, throat: -0.5, chorus: 0.2, echo: 0.75, drive: 0.3, grit: 0.3, bits: 12, hold: 1,
+          drumX: 1, kDecay: 1.7, kSub: 1.5, dRoom: 0.6, hDecay: 1.6 };
+        cfg.drums = { fills: 0.2, steady: true };
+        cfg.master = { tone: 0.6, dynamics: 1.4 };
+      },
+      plan(plan) {
+        for (const s of plan) {
+          s.drone = true; s.density = 0;
+          s.intensity = Math.min(2, s.intensity);
+          if (s.intensity > 0) s.halfTime = true;
+          if (s.arp) s.arp = 'light';
+        }
+      },
+    },
+    storm: {
+      label: 'Storm', blurb: 'It gathers. Every section is louder than the one before, until the Apotheosis breaks; then the rain.',
+      compose(cfg) {
+        cfg.bpm = Math.round(cfg.bpm * 1.04);
+        cfg.levels = { drums: 1.08 };
+        cfg.sound = { dRoom: 0.35, echo: 0.45 };
+        cfg.drums = { fills: 0.85 };
+        cfg.master = { dynamics: 1.5 };
+      },
+      plan(plan) {
+        const rise = { intro: 0, verse1: 1, chorus1: 2, verse2: 2, bridge: 3, chorus2: 3, outro: 1 };
+        for (const s of plan) {
+          if (rise[s.id] != null) s.intensity = rise[s.id];
+          s.halfTime = false;
+          s.drone = s.id === 'intro' || s.id === 'verse1' || !!s.final;
+          s.arp = s.id === 'verse2' ? 'light' : s.intensity >= 3 ? 'full' : null;
+          if (s.intensity >= 3) s.harm = true;
+        }
+      },
+    },
   };
 
   let current = MOODS[Prefs.get('mood', 'ritual')] ? Prefs.get('mood', 'ritual') : 'ritual';
   const groups = [];   // every rendered pill group, kept in sync
 
+  /** `id` may be a whole working, "mood.style.element" (a link, the Grimoire): the mood is its first word. */
   function set(id, { persist = true } = {}) {
+    id = String(id || '').split('.')[0];
     if (!MOODS[id]) id = 'ritual';
     current = id;
     if (persist) Prefs.set('mood', id);

@@ -72,8 +72,13 @@ const Mastering = (() => {
    * to six over it, four over at the median. The house has it lead, by less.
    */
   const KIT_LEAD = 2.5;
-  /** A trim never lifts a part by more than UP or drops it by more than DOWN (dB); a part must sound this long to be judged (s). */
-  const TRIM_UP = 4.5, TRIM_DOWN = 6, MIN_SOUNDING = 2;
+  /**
+   * A trim never lifts a part by more than UP or drops it by more than DOWN (dB); a part must sound
+   * this long to be judged (s). The kit may be lifted further (KIT_UP): its trim is a plain gain after
+   * its own chain, and under a music bus driven as hard as a style can drive it (punk, metal) the kit
+   * starts a long way down.
+   */
+  const TRIM_UP = 4.5, TRIM_DOWN = 6, KIT_UP = 9, MIN_SOUNDING = 2;
 
   /**
    * THE HOUSE TONE: energy of the low end (below 200 Hz), the low-mids (200–600), the presence
@@ -285,7 +290,8 @@ const Mastering = (() => {
       const raw = lufs(e, per), secsOn = sounding(e, per, hop), level = lv(b);
       const heard = Number.isFinite(raw) && secsOn >= MIN_SOUNDING && level > 0;
       // Judged at its DEFAULT fader: where the mood put the fader is the mood's business, and is kept.
-      const off = heard && !kit ? HOUSE[name] - (raw + 20 * Math.log10(BUS_DEFAULT[b])) : 0;
+      // A style may move the house itself (mood.house, dB): in punk the chords are the bed, not an ornament.
+      const off = heard && !kit ? HOUSE[name] + num(mood.house && mood.house[name], 0) - (raw + 20 * Math.log10(BUS_DEFAULT[b])) : 0;
       return { name, lufs: raw, secs: secsOn, level, heard, off, trim: 0 };
     });
     // The music as a whole stays where it is (its crusher and its ducking were measured at this level):
@@ -351,9 +357,11 @@ const Mastering = (() => {
       if (anyMusic > 0 && Number.isFinite(under) && under > kit.lufs - 24) {
         balance = kit.lufs - under;
         // What the mood did to the kit's fader, and what the patch asks of its Level on purpose, are kept.
-        const want = KIT_LEAD + 20 * Math.log10(Math.max(1e-3, kit.level) / BUS_DEFAULT[KIT]) + 20 * Math.log10(clampN(num(mixInfo.kit, 1), 0.25, 4));
+        // (and a style may seat the kit differently: jazz keeps it under the band. mood.house.drums, dB)
+        const want = KIT_LEAD + num(mood.house && mood.house.drums, 0) + 20 * Math.log10(Math.max(1e-3, kit.level) / BUS_DEFAULT[KIT])
+          + 20 * Math.log10(clampN(num(mixInfo.kit, 1), 0.25, 4));
         kit.off = want - balance;
-        kit.trim = clampN(kit.off * strength, -TRIM_DOWN, TRIM_UP);
+        kit.trim = clampN(kit.off * strength, -TRIM_DOWN, KIT_UP);
         trim[KIT] = lin(kit.trim);
       }
     }
@@ -391,7 +399,8 @@ const Mastering = (() => {
     const mid = band[3] || 1e-30;
     const have = [dB((band[0] + band[1]) / mid), dB(band[2] / mid), dB(band[4] / mid), dB(band[5] / mid)];
     const toward = 0.5 * clampN(num(mood.tone, 1), 0, 1.5);
-    const lean = (k) => num(ch[k], 0) * amount;
+    // The letters' finish, leaned on by the song (an element's, a style's: mood.lean), by the Character amount.
+    const lean = (k) => clampN(num(ch[k], 0) + num(mood.lean && mood.lean[k], 0), -1, 1) * amount;
     const colour = [1.3 * lean('weight'), 0.5 * lean('warmth'), 0.6 * lean('air'), 1.4 * lean('air')];
     const eq = have.map((x, j) => (heardAny ? clampN((goal[j] - x) * toward, EQ_LIM[j][0], EQ_LIM[j][1]) : 0) + colour[j]);
 

@@ -285,6 +285,38 @@ const SoundDesign = (() => {
     return out;
   }
 
+  /* ── How a song dresses the sigil's own patch ────────────────────────────
+     own          the sigil's patch as dealt (DEFAULTS + derive + drumFx)
+     styleSound   a style's signature (05f): `pull` draws a number part of the way to the style's
+                  (so two sigils in one style are still two sounds), `set` replaces outright
+     sound        a mood's values: absolute, as they always were (a mood bends the style)
+     soundMod     an element's: relative (×mul, +add, at least min), laid over whatever is there
+     With none of the last three this is `{ ...own, ...cfg.sound }`, exactly what it always was. */
+  function shape(own, cfg) {
+    const P = { ...own }, st = cfg && cfg.styleSound, mod = cfg && cfg.soundMod;
+    if (st) {
+      for (const k of Object.keys(st.pull || {})) {
+        const [target, w] = st.pull[k];
+        if (typeof P[k] === 'number') P[k] += (target - P[k]) * w;
+      }
+      Object.assign(P, st.set || {});
+    }
+    Object.assign(P, (cfg && cfg.sound) || {});
+    if (mod) {
+      for (const k of Object.keys(mod)) {
+        if (typeof P[k] !== 'number') continue;
+        const m = mod[k], F = FIELDS[k];
+        let v = P[k] * (m.mul ?? 1) + (m.add ?? 0);
+        if (m.min != null && v < m.min) {
+          if (k === 'grit' && P[k] === 0) { P.bits = 16; P.hold = 1; }   // a crusher woken for its drive brings no grain with it
+          v = m.min;
+        }
+        P[k] = F && F[1] !== undefined ? clampTo(v, F[1], F[2]) : v;
+      }
+    }
+    return P;
+  }
+
   /* ── Sound arc ───────────────────────────────────────────────────────── */
 
   function arc(D, sec, si, n) {
@@ -449,7 +481,7 @@ const SoundDesign = (() => {
   return {
     H, FX, FY, UPPER, LAYER_NAMES, VOWELS, FIELDS, VOICES, CONSONANT_CLASS, CLASS_TONE,
     derive, tables, glottal, waveSamples, applyFx,
-    arc, kitAt, irSpec, drumKit, drumFx, ECHO_BEATS,
+    arc, kitAt, irSpec, drumKit, drumFx, ECHO_BEATS, shape,
     encodePatch, decodePatch, mutate, clampTo,
   };
 })();

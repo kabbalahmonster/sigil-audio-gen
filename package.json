@@ -11,6 +11,8 @@
     "motion": "node tests/motion.spec.mjs",
     "motion:quick": "node tests/motion.spec.mjs --quick",
     "master": "node tests/master.spec.mjs",
-    "master:quick": "node tests/master.spec.mjs --quick"
+    "master:quick": "node tests/master.spec.mjs --quick",
+    "style": "node tests/style.spec.mjs",
+    "style:quick": "node tests/style.spec.mjs --quick"
   }
 }

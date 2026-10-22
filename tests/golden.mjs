@@ -26,6 +26,7 @@
      'src/core/05d-motion.js',
      'src/dsp/sigil-dsp.js',
      'src/core/05e-master.js',
+     'src/core/05f-style.js',
      'tests/golden-core.js',
    ];
    

@@ -153,6 +153,32 @@ picture of the automation but the automation itself, and a render moves exactly 
 stage did. **Motion** (how far), **Evolution** (how much each pass differs) and the
 deal of movers are patch fields: saved per sigil, carried in a shared link.
 
+**Mastering.** Nothing upstream of the output ever *heard* the song it made. A reed
+lead could sit eight decibels under a koto one, a four-bit crusher could hiss as loud
+as the music it coloured, and one rite could leave nine decibels louder than the next.
+So a rite is **listened to before it is played** (`05e-master.js`; the listening is two
+fast passes of the song in workers, done during the reduction ceremony, M20), and it is
+finished to what was heard:
+
+| What is heard | What is done about it |
+|---|---|
+| How loud each part is | A **trim** per part toward a house balance (never more than +4.5 / −6 dB). The kit is judged against the music it plays over, after its own chain |
+| What each crusher's quantiser adds that is not the signal: its **grain** | A **cap** per section, so the grain stays a chosen distance under the music. Drive and fold are colour and are never capped; the dither rides the signal, so a dying tail is no longer turned into crackle |
+| How far each section lies under the loudest | A **ride** per section: the quiet ones are set a little further under, so the arc of the rite opens; one that would be lost is brought back |
+| The spectrum, in six bands | Four broad **EQ** moves, half of the way to a house tone (which is darker on top for a rite without a kit) |
+| What kind of consonants the sigil is made of | The **finish**, the character of the chain: fricatives open the top, nasals let the low end through, liquids warm it and soften the glue, plosives slow the glue so the hit gets through |
+| How loud the result leaves | The **make-up** that lands it on the loudness asked for (−14 LUFS unless you say otherwise), under a true-peak ceiling of −1 dBTP |
+
+The chain is the last thing in the DSP core (§5d): sub-sonic high-pass → EQ → three
+bands (towards mono below 160 Hz, width above), each held by its own slow compressor →
+glue → a little saturation → make-up → soft clip → look-ahead limiter that also watches
+the peaks *between* the samples. Every number in it comes from one small table, the
+**master plan**, which is a pure function of the compiled song and the listener's
+settings. The stage and every render are handed the same plan and run the same code, so
+what you render is what you heard; stems take the plan's trims and caps and leave before
+the chain, so that side by side they are the mix that entered it. Switched off, the mix
+leaves exactly as it did before any of this existed.
+
 ---
 
 ## Features
@@ -160,6 +186,7 @@ deal of movers are patch fields: saved per sigil, carried in a shared link.
 ### Core
 - Deterministic sigil + song from any text (SHA-256 avalanche: one letter changes everything)
 - Live Web Audio synthesis — **no samples**; three lead timbres (glass FM bell, reed, plucked koto), choir, pad, saturated bass, arpeggio, drone, synthesised drum kit, generated convolution reverb, tempo-synced dotted-eighth delay
+- **Mastered output**: every rite is listened to, then levelled, de-noised, toned and set to a loudness target under a true-peak ceiling, identically on the stage and in a render
 - Canvas 2D renderer with additive "ember ink", motes, particle sparks, ghost transforms, Euclidean rhythm polygons
 - Charge (fullscreen) mode with breath guide · Forget (banishing) with burn animation
 - **Seal** export: 2048² PNG talisman · **Record**: canvas + master audio → WebM/MP4
@@ -174,11 +201,12 @@ deal of movers are patch fields: saved per sigil, carried in a shared link.
 | **M4 Form & Loop** | Section jump list, gapless section looping, keyboard navigation, loop band on the progress bar |
 | **M5 Access** | Reduced motion, high contrast (wins over all palettes), larger text, screen-reader section announcements, `describe()` of the current sigil, progress bar as an ARIA slider |
 | **M6 Moods** | Arrangement presets — Ritual, Ambient, Pulse, Lullaby, Dirge, Ecstatic — applied as `compose`/`plan` filters; re-composes live and resumes at the current section |
-| **M7 Render & Export** | Offline faster-than-realtime render, **parallelised across CPU cores** with section-aligned cuts and crossfades, → WAV 16/24, MP3 (worker LAME), AAC (ADTS) and Opus (hand-written Ogg muxer) via WebCodecs. Every mover moves as it does on the stage; over more than one pass the rite evolves, by the Evolution set in Motion |
+| **M7 Render & Export** | Offline faster-than-realtime render, **parallelised across CPU cores** with section-aligned cuts and crossfades, → WAV 16/24, MP3 (worker LAME), AAC (ADTS) and Opus (hand-written Ogg muxer) via WebCodecs. Every mover moves as it does on the stage; over more than one pass the rite evolves, by the Evolution set in Motion. The file leaves through the same master as the stage, by the same plan, and the status line says what it measures (LUFS, true peak, range) |
 | **M8 Fusion** | Up to three desires on one wheel as counterpoint; partners weigh into harmony at passing-tone strength |
 | **M9 Live Lens** | Drag the wheel to transpose, double-tap to mirror — in real time, affecting melody, harmony, bass and arpeggios, and propagating to MIDI/audio export |
 | **M10 Hours & Moon** | Planetary hours (true sunrise equation if you share location), moon phase, optional attunement of mode/timbre/tempo/palette to the hour, and timed charging sessions |
 | **M19 Motion** | The movers, shown and steered. A row per mover (its letter, what it moves and how, a live meter, a switch to hold it still); `◀ motion ▶` for another deal; **Motion** 0–200 % and **Evolution** 0–100 %, which governs the live loop and the passes of a render alike. In Sound & Patch each moved knob wears its letter, a band for the span it travels and a bead that travels it; on the wheel a ray grows at each moving letter |
+| **M20 Master** | The rite is listened to, then finished (see *Mastering* above). **Loudness** (−16 / −14 / −12 / −10 LUFS), **Balance** (how far the parts are drawn to the house balance), **Noise** (how much of the crusher's grain is let through: cleaner ↔ rawer ↔ exactly as composed), **Dynamics** (how far the quiet sections sit under the loud), `◀ finish ▶` for another deal of the chain's character and **Character** for how strongly it colours. Live meters (loudness now and so far, true peak against the ceiling, gain held back) and a plain account of what the plan did: each part's trim, each section's ride and grain, the EQ. One switch turns it all off, for comparing |
 | **M15 Drum Engine** | How the kit plays: Sigil or Classic patterns, a hundred grooves per sigil (`◀ groove ▶`; the number travels in the share link), Variation / Fills / Ghosts / Humanise / Dynamics, sidechain ducking, and a bypass for the kit's own FX chain. The chain itself (drive → punch/body transient shaper → crusher → filter, with parallel compression, a room and a tempo-synced ping-pong echo beside the dry hit) runs in the DSP worklet; its `D·` knobs are in Sound & Patch, dealt per sigil and saved with the patch |
 
 ---
@@ -237,6 +265,7 @@ index.html
 | `05-composer.js` | §5 | `makePlan`, `buildPhrase`, `addPassing`, `harmonize`, `padVoicing`, `bassPitch`, `arpTones`, drum/bass/arp bar emitters, **`composeSong`**, time-lookup helpers |
 | `05c-groove.js` | §5c | `Groove`: the drum part written from the sigil (polygons under each section's transform, letter accents, fills). Pure; `apply` / `restore` rewrite a song's kit in place |
 | `05d-motion.js` | §5d | `Motion`: which letter moves which parameter (`deal`), the nine gestures, and the baked table of curves the core and the interface both read (`bake`). Pure |
+| `05e-master.js` | §5e | `Mastering`: the master plan. `character` (the letters' finish), `solveA` / `solveB` (from the Probe's measurements to trims, caps, rides, EQ and gains), loudness arithmetic (`lufs`, `range`, `measure`), and the job plumbing the listening needs. Pure; loaded after the DSP core, whose tables it reads |
 | `06-engine.js` | §6 | `Engine`: buses, FX, voices, lookahead scheduler, transport, ritual sounds |
 | `07-renderer.js` | §7 | `Renderer`: frame composition, wheel, rhythm polygons, pen, particles, burn |
 | `08-app.js` | §8 | `cast`, `performReduction`, HUD, controls, `exportSeal`, `toggleRecord`, `share`, `forget`, boot |
@@ -283,7 +312,15 @@ Listeners run in ascending priority and are individually try/caught.
 `buses(buses, engine)` · `section(sec, si, song)` · `drawPlaying(ctx)` ·
 `stop(reason)` · `forget(sigil)` · `link({members, preset})` ·
 `motion(engine)` (the engine holds a new table of movers; read `engine.auto`,
-and ask `engine.motionNow()` what they are doing at the audible beat)
+and ask `engine.motionNow()` what they are doing at the audible beat) ·
+`compiled(engine, kind)` (the engine was just sent something that changes what will be
+heard: `kind` is `'song'`, `'plan'`, `'sections'`, `'tempo'` or `'params'`. M20 listens
+for it to work out the master plan anew; `engine.master` is the plan in force) ·
+`master(engine, plan)` (a master plan was laid on, or taken away)
+
+A mood may speak to the master from its `compose` filter, as it does to the drummer:
+`cfg.master = { noise: +dB, tone: ×, level: ×, dynamics: × }` (more grain let through
+for a mood that *is* its crusher; less tonal correction for one that is dark on purpose).
 
 `drawPlaying` receives `{ r, g, F, T, beat, song, sig, ph, pi, sec, si, kp, sp, lines, app }`.
 Push your stroke point arrays into `lines` so that **Forget** burns them too.
@@ -372,9 +409,21 @@ This is the most important rule in the project.
    never at its block's, so a sound cannot depend on where 128-sample boundaries fell.
    Do not add a second implementation "for the UI".
 
-`npm run golden` pins all of the above. `npm run drums` and `npm run motion` check the
-invariants, and that with the kit's FX bypassed and Motion and Evolution at zero the
-engine is, to the sample, the engine before any of this existed.
+7. So does the master. `Mastering.character` draws from `stream(hash, 'master')` (or
+   `'master:<n>'`) in a frozen order; everything else in a plan is arithmetic on
+   measurements of a deterministic render, so the same song and settings give the same
+   plan, number for number. **A plan is never worked out on the audio thread and never
+   adapts while it plays**: the stage and a render are handed the same table, and the
+   chain that reads it (DSP §5d) is the same code in the worklet and in a render worker.
+   Nothing in the chain remembers more than a second, so a render cut into parallel
+   segments has settled well inside each segment's pre-roll. Without a plan the core
+   runs the code path it always ran, untouched.
+
+`npm run golden` pins all of the above. `npm run drums`, `npm run motion` and
+`npm run master` check the invariants, and that with the kit's FX bypassed, Motion and
+Evolution at zero and no master plan the engine is, to the sample, the engine before
+any of this existed. `npm run master` also holds the meter to BS.1770 reference tones,
+the limiter to its ceiling, and a finished render to the loudness it was asked for.
 
 ---
 

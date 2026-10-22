@@ -79,6 +79,7 @@ const Render = (() => {
    pre-roll (warming reverb/delay, chasing pads and drones) and returns only
    its own range; seams are 30 ms crossfades. Same core as the live engine. */
    const RENDER_WORKER = 'src/dsp/sigil-render.worker.js';
+   const LISTEN = 0.14;   // the share of the progress bar given to listening, when a job has not been heard
 
    async function renderSong(song, sr, onProgress, opts) {
      opts = opts || {};
@@ -88,6 +89,22 @@ const Render = (() => {
      // opts.pass0: which pass of the rite this render begins at (m14 renders its passes one at a time),
      // so that the movers evolve across them exactly as they would in one long render or on the stage.
      const job = SigilPlan.renderJob(song, app.sigil, { sr, spb, passes, lens, levels: opts.levels, pass0: opts.pass0 });
+     /* THE MASTER (m20). The file leaves through the same chain as the stage, by the same plan. If this
+        job is the one the stage is playing, its plan is already worked out; if not (another tempo, the
+        lens off, an evolved pass) it is listened to first, which is the first stretch of the bar.
+        opts.stem: parts of one mix, which take the plan's trims and caps and leave before the chain. */
+     let plan = null, listened = 0;
+     const progress = onProgress;
+     if (typeof Master !== 'undefined') {
+       try {
+         const m = await Master.prepare(job, song, { stem: !!opts.stem, onProgress: (f) => { listened = LISTEN; progress(f * LISTEN); } });
+         if (m) { job.master = m.table; plan = m.plan; }
+       } catch (e) {
+         // The song could not be listened to. It is still rendered: unfinished, as the engine always left it.
+         console.error('[render] the master could not listen; rendering without it', e);
+       }
+     }
+     onProgress = (f) => progress(listened + f * (1 - listened));
      const music = passes * song.total * spb, total = music + TAIL;
      const lanes = S.fast ? clamp((navigator.hardwareConcurrency || 2) - 1, 1, 4) : 1;
      const K = Math.max(1, Math.min(lanes * 2, Math.floor(music / 20)));
@@ -137,12 +154,14 @@ const Render = (() => {
        }
        g.L = g.R = null;
      }
-     return { L, R, sr, segments: segs.length };
+     return { L, R, sr, segments: segs.length, mastered: !!job.master && !opts.stem, plan };
    }
 
   /* ═════════ 2. MASTERING ═════════ */
 
   /**
+   * Only for a render the master (m20) did NOT finish: one that was, already sits at the loudness
+   * asked for under a true-peak ceiling, and is left exactly as it is.
    * Peak-normalise to −1 dBFS (lossless) or −1.5 dBFS (lossy, leaving headroom
    * for inter-sample peaks after decoding). When normalisation is OFF we still
    * apply a gain ≤ 1 to prevent clipping.
@@ -514,14 +533,18 @@ self.onmessage = function (e) {
 
       status.textContent = `Encoding ${f.label}…`;
       await frame();
-      normalize(r.L, r.R, S.format);
+      if (!r.mastered) normalize(r.L, r.R, S.format);
+      // What the file measures, as a loudness meter would read it: said, not assumed.
+      const heard = typeof Mastering !== 'undefined' ? Mastering.measure(r.L, r.R, r.sr) : null;
 
       const blob = await encode(S.format, r, kbpsFor(S.format), (p) => setBar(0.8 + p * 0.2));
       setBar(1);
       download(blob, `sigil-${UI.fileKey()}.${f.ext}`);
 
       status.textContent = `Rendered in ${secs(t1 - t0)} (${r.segments} segment${r.segments > 1 ? 's in parallel' : ''}) · ` +
-                           `encoded in ${secs(performance.now() - t1)} · ${(blob.size / 1048576).toFixed(1)} MB`;
+                           `encoded in ${secs(performance.now() - t1)} · ${(blob.size / 1048576).toFixed(1)} MB` +
+                           (heard && Number.isFinite(heard.lufs) ? ` · ${r.mastered ? 'mastered to' : 'measures'} ${heard.lufs.toFixed(1).replace('-', '−')} LUFS, ` +
+                             `peak ${heard.truePeak.toFixed(1).replace('-', '−')} dBTP, range ${heard.range.toFixed(1)} LU` : '');
       UI.announce(`${f.label} file ready.`);
     } catch (e) {
       console.error('[render]', e);
@@ -548,12 +571,14 @@ self.onmessage = function (e) {
       onChange: (v) => { S.kbps[S.format] = +v; save(); refresh(); } });
 
     el.append(
-      UI.note('Renders the performance offline, faster than real time, including your mix, tempo and live lens, and every mover exactly as it moves on the stage. Over more than one pass the rite evolves, by the amount set in Motion. Lossless WAV, or compressed MP3 / AAC / Opus.'),
+      UI.note('Renders the performance offline, faster than real time, including your mix, tempo and live lens, and every mover exactly as it moves on the stage. It leaves through the same master as the stage, by the same plan. Over more than one pass the rite evolves, by the amount set in Motion. Lossless WAV, or compressed MP3 / AAC / Opus.'),
       fmtRow, kbpsRow,
       UI.select({ label: 'Length', value: S.loops,
         options: [['1', 'One pass'], ['2', 'Two passes'], ['3', 'Three passes']],
         onChange: (v) => { S.loops = +v; save(); refresh(); } }),
-      UI.check({ label: 'Normalise loudness peaks', checked: S.normalize, onChange: (v) => { S.normalize = v; save(); } }),
+      UI.check({ label: 'Normalise peaks (when the master is off)', checked: S.normalize,
+        title: 'A render the master has finished already sits at its loudness, under a true-peak ceiling, and is not touched again',
+        onChange: (v) => { S.normalize = v; save(); } }),
       UI.check({ label: 'Fast render (parallel, uses several CPU cores)', checked: S.fast, onChange: (v) => { S.fast = v; save(); } }),
       UI.check({ label: 'Use the current tempo', checked: S.tempo, onChange: (v) => { S.tempo = v; save(); refresh(); } }),
       UI.check({ label: 'Apply the live lens', checked: S.lens, onChange: (v) => { S.lens = v; save(); } }),
@@ -574,7 +599,7 @@ self.onmessage = function (e) {
   Hooks.on('song', refresh);
   Hooks.on('forget', () => setTimeout(refresh, 4000));
 
-  return { renderSong, encode, encodeWav, muxOggOpus, normalize };
+  return { renderSong, encode, encodeWav, muxOggOpus, normalize };   // renderSong → { L, R, sr, segments, mastered, plan }
 })();
 
 window.Render = Render; 

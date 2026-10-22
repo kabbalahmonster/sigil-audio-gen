@@ -7,7 +7,10 @@
            renderer (m7 → SigilPlan.renderJob): the job is otherwise the full
            mix's, lane for lane, so a stem's knobs move exactly as the mix's do.
            Stems keep the mix's balance by default (one gain for all of them),
-           so laid side by side at unity they are the song.
+           so laid side by side at unity they are the song. Under the master
+           (m20) they carry its trims and its caps on the crushers, and leave
+           BEFORE its chain: side by side they are the mix as it entered the
+           chain, ready to be mastered elsewhere.
 
    EVOLVE  Renders each pass with a later dream variant and a gentle macro
            drift, then concatenates the passes with a short equal-power
@@ -63,7 +66,7 @@ const RenderPlus = (() => {
     for (let p = 0; p < S.passes; p++) {
       Sound.setRenderSpec(specForPass(p));
       // eslint-disable-next-line no-await-in-loop
-      const r = await Render.renderSong(song, sr, (f) => onProgress((p + f) / S.passes), { loops: 1, levels, pass0: p });
+      const r = await Render.renderSong(song, sr, (f) => onProgress((p + f) / S.passes), { loops: 1, levels, stem: !!levels, pass0: p });
       out.push(r);
     }
     Sound.clearRenderSpec();
@@ -88,7 +91,7 @@ const RenderPlus = (() => {
         }
       }
     }
-    return { L, R, sr, segments: out.length };
+    return { L, R, sr, segments: out.length, mastered: out.every((r) => r.mastered) };
   }
 
   function peakNormalise(r, target = 0.891) {
@@ -120,11 +123,12 @@ const RenderPlus = (() => {
         const levels = busKey ? stemLevels(busKey) : undefined;
         const progress = (f) => { bar.classList.remove('busy'); setBar((i + f * 0.9) / list.length); };
         const r = mode === 'stems' && S.passes <= 1
-          ? await Render.renderSong(app.song, 44100, progress, { loops: 1, levels })
+          ? await Render.renderSong(app.song, 44100, progress, { loops: 1, levels, stem: true })
           : await renderEvolved(app.song, 44100, progress, levels);
-        // The mix is brought up to full scale. Stems are left as the engine balanced them (so they sum
-        // to the song) unless each is asked to be normalised on its own.
-        if (!busKey || S.normStems) peakNormalise(r);
+        // A mix the master (m20) finished is left as it is; one it did not is brought up to full scale.
+        // Stems are left as the engine balanced them (so they sum to the song: under the master, to the
+        // mix as it ENTERS the chain) unless each is asked to be normalised on its own.
+        if (busKey ? S.normStems : !r.mastered) peakNormalise(r);
         const blob = await Render.encodeWav(r.L, r.R, r.sr, 24);
         download(blob, `sigil-${UI.fileKey()}${busKey ? '-' + busKey : '-evolved'}.wav`);
         setBar((i + 1) / list.length);

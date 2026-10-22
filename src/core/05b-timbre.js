@@ -70,14 +70,17 @@ const SoundDesign = (() => {
     // motion (05d): how far the movers move, how much each pass evolves, which deal of movers
     // (0 = the sigil's own), and a bitmask of movers held still.
     motion: ['mo', 0, 2], evolve: ['ev', 0, 1], mVar: ['mv', 0, 99], mMute: ['mm', 0, 255],
+    // the finish (05e): which deal of the master chain's character (0 = the sigil's own), and how
+    // strongly it colours the chain (0 = the house's own, uncoloured).
+    finish: ['fn', 0, 99], fAmt: ['fa', 0, 1.5],
   };
-  const INTEGER_FIELDS = new Set(['vowel', 'bits', 'hold', 'dBits', 'dHold', 'dTime', 'take', 'mVar', 'mMute']);
+  const INTEGER_FIELDS = new Set(['vowel', 'bits', 'hold', 'dBits', 'dHold', 'dTime', 'take', 'mVar', 'mMute', 'finish']);
   /**
    * Fields Mutate leaves alone: switches and indices, where a nudge is a different thing entirely;
    * and the kit's filter, which is a performance control (a nudge off centre takes the kick's sub away).
    */
   const FIXED_FIELDS = new Set(['bits', 'hold', 'voice', 'dBits', 'dHold', 'dTime', 'dFilter', 'take',
-    'motion', 'evolve', 'mVar', 'mMute']);
+    'motion', 'evolve', 'mVar', 'mMute', 'finish', 'fAmt']);
   const VOICES = ['auto', 'vox', 'wave'];
   const clampTo = (x, a, b) => Math.min(b, Math.max(a, x));
 

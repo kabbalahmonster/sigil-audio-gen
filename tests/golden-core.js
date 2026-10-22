@@ -71,6 +71,11 @@ function motionFingerprint(reduced, variant) {
   return toHex(hashStr(parts.join('#'))).slice(0, 32);
 }
 
+/** The finish (05e): what the letters ask of the master chain. `variant` 0 is the sigil's own. */
+function finishFingerprint(reduced, variant) {
+  return toHex(hashStr(JSON.stringify(Mastering.character(buildSigil(reduced), variant)))).slice(0, 32);
+}
+
 /** Everything the CI compares, as a flat object of name → value. */
 function computeAll() {
   const out = {};
@@ -82,6 +87,7 @@ function computeAll() {
     for (const take of [0, 3]) out[`groove:${w}:take${take}`] = grooveFingerprint(w, take);
     for (const v of GOLDEN_VARIANTS) out[`drumfx:${w}:dream${v}`] = drumFxFingerprint(w, v);
     for (const v of GOLDEN_VARIANTS) out[`motion:${w}:deal${v}`] = motionFingerprint(w, v);
+    for (const v of GOLDEN_VARIANTS) out[`finish:${w}:deal${v}`] = finishFingerprint(w, v);
   }
   const patch = { wave: 2.5, voice: 'vox', grit: 0.4 };
   out['codec:encode'] = SoundDesign.encodePatch(patch, 3);

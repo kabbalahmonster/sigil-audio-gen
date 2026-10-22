@@ -24,6 +24,8 @@
      'src/core/05b-timbre.js',
      'src/core/05c-groove.js',
      'src/core/05d-motion.js',
+     'src/dsp/sigil-dsp.js',
+     'src/core/05e-master.js',
      'tests/golden-core.js',
    ];
    

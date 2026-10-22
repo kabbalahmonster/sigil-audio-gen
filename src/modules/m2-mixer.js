@@ -56,9 +56,17 @@ const Mixer = (() => {
       if (!b || b._base == null) continue;
       set(b.gain, b._base * S.level[k] * (S.mute[k] ? 0 : 1) * (anySolo && !S.solo[k] ? 0 : 1));
     }
-    set(eng.out.gain, 0.85 * S.master);
+    /* Volume. The engine's own output leaves headroom, so the fader may go past unity. Under the
+       master (m20) the output sits right under a true-peak ceiling instead: there, anything past
+       unity is pushed INTO the master's limiter (louder, still held) rather than past full scale. */
+    const vol = 0.85 * S.master, held = !!eng.master && vol > 1;
+    set(eng.out.gain, eng.master ? Math.min(vol, 1) : vol);
+    const boost = held ? 20 * Math.log10(vol) : 0;
+    if (eng.setParams && (eng.params.boost || 0) !== boost) eng.setParams({ boost });
     if (eng.revReturn) set(eng.revReturn.gain, 0.85 * S.space, 0.08);
   }
+
+  Hooks.on('master', (eng) => apply(eng));
 
   // Record each bus's post-song-level gain as its baseline, then apply user levels.
   Hooks.on('buses', (buses, eng) => {

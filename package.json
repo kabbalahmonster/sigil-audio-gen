@@ -9,6 +9,8 @@
     "drums": "node tests/drums.spec.mjs",
     "drums:quick": "node tests/drums.spec.mjs --quick",
     "motion": "node tests/motion.spec.mjs",
-    "motion:quick": "node tests/motion.spec.mjs --quick"
+    "motion:quick": "node tests/motion.spec.mjs --quick",
+    "master": "node tests/master.spec.mjs",
+    "master:quick": "node tests/master.spec.mjs --quick"
   }
 }

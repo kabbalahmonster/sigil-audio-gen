@@ -10,11 +10,15 @@
      • owns the VISUAL CLOCK (TransportClock): beat and pass at the AUDIBLE time
      • keeps the page's copy of the motion table the core was sent, and answers
        "what is every mover doing now" with the core's own functions (motionNow)
+     • hands the core its master plan (setMaster; worked out by 05e / m20), and
+       keeps the page's copy of the one it holds
      • exposes bus "proxies" with AudioParam-like gains, so the Mixer (M2) and
        Stems (m14) keep working without knowing the buses live in a worklet
 
    SIGNAL FLOW (native nodes after the worklet)
      worklet out[0] → tone (LP, swept by banish) → out → speakers
+       (the master chain, DSP §5d, is INSIDE the worklet: the last thing before out[0],
+        so the stage and an offline render leave through the very same code)
      worklet out[1] (post bus: banishing fire) ─────┘
      mix (GainNode) → tone    native insert for any custom Web Audio module
      out → analyser (m13), out → recDest (Record)
@@ -108,6 +112,8 @@ class Engine {
     this.auto = null;        // the motion table the core holds (06b motionSync): { key, n, step, len, lanes, curves, meta }
     this.sections = null;    // a copy of the section table it holds
     this.moved = [];         // motionNow()'s reused result
+    this.master = null;      // the master plan the core holds (05e), or null: the mix leaves as it always did
+    this.masterSig = 0;      // its fingerprint: the core reports the one it holds with every tick (stats.master.sig)
     this.stats = { ready: false, voices: 0, budget: 0, steals: 0, load: -1, meters: null, beat: 0, errors: 0 };
     this.revReturn = { gain: Engine.param(0.85, (v) => this.setParams({ reverb: v })), connect() {}, disconnect() {} };
 
@@ -154,7 +160,7 @@ class Engine {
       case 'transport': this.clock.push(d); break;
       case 'tick':
         Object.assign(this.stats, { voices: d.voices, budget: d.budget, steals: d.steals, load: d.load, meters: d.meters, beat: d.beat,
-          pass: d.pass | 0, moved: d.moved || null });
+          pass: d.pass | 0, moved: d.moved || null, master: d.master || null });
         for (const fn of this._tickSubs) { try { fn(d); } catch (e) { console.error('[engine:tick]', e); } }
         break;
       case 'error': this.stats.errors++; console.error('[dsp]', d.msg); break;
@@ -210,6 +216,7 @@ class Engine {
     if (!this.song || !(bpm > 0)) return;
     this.spb = 60 / bpm;
     this.post({ type: 'tempo', bpm });
+    Hooks.emit('compiled', this, 'tempo');            // the same song at another speed is another thing to master
   }
   /** Musical time AT THE SPEAKER. Pinned per frame by Stage, so every reader agrees. */
   beatNow() { return this.song ? this.clock.beat() : 0; }
@@ -238,7 +245,24 @@ class Engine {
   ts() { return clamp(this.spb / 0.6, 0.35, 1); }
 
   /* ── mix ── */
-  setParams(p) { Object.assign(this.params, p); this.post(Object.assign({ type: 'params' }, p)); }
+  setParams(p) {
+    const hall = p.reverb != null && p.reverb !== this.params.reverb;
+    Object.assign(this.params, p); this.post(Object.assign({ type: 'params' }, p));
+    if (hall && this.song) Hooks.emit('compiled', this, 'params');   // more or less hall is a different mix
+  }
+  /**
+   * Hand the core a master plan (Mastering.solveA/solveB), or null to take it away. A plan is
+   * glided to; `snap` lands it at once (a new song, before a note of it has sounded).
+   * The arrays are copied, so the page's plan stays readable.
+   */
+  setMaster(plan, snap = false) {
+    const t = plan && plan.on && typeof Mastering !== 'undefined' ? Mastering.table(plan) : null;
+    const was = !!this.master;
+    this.master = t ? plan : null;
+    this.masterSig = t ? SigilDSP.planSig(t.p, t.trim, t.sec) : 0;   // what the core will report holding (stats.master.sig)
+    this.post(t ? { type: 'master', p: t.p, trim: t.trim, sec: t.sec, snap: !!snap } : { type: 'master', p: null, snap: !!snap });
+    if (was !== !!t) Hooks.emit('master', this, this.master);   // the output now has (or has lost) a true ceiling: M2's Volume cares
+  }
   setLevel(name, v) { this._level(name, v); }
   panic() { this.post({ type: 'panic' }); }
 

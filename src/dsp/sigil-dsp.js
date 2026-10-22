@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════
-   SIGIL DSP CORE v4
+   SIGIL DSP CORE v5
    --------------------------------------------------------------------------
    Pure JavaScript synthesis. No Web Audio, no DOM, no imports. One file, three
    hosts, identical sound:
@@ -21,6 +21,9 @@
      events    Float64Array, STRIDE per event, sorted by beat  → see EV
      sections  Float64Array, PSTRIDE per section               → see PA
      tables    Float32Array, CELL floats per cube cell (NT mip tiers)
+     lanes     the movers: Float64Array, ASTRIDE per lane, + curves    → see AU
+     master    the master plan: MSTRIDE scalars, a trim per bus,
+               three numbers per section                               → see MA
 
    v3 adds the TOM voice and the drum FX chain (§5b). Both are inert until a
    plan asks for them: with every D* column at its default the drum path is
@@ -32,12 +35,20 @@
    a full render and a stem render move their knobs identically: all three ask
    the same table the same question. With no lanes, or with Motion and Evolve at
    rest, this file does exactly what v3 did.
+
+   v5 adds the MASTER (§5d): a trim per part, a cap per section on the grain of
+   each crusher, a ride per section, and the chain the whole mix leaves through
+   (EQ, three bands, glue, soft clip, true-peak limiter), all set by one small
+   table, the master plan; and the PROBE, the measurements a plan is worked out
+   from (src/core/05e-master.js). The plan is a pure function of the song, and
+   it is the same plan on the stage and in every render. With no plan, or with
+   it switched off, this file does exactly what v4 did.
    ══════════════════════════════════════════════════════════════════════════ */
    (function (G) {
     'use strict';
   
     /* ── §1 CONSTANTS ──────────────────────────────────────────────────────── */
-    const VERSION = 4;
+    const VERSION = 5;
     const TAU = Math.PI * 2;
     const SQ2 = Math.SQRT2;
     const BLOCK = 128;                 // render quantum (Web Audio's, and ours offline)
@@ -1336,6 +1347,519 @@
       }
     }
 
+    /* ── §5d MASTER: what the whole mix passes through on its way out ──────────
+       The rite is mixed by the sigil; this is where it is finished. Everything
+       here is set by a small table of numbers, the MASTER PLAN, which the page
+       works out by LISTENING to the song (src/core/05e-master.js): it renders
+       the piece once at a low rate with a Probe attached, measures it, and sends
+       back how far each part is from the house balance, how much of the crusher
+       the music can carry, what the tone lacks, and how much gain reaches the
+       loudness asked for. The plan is a pure function of the song, so the stage
+       and every render are finished identically: there is one plan, and one
+       reader of it.
+
+         trims   each part's distance from the house balance (the kit's is applied
+                 AFTER its own chain, so that its glue cannot undo it)
+         caps    per section: how much of the crusher is let through (music, kit)
+         chain   pre-gain → sub-sonic high-pass → four broad EQ bands
+                 → three bands (mono below the low crossover, width above it),
+                   each with its own slow compressor
+                 → glue compressor → a little saturation
+                 → make-up → soft clip → look-ahead limiter, true-peak aware
+
+       Block-rate gain computers (real-time rule 2): each compressor measures the
+       block it is about to play, so it also sees a few milliseconds ahead.
+       With no plan, or with the plan switched off, none of this runs and the
+       mix leaves through the bus compressor and soft clip it always had.      */
+
+    /** The plan's scalars (MSTRIDE numbers). Levels and thresholds in dB, times in seconds. */
+    const MA = Object.freeze({ ON: 0, IN: 1, OUT: 2, LOW: 3, MUD: 4, PRES: 5, AIR: 6,
+      LO_T: 7, LO_R: 8, MID_T: 9, MID_R: 10, HI_T: 11, HI_R: 12, GLUE_T: 13, GLUE_R: 14, GLUE_A: 15, GLUE_RL: 16,
+      DRIVE: 17, WIDTH: 18, MONO: 19, CEIL: 20, CLIP: 21, GATE: 22, STEM: 23 });
+    // STEM > 0: the chain is skipped and OUT (≤ 0 dB) is a plain gain: see Core.master().
+    const MSTRIDE = 24;
+    const MASTER_REST = new Float64Array(MSTRIDE);
+    Object.entries({ LO_T: -24, LO_R: 2, MID_T: -22, MID_R: 1.5, HI_T: -30, HI_R: 2, GLUE_T: -20, GLUE_R: 1.8,
+      GLUE_A: 0.03, GLUE_RL: 0.25, WIDTH: 1, CEIL: -1, CLIP: 1.5 }).forEach(([k, v]) => { MASTER_REST[MA[k]] = v; });
+    /** Crossovers of the three bands, and the four EQ bands' centres (Hz). */
+    const X_LO = 160, X_HI = 4800, EQ_F = [105, 320, 3000, 8500], EQ_Q = [0.7071, 0.9, 0.75, 0.7071], EQ_T = [3, 2, 2, 4];
+    /** The probe's band edges (Hz): sub · bass · low-mid · mid · presence · air. */
+    const BAND_EDGES = [60, 200, 600, 2000, 6000];
+    const NBAND = BAND_EDGES.length + 1;
+
+    /**
+     * A fingerprint of a master plan's three tables (an unsigned 32-bit number). The core reports
+     * the one it holds with every tick; the page works out the same number from the plan it sent.
+     * If the two ever differ for long, the stage is not playing the plan the page believes it is.
+     */
+    function planSig(p, trim, sec) {
+      let h = 2166136261;
+      for (const a of [p, trim, sec]) {
+        if (!a) { h = Math.imul(h ^ 0x5bd1e995, 16777619); continue; }
+        const f = a instanceof Float64Array ? a : Float64Array.from(a), u = new Uint8Array(f.buffer, f.byteOffset, f.byteLength);
+        for (let i = 0; i < u.length; i++) h = Math.imul(h ^ u[i], 16777619);
+      }
+      return h >>> 0;
+    }
+
+    /** RBJ biquad into c[o…o+4] = b0 b1 b2 a1 a2. type: 0 low-pass · 1 high-pass · 2 bell · 3 low shelf · 4 high shelf. */
+    function bqSet(c, o, type, sr, f, q, db) {
+      const w = (TAU * clamp(f, 5, sr * 0.45)) / sr, cs = Math.cos(w), al = Math.sin(w) / (2 * q);
+      let b0, b1, b2, a0, a1, a2;
+      if (type === 0) { b1 = 1 - cs; b0 = b2 = b1 / 2; a0 = 1 + al; a1 = -2 * cs; a2 = 1 - al; }
+      else if (type === 1) { b1 = -(1 + cs); b0 = b2 = (1 + cs) / 2; a0 = 1 + al; a1 = -2 * cs; a2 = 1 - al; }
+      else {
+        const A = Math.pow(10, db / 40);
+        if (type === 2) { b0 = 1 + al * A; b1 = -2 * cs; b2 = 1 - al * A; a0 = 1 + al / A; a1 = b1; a2 = 1 - al / A; }
+        else {
+          const sq = 2 * Math.sqrt(A) * al, p = A + 1, m = A - 1;
+          if (type === 3) {
+            b0 = A * (p - m * cs + sq); b1 = 2 * A * (m - p * cs); b2 = A * (p - m * cs - sq);
+            a0 = p + m * cs + sq; a1 = -2 * (m + p * cs); a2 = p + m * cs - sq;
+          } else {
+            b0 = A * (p + m * cs + sq); b1 = -2 * A * (m + p * cs); b2 = A * (p + m * cs - sq);
+            a0 = p - m * cs + sq; a1 = 2 * (m - p * cs); a2 = p - m * cs - sq;
+          }
+        }
+      }
+      c[o] = b0 / a0; c[o + 1] = b1 / a0; c[o + 2] = b2 / a0; c[o + 3] = a1 / a0; c[o + 4] = a2 / a0;
+    }
+    /**
+     * K-weighting (ITU-R BS.1770): the ear's curve, as two biquads [shelf, high-pass] for any rate.
+     * Loudness in LUFS is −0.691 + 10·log10 of the mean square of what comes out, summed over L and R.
+     */
+    function kWeight(sr) {
+      const c = new Float64Array(10);
+      let K = Math.tan((Math.PI * 1681.974450955533) / sr);
+      const Vh = Math.pow(10, 3.999843853973347 / 20), Vb = Math.pow(Vh, 0.4996667741545416), Q = 0.7071752369554196;
+      let a0 = 1 + K / Q + K * K;
+      c[0] = (Vh + (Vb * K) / Q + K * K) / a0; c[1] = (2 * (K * K - Vh)) / a0; c[2] = (Vh - (Vb * K) / Q + K * K) / a0;
+      c[3] = (2 * (K * K - 1)) / a0; c[4] = (1 - K / Q + K * K) / a0;
+      K = Math.tan((Math.PI * 38.13547087602444) / sr); const Q2 = 0.5003270373238773;
+      a0 = 1 + K / Q2 + K * K;
+      c[5] = 1; c[6] = -2; c[7] = 1; c[8] = (2 * (K * K - 1)) / a0; c[9] = (1 - K / Q2 + K * K) / a0;
+      return c;
+    }
+    /** Run a stereo K-weighting over n samples; returns the sum of squares of both channels. st: 8 states. */
+    function kSum(c, st, o, L, R, n, g) {
+      const b0 = c[0], b1 = c[1], b2 = c[2], a1 = c[3], a2 = c[4], d1 = c[8], d2 = c[9];
+      let s1 = st[o], s2 = st[o + 1], s3 = st[o + 2], s4 = st[o + 3], t1 = st[o + 4], t2 = st[o + 5], t3 = st[o + 6], t4 = st[o + 7], e = 0;
+      for (let i = 0; i < n; i++) {
+        let x = L[i] * g, y = b0 * x + s1; s1 = b1 * x - a1 * y + s2; s2 = b2 * x - a2 * y;
+        let z = y + s3; s3 = -2 * y - d1 * z + s4; s4 = y - d2 * z;
+        e += z * z;
+        x = R[i] * g; y = b0 * x + t1; t1 = b1 * x - a1 * y + t2; t2 = b2 * x - a2 * y;
+        z = y + t3; t3 = -2 * y - d1 * z + t4; t4 = y - d2 * z;
+        e += z * z;
+      }
+      const q = 1e-25;
+      st[o] = s1 > -q && s1 < q ? 0 : s1; st[o + 1] = s2 > -q && s2 < q ? 0 : s2; st[o + 2] = s3 > -q && s3 < q ? 0 : s3; st[o + 3] = s4 > -q && s4 < q ? 0 : s4;
+      st[o + 4] = t1 > -q && t1 < q ? 0 : t1; st[o + 5] = t2 > -q && t2 < q ? 0 : t2; st[o + 6] = t3 > -q && t3 < q ? 0 : t3; st[o + 7] = t4 > -q && t4 < q ? 0 : t4;
+      return e;
+    }
+
+    /* Inter-sample peaks: the three points between two samples, by a 12-tap windowed sinc each. */
+    const TP_TAPS = 12, TP_H = new Float64Array(3 * TP_TAPS);
+    for (let p = 1; p < 4; p++) {
+      let s = 0;
+      for (let k = 0; k < TP_TAPS; k++) {
+        const x = k - (TP_TAPS / 2 - 1) - p / 4, w = 0.5 - 0.5 * Math.cos((TAU * (k + 1 - p / 4)) / (TP_TAPS + 1));
+        const v = (Math.sin(Math.PI * x) / (Math.PI * x)) * w;
+        TP_H[(p - 1) * TP_TAPS + k] = v; s += v;
+      }
+      for (let k = 0; k < TP_TAPS; k++) TP_H[(p - 1) * TP_TAPS + k] /= s;
+    }
+
+    /** The highest peak of a buffer, between the samples as well as on them (linear). For reports, not for the audio thread. */
+    function truePeak(x) {
+      const n = x.length, T = TP_TAPS, H = TP_H, c = T / 2;
+      let pk = 0;
+      for (let i = 0; i < n; i++) { const a = x[i] < 0 ? -x[i] : x[i]; if (a > pk) pk = a; }
+      const near = pk * 0.6;
+      for (let i = 0; i + T <= n; i++) {
+        const a = x[i + c - 1], b = x[i + c];
+        if (a < near && a > -near && b < near && b > -near) continue;
+        for (let p = 0; p < 3; p++) {
+          let s = 0; const o = p * T;
+          for (let k = 0; k < T; k++) s += H[o + k] * x[i + k];
+          if (s < 0) s = -s;
+          if (s > pk) pk = s;
+        }
+      }
+      return pk;
+    }
+
+    /**
+     * Look-ahead limiter. The gain a peak needs is known `look` samples before the peak leaves the
+     * delay line: it is held as the lowest over that window, released (quickly after a lone peak,
+     * slowly while they keep coming), and averaged over the window, so the gain arrives as a ramp
+     * and is fully there when the peak is. Peaks are measured between the samples as well as on
+     * them, which is what keeps a converter (or an MP3 decoder) from overshooting the ceiling.
+     */
+    class Limiter {
+      constructor(sr) {
+        this.sr = sr; this.look = Math.max(16, Math.round(0.004 * sr));
+        let s = 1; while (s < this.look + TP_TAPS + 2) s <<= 1;
+        this.M = s - 1;
+        this.bL = new Float64Array(s); this.bR = new Float64Array(s);
+        this.gq = new Float64Array(s); this.dq = new Int32Array(s); this.eb = new Float64Array(s);
+        this.cF = coefOf(0.05, sr); this.cSa = coefOf(0.08, sr); this.cSr = coefOf(0.5, sr);
+        this.clear();
+      }
+      clear() {
+        this.bL.fill(0); this.bR.fill(0); this.gq.fill(1); this.eb.fill(1);
+        this.w = 0; this.head = 0; this.tail = 0; this.fast = 1; this.slow = 1; this.sum = this.look; this.still = this.look;
+        this.gr = 1; this.tp = 0;
+      }
+      /** In place. `ceil` is linear. Leaves the lowest gain of the block in this.gr, the highest true peak (before gain) in this.tp. */
+      run(L, R, n, ceil) {
+        const bL = this.bL, bR = this.bR, gq = this.gq, dq = this.dq, eb = this.eb, M = this.M, D = this.look;
+        const cF = this.cF, cSa = this.cSa, cSr = this.cSr, near = ceil * 0.5, H = TP_H, T = TP_TAPS, iD = 1 / D;
+        let w = this.w, head = this.head, tail = this.tail, fast = this.fast, slow = this.slow, sum = this.sum, still = this.still;
+        let lo = 1, tp = this.tp;
+        for (let i = 0; i < n; i++) {
+          const l = L[i], r = R[i];
+          bL[w & M] = l; bR[w & M] = r;
+          let pk = l < 0 ? -l : l; const pr = r < 0 ? -r : r; if (pr > pk) pk = pr;
+          // between the samples: only worth asking when the neighbourhood is anywhere near the ceiling
+          const c0 = bL[(w - 5) & M], c1 = bL[(w - 6) & M], c2 = bR[(w - 5) & M], c3 = bR[(w - 6) & M];
+          if (c0 > near || c0 < -near || c1 > near || c1 < -near || c2 > near || c2 < -near || c3 > near || c3 < -near) {
+            for (let p = 0; p < 3; p++) {
+              let a = 0, b = 0; const o = p * T, base = w - T + 1;
+              for (let k = 0; k < T; k++) { const j = (base + k) & M, h = H[o + k]; a += h * bL[j]; b += h * bR[j]; }
+              if (a < 0) a = -a; if (b < 0) b = -b;
+              if (a > pk) pk = a; if (b > pk) pk = b;
+            }
+          }
+          if (pk > tp) tp = pk;
+          const g = pk > ceil ? ceil / pk : 1;
+          // the lowest gain asked for over the last `look` samples (a monotonic queue: amortised one step)
+          while (tail !== head && gq[dq[(tail - 1) & M] & M] >= g) tail--;
+          dq[tail & M] = w; tail++; gq[w & M] = g;
+          if (dq[head & M] < w - D) head++;
+          const gmin = gq[dq[head & M] & M];
+          fast = gmin < fast ? gmin : fast + (gmin - fast) * cF;
+          slow += (gmin - slow) * (gmin < slow ? cSa : cSr);
+          const e = slow < fast ? slow : fast;
+          sum += e - eb[(w - D) & M]; eb[w & M] = e;
+          if (e === 1) { if (++still >= D) { sum = D; still = D; } } else still = 0;   // at rest the average is exactly one…
+          const gs = still >= D ? 1 : sum * iD, j = (w - D) & M;                        // …and so is the gain: a pure delay
+          L[i] = bL[j] * gs; R[i] = bR[j] * gs;
+          if (gs < lo) lo = gs;
+          w++;
+        }
+        if (w > 0x3fffffff) { const k = w & ~M; w -= k; head -= k; tail -= k; for (let j = 0; j <= M; j++) dq[j] -= k; }
+        if (fast > 0.999999) fast = 1; if (slow > 0.999999) slow = 1;
+        this.w = w; this.head = head; this.tail = tail; this.fast = fast; this.slow = slow; this.sum = sum; this.still = still;
+        if (lo < this.gr) this.gr = lo;
+        this.tp = tp;
+      }
+    }
+
+    class Master {
+      constructor(sr) {
+        this.sr = sr; this.on = false; this.stem = false; this.stemG = 1;
+        this.t = Float64Array.from(MASTER_REST); this.v = Float64Array.from(MASTER_REST);
+        this.gl = 1 - Math.exp(-BLOCK / (0.3 * sr));           // how fast a new plan is glided to
+        this.eqC = new Float64Array(25); this.eqS = new Float64Array(20); this.eqDb = new Float64Array(4);
+        bqSet(this.eqC, 0, 1, sr, 24, 0.7071, 0);              // sub-sonic high-pass: nothing musical lives down there
+        for (let j = 0; j < 4; j++) bqSet(this.eqC, 5 + j * 5, EQ_T[j], sr, EQ_F[j], EQ_Q[j], 0);
+        this.xC = new Float64Array(20); this.xS = new Float64Array(32);
+        bqSet(this.xC, 0, 0, sr, X_LO, 0.7071, 0); bqSet(this.xC, 5, 1, sr, X_LO, 0.7071, 0);
+        bqSet(this.xC, 10, 0, sr, X_HI, 0.7071, 0); bqSet(this.xC, 15, 1, sr, X_HI, 0.7071, 0);
+        const mk = () => new Float64Array(BLOCK);
+        this.loL = mk(); this.loR = mk(); this.miL = mk(); this.miR = mk(); this.hiL = mk(); this.hiR = mk();
+        this.env = new Float64Array(4); this.g = new Float64Array(4); this.gr = new Float64Array(4);
+        // block-rate followers, in dB: attack and release of the low, mid and high bands
+        const bc = (s) => 1 - Math.exp(-BLOCK / (s * sr));
+        this.cA = Float64Array.of(bc(0.03), bc(0.025), bc(0.006), 0); this.cR = Float64Array.of(bc(0.2), bc(0.28), bc(0.09), 0);
+        this.hc = 1 - Math.exp((-TAU * 100) / sr); this.zl = 0; this.zr = 0;
+        this.gIn = 1; this.gOut = 1; this.fade = 1; this.snapIn = true;
+        // The stage's volume past unity (dB): pushed into the limiter rather than past full scale. Never part of a render.
+        this.boost = 0; this.boostS = 0;
+        this.lim = new Limiter(sr);
+        this.kC = kWeight(sr); this.kS = new Float64Array(8); this.kE = 0; this.kN = 0;
+        this.clear();
+      }
+      clear() {
+        this.eqS.fill(0); this.xS.fill(0); this.env.fill(0); this.g.fill(1); this.gr.fill(1);
+        this.zl = 0; this.zr = 0; this.kS.fill(0); this.kE = 0; this.kN = 0; this.lim.clear();
+      }
+      /** Install a plan's scalars. `snap` arrives at once (offline, or a first plan); otherwise it is glided to. */
+      set(p, snap) {
+        const t = this.t;
+        for (let i = 0; i < MSTRIDE; i++) { const x = +p[i]; if (Number.isFinite(x)) t[i] = x; }
+        t[MA.LO_R] = Math.max(1, t[MA.LO_R]); t[MA.MID_R] = Math.max(1, t[MA.MID_R]); t[MA.HI_R] = Math.max(1, t[MA.HI_R]);
+        t[MA.GLUE_R] = Math.max(1, t[MA.GLUE_R]); t[MA.CEIL] = clamp(t[MA.CEIL], -12, 0); t[MA.CLIP] = clamp(t[MA.CLIP], 0.1, 12);
+        for (let j = 0; j < 4; j++) t[MA.LOW + j] = clamp(t[MA.LOW + j], -12, 12);
+        t[MA.WIDTH] = clamp(t[MA.WIDTH], 0, 2); t[MA.MONO] = clamp(t[MA.MONO], 0, 1); t[MA.DRIVE] = clamp(t[MA.DRIVE], 0, 1);
+        this.stem = t[MA.STEM] > 0;
+        this.stemG = this.stem ? Math.pow(10, Math.min(0, t[MA.OUT]) / 20) : 1;   // a stem takes only a common, linear gain
+        if (snap) { this.v.set(t); this.gOut = Math.pow(10, t[MA.OUT] / 20); this.eqDb.fill(NaN); this.snapIn = true; }
+      }
+      /**
+       * The gain a compressor asks for this block, from the block's own mean square. k: 0 low · 1 mid · 2 high · 3 glue.
+       * It is the REDUCTION that is smoothed (in dB), not the level: after a silence the first note is
+       * met with the same attack as any other, instead of waiting for a level follower to climb back.
+       */
+      comp(k, ms, thr, ratio, cA, cR) {
+        const over = 10 * Math.log10(ms + 1e-12) - thr;        // soft knee, 8 dB wide
+        const x = over <= -4 ? 0 : over < 4 ? ((over + 4) * (over + 4)) / 16 : over;
+        const want = ratio > 1 ? x * (1 - 1 / ratio) : 0;
+        let e = this.env[k];
+        e += (want > e ? cA : cR) * (want - e);
+        if (e < 1e-4) e = 0;
+        this.env[k] = e;
+        return e > 0 ? Math.pow(10, -e / 20) : 1;
+      }
+      /**
+       * The chain, in place. `ride` is this moment's section gain (dB), laid on with the pre-gain.
+       * `probe` (analysis only) hears the mix as it leaves the dynamics, and again as it leaves the limiter.
+       */
+      run(L, R, n, ride, probe) {
+        const v = this.v, t = this.t, gl = this.gl, sr = this.sr;
+        for (let i = 1; i < MSTRIDE; i++) { const d = t[i] - v[i]; v[i] = d > -1e-5 && d < 1e-5 ? t[i] : v[i] + d * gl; }
+        // 1 · pre-gain and EQ
+        const eqC = this.eqC, eqS = this.eqS, eqDb = this.eqDb;
+        for (let j = 0; j < 4; j++) {
+          const db = v[MA.LOW + j];
+          if (db !== eqDb[j]) { bqSet(eqC, 5 + j * 5, EQ_T[j], sr, EQ_F[j], EQ_Q[j], db); eqDb[j] = db; }
+        }
+        const g1 = Math.pow(10, (v[MA.IN] + ride) / 20), g0 = this.snapIn ? g1 : this.gIn, dgi = (g1 - g0) / n;
+        this.snapIn = false;
+        this.gIn = g1;
+        for (let ch = 0; ch < 2; ch++) {
+          const B = ch ? R : L, o = ch * 10;
+          let s0 = eqS[o], s1 = eqS[o + 1], s2 = eqS[o + 2], s3 = eqS[o + 3], s4 = eqS[o + 4],
+            s5 = eqS[o + 5], s6 = eqS[o + 6], s7 = eqS[o + 7], s8 = eqS[o + 8], s9 = eqS[o + 9], g = g0;
+          const a0 = eqC[0], a1 = eqC[1], a2 = eqC[2], a3 = eqC[3], a4 = eqC[4], b0 = eqC[5], b1 = eqC[6], b2 = eqC[7], b3 = eqC[8], b4 = eqC[9],
+            c0 = eqC[10], c1 = eqC[11], c2 = eqC[12], c3 = eqC[13], c4 = eqC[14], d0 = eqC[15], d1 = eqC[16], d2 = eqC[17], d3 = eqC[18], d4 = eqC[19],
+            e0 = eqC[20], e1 = eqC[21], e2 = eqC[22], e3 = eqC[23], e4 = eqC[24];
+          for (let i = 0; i < n; i++) {
+            g += dgi;
+            let x = B[i] * g, y = a0 * x + s0; s0 = a1 * x - a3 * y + s1; s1 = a2 * x - a4 * y;
+            x = y; y = b0 * x + s2; s2 = b1 * x - b3 * y + s3; s3 = b2 * x - b4 * y;
+            x = y; y = c0 * x + s4; s4 = c1 * x - c3 * y + s5; s5 = c2 * x - c4 * y;
+            x = y; y = d0 * x + s6; s6 = d1 * x - d3 * y + s7; s7 = d2 * x - d4 * y;
+            x = y; y = e0 * x + s8; s8 = e1 * x - e3 * y + s9; s9 = e2 * x - e4 * y;
+            B[i] = y;
+          }
+          eqS[o] = s0; eqS[o + 1] = s1; eqS[o + 2] = s2; eqS[o + 3] = s3; eqS[o + 4] = s4;
+          eqS[o + 5] = s5; eqS[o + 6] = s6; eqS[o + 7] = s7; eqS[o + 8] = s8; eqS[o + 9] = s9;
+        }
+        for (let j = 0; j < 20; j++) { const x = eqS[j]; if (x > -1e-25 && x < 1e-25) eqS[j] = 0; }
+        // 2 · three bands (Linkwitz-Riley, 24 dB/octave; the crossovers are five octaves apart, so they need no aligning)
+        const xC = this.xC, xS = this.xS;
+        const p0 = xC[0], p1 = xC[1], p2 = xC[2], p3 = xC[3], p4 = xC[4], q0 = xC[5], q1 = xC[6], q2 = xC[7], q3 = xC[8], q4 = xC[9],
+          u0 = xC[10], u1 = xC[11], u2 = xC[12], u3 = xC[13], u4 = xC[14], w0 = xC[15], w1 = xC[16], w2 = xC[17], w3 = xC[18], w4 = xC[19];
+        let eLo = 0, eMi = 0, eHi = 0;
+        for (let ch = 0; ch < 2; ch++) {
+          const B = ch ? R : L, lo = ch ? this.loR : this.loL, mi = ch ? this.miR : this.miL, hi = ch ? this.hiR : this.hiL, o = ch * 16;
+          let s0 = xS[o], s1 = xS[o + 1], s2 = xS[o + 2], s3 = xS[o + 3], s4 = xS[o + 4], s5 = xS[o + 5], s6 = xS[o + 6], s7 = xS[o + 7],
+            s8 = xS[o + 8], s9 = xS[o + 9], sa = xS[o + 10], sb = xS[o + 11], sc = xS[o + 12], sd = xS[o + 13], se = xS[o + 14], sf = xS[o + 15];
+          for (let i = 0; i < n; i++) {
+            const x = B[i];
+            let y = p0 * x + s0; s0 = p1 * x - p3 * y + s1; s1 = p2 * x - p4 * y;
+            let z = p0 * y + s2; s2 = p1 * y - p3 * z + s3; s3 = p2 * y - p4 * z;
+            lo[i] = z; eLo += z * z;
+            y = q0 * x + s4; s4 = q1 * x - q3 * y + s5; s5 = q2 * x - q4 * y;
+            const rest = q0 * y + s6; s6 = q1 * y - q3 * rest + s7; s7 = q2 * y - q4 * rest;
+            y = u0 * rest + s8; s8 = u1 * rest - u3 * y + s9; s9 = u2 * rest - u4 * y;
+            z = u0 * y + sa; sa = u1 * y - u3 * z + sb; sb = u2 * y - u4 * z;
+            mi[i] = z; eMi += z * z;
+            y = w0 * rest + sc; sc = w1 * rest - w3 * y + sd; sd = w2 * rest - w4 * y;
+            z = w0 * y + se; se = w1 * y - w3 * z + sf; sf = w2 * y - w4 * z;
+            hi[i] = z; eHi += z * z;
+          }
+          xS[o] = s0; xS[o + 1] = s1; xS[o + 2] = s2; xS[o + 3] = s3; xS[o + 4] = s4; xS[o + 5] = s5; xS[o + 6] = s6; xS[o + 7] = s7;
+          xS[o + 8] = s8; xS[o + 9] = s9; xS[o + 10] = sa; xS[o + 11] = sb; xS[o + 12] = sc; xS[o + 13] = sd; xS[o + 14] = se; xS[o + 15] = sf;
+        }
+        for (let j = 0; j < 32; j++) { const x = xS[j]; if (x > -1e-25 && x < 1e-25) xS[j] = 0; }
+        // 3 · each band's compressor, then back together: the low band towards mono, the upper two widened or narrowed
+        const G = this.g, cA = this.cA, cR = this.cR, i2n = 1 / (2 * n);
+        const tl = this.comp(0, eLo * i2n, v[MA.LO_T], v[MA.LO_R], cA[0], cR[0]);
+        const tm = this.comp(1, eMi * i2n, v[MA.MID_T], v[MA.MID_R], cA[1], cR[1]);
+        const th = this.comp(2, eHi * i2n, v[MA.HI_T], v[MA.HI_R], cA[2], cR[2]);
+        let gL = G[0], gM = G[1], gH = G[2];
+        const dL = (tl - gL) / n, dM = (tm - gM) / n, dH = (th - gH) / n;
+        G[0] = tl; G[1] = tm; G[2] = th;
+        const kMono = 0.5 * (1 - v[MA.MONO]), kMid = 0.5 * (1 + (v[MA.WIDTH] - 1) * 0.5), kHi = 0.5 * v[MA.WIDTH];
+        const loL = this.loL, loR = this.loR, miL = this.miL, miR = this.miR, hiL = this.hiL, hiR = this.hiR, hc = this.hc;
+        let zl = this.zl, zr = this.zr, eSc = 0;
+        for (let i = 0; i < n; i++) {
+          gL += dL; gM += dM; gH += dH;
+          let a = loL[i], b = loR[i], m = (a + b) * 0.5, s = (a - b) * kMono;
+          let l = (m + s) * gL, r = (m - s) * gL;
+          a = miL[i]; b = miR[i]; m = (a + b) * 0.5; s = (a - b) * kMid;
+          l += (m + s) * gM; r += (m - s) * gM;
+          a = hiL[i]; b = hiR[i]; m = (a + b) * 0.5; s = (a - b) * kHi;
+          l += (m + s) * gH; r += (m - s) * gH;
+          L[i] = l; R[i] = r;
+          zl += hc * (l - zl); zr += hc * (r - zr);            // the glue listens above 100 Hz: a kick must not pump the rite
+          a = l - zl; b = r - zr; eSc += a * a + b * b;
+        }
+        this.zl = zl > -1e-25 && zl < 1e-25 ? 0 : zl; this.zr = zr > -1e-25 && zr < 1e-25 ? 0 : zr;
+        // 4 · glue, then a little saturation: peaks are rounded before they ever reach the limiter
+        const bA = 1 - Math.exp(-BLOCK / (Math.max(0.001, v[MA.GLUE_A]) * sr)), bR = 1 - Math.exp(-BLOCK / (Math.max(0.01, v[MA.GLUE_RL]) * sr));
+        const tg = this.comp(3, eSc * i2n, v[MA.GLUE_T], v[MA.GLUE_R], bA, bR);
+        let gg = G[3]; const dG = (tg - gg) / n;
+        G[3] = tg;
+        const dr = v[MA.DRIVE], kd = 1 + 4 * dr, ikd = 1 / kd, useD = dr > 0.001;
+        for (let i = 0; i < n; i++) {
+          gg += dG;
+          let l = L[i] * gg, r = R[i] * gg;
+          if (useD) { l += (sat(l * kd) * ikd - l) * dr; r += (sat(r * kd) * ikd - r) * dr; }
+          L[i] = l; R[i] = r;
+        }
+        const GR = this.gr;
+        if (tl < GR[0]) GR[0] = tl; if (tm < GR[1]) GR[1] = tm; if (th < GR[2]) GR[2] = th; if (tg < GR[3]) GR[3] = tg;
+        if (probe) probe.out(L, R, n);
+        // 5 · make-up → soft clip (knee from 2 dB under the ceiling) → limiter
+        // (the limiter is asked for a tenth of a decibel under the ceiling: its reading between the samples is an estimate)
+        const ceil = Math.pow(10, (v[MA.CEIL] - 0.1) / 20), T = ceil * 0.7943, S = ceil * Math.pow(10, v[MA.CLIP] / 20) - T, iS = 1 / S;
+        this.boostS += (this.boost - this.boostS) * gl;
+        if (this.boostS < 1e-4 && this.boost === 0) this.boostS = 0;
+        const o0 = this.gOut, o1 = Math.pow(10, (v[MA.OUT] + this.boostS) / 20), dgo = (o1 - o0) / n;
+        this.gOut = o1;
+        let go = o0, f = this.fade; const df = f < 1 ? 1 / 256 : 0;
+        for (let i = 0; i < n; i++) {
+          go += dgo;
+          let l = L[i] * go, r = R[i] * go;
+          if (f < 1) { l *= f; r *= f; f += df; if (f > 1) f = 1; }
+          let a = l < 0 ? -l : l;
+          if (a > T) { const u = (a - T) * iS; a = T + S * (u >= 3 ? 1 : (u * (27 + u * u)) / (27 + 9 * u * u)); l = l < 0 ? -a : a; }
+          a = r < 0 ? -r : r;
+          if (a > T) { const u = (a - T) * iS; a = T + S * (u >= 3 ? 1 : (u * (27 + u * u)) / (27 + 9 * u * u)); r = r < 0 ? -a : a; }
+          L[i] = l; R[i] = r;
+        }
+        this.fade = f;
+        this.lim.run(L, R, n, ceil);
+        // 6 · what the listener is given, as the ear weighs it (the panel's loudness meter; the probe's last word)
+        const e = kSum(this.kC, this.kS, 0, L, R, n, 1);
+        this.kE += e; this.kN += n;
+        if (probe) probe.fin(e);
+      }
+    }
+
+    /**
+     * THE PROBE: the measurements a master plan is worked out from. Attached only to an offline
+     * core (SigilDSP.probeRange). It never changes a sample; it listens at fixed points of the mix
+     * and keeps one number per `hop` (about a tenth of a second) for each thing it hears:
+     *   bus[b]   each part before its fader, as the ear weighs it (K-weighted energy)
+     *   mus drm  the music after its effects, the kit after its own chain
+     *   mix out  the whole mix entering the master chain, and leaving its dynamics; fin: leaving the limiter
+     *   cr* kc*  the crushers: the signal without their grain (xx), the grain (dd), and how alike the two are (dx)
+     *   bands    the spectrum in six bands of the music, the kit, and the mix leaving the chain
+     *   pk opk   sample peaks going in and coming out; mid/side energy going in
+     * mode 1 hears the parts (pass A), mode 2 the finished mix (pass B).
+     */
+    class Probe {
+      constructor(sr, hops, skip, mode) {
+        this.sr = sr; this.mode = mode | 0 || 1;
+        this.hopB = Math.max(1, Math.round((0.1 * sr) / BLOCK)); this.hopSec = (this.hopB * BLOCK) / sr;
+        this.n = Math.max(1, hops | 0); this.skip = Math.max(0, skip | 0);   // blocks of pre-roll to sit through
+        this.blk = 0; this.h = -1; this.live = false;
+        const N = this.n, f = () => new Float32Array(N);
+        this.bus = new Float32Array(8 * N); this.mus = f(); this.drm = f(); this.mix = f(); this.outE = f(); this.finE = f();
+        this.crX = f(); this.crD = f(); this.crDX = f(); this.crG = f(); this.kcX = f(); this.kcD = f(); this.kcDX = f(); this.kcG = f();
+        this.bMus = new Float32Array(NBAND * N); this.bDrm = new Float32Array(NBAND * N); this.bOut = new Float32Array(NBAND * N);
+        this.pk = f(); this.opk = f(); this.mid = f(); this.side = f();
+        this.kC = kWeight(sr); this.kS = new Float64Array(8 * 16);          // 8 buses, mus, drm, mix, out, and two pairs
+        this.bC = new Float64Array(BAND_EDGES.length * 10); this.bS = new Float64Array(3 * 2 * BAND_EDGES.length * 4);
+        BAND_EDGES.forEach((fr, j) => { bqSet(this.bC, j * 10, 0, sr, fr, 0.7071, 0); bqSet(this.bC, j * 10 + 5, 1, sr, fr, 0.7071, 0); });
+        this.xL = new Float32Array(BLOCK); this.xR = new Float32Array(BLOCK); this.yL = new Float32Array(BLOCK); this.yR = new Float32Array(BLOCK);
+      }
+      /** Called once at the top of every block. */
+      tick() {
+        const b = this.blk++ - this.skip;
+        this.h = b >= 0 ? Math.floor(b / this.hopB) : -1;
+        this.live = this.h >= 0 && this.h < this.n;
+      }
+      k(slot, L, R, n, g) { const e = kSum(this.kC, this.kS, slot * 8, L, R, n, g); return this.live ? e : 0; }
+      busIn(b, L, R, n) { const e = this.k(b, L, R, n, 1); if (this.live) this.bus[b * this.n + this.h] += e; }
+      part(isDrums, L, R, n) {
+        const e = this.k(isDrums ? 9 : 8, L, R, n, 1);
+        this.bands(isDrums ? 1 : 0, L, R, n, isDrums ? this.bDrm : this.bMus);
+        if (this.live) (isDrums ? this.drm : this.mus)[this.h] += e;
+      }
+      mixIn(L, R, n) {
+        const e = this.k(10, L, R, n, 1);
+        if (!this.live) return;
+        let pk = this.pk[this.h], m = 0, s = 0;
+        for (let i = 0; i < n; i++) {
+          const l = L[i], r = R[i], a = l < 0 ? -l : l, b = r < 0 ? -r : r;
+          if (a > pk) pk = a; if (b > pk) pk = b;
+          m += (l + r) * (l + r); s += (l - r) * (l - r);
+        }
+        this.pk[this.h] = pk; this.mix[this.h] += e; this.mid[this.h] += m * 0.25; this.side[this.h] += s * 0.25;
+      }
+      out(L, R, n) {
+        const e = this.k(11, L, R, n, 1);
+        this.bands(2, L, R, n, this.bOut);
+        if (!this.live) return;
+        let pk = this.opk[this.h];
+        for (let i = 0; i < n; i++) { const a = L[i] < 0 ? -L[i] : L[i], b = R[i] < 0 ? -R[i] : R[i]; if (a > pk) pk = a; if (b > pk) pk = b; }
+        this.opk[this.h] = pk; this.outE[this.h] += e;
+      }
+      /** The K-weighted energy of a block as it left the limiter (the chain has already weighed it). */
+      fin(e) { if (this.live) this.finE[this.h] += e; }
+      /** Keep what is about to be crushed… */
+      hold(L, R, n) { for (let i = 0; i < n; i++) { this.xL[i] = L[i]; this.xR[i] = R[i]; } }
+      /** …and compare it with what came back. which: 0 the music's crusher · 1 the kit's. `amt` is the mix it ran at. */
+      pair(which, L, R, n, amt) {
+        const xL = this.xL, xR = this.xR, yL = this.yL, yR = this.yR, c = this.kC, st = this.kS, o = (12 + which * 2) * 8;
+        for (let i = 0; i < n; i++) { yL[i] = L[i] - xL[i]; yR[i] = R[i] - xR[i]; }
+        // K-weight the dry signal and the change in place, then take the three sums
+        const b0 = c[0], b1 = c[1], b2 = c[2], a1 = c[3], a2 = c[4], d1 = c[8], d2 = c[9];
+        let xx = 0, dd = 0, dx = 0;
+        for (let ch = 0; ch < 2; ch++) {
+          const X = ch ? xR : xL, Y = ch ? yR : yL, q = o + ch * 8;
+          let s1 = st[q], s2 = st[q + 1], s3 = st[q + 2], s4 = st[q + 3], t1 = st[q + 4], t2 = st[q + 5], t3 = st[q + 6], t4 = st[q + 7];
+          for (let i = 0; i < n; i++) {
+            let x = X[i], y = b0 * x + s1; s1 = b1 * x - a1 * y + s2; s2 = b2 * x - a2 * y;
+            const zx = y + s3; s3 = -2 * y - d1 * zx + s4; s4 = y - d2 * zx;
+            x = Y[i]; y = b0 * x + t1; t1 = b1 * x - a1 * y + t2; t2 = b2 * x - a2 * y;
+            const zd = y + t3; t3 = -2 * y - d1 * zd + t4; t4 = y - d2 * zd;
+            xx += zx * zx; dd += zd * zd; dx += zx * zd;
+          }
+          st[q] = s1; st[q + 1] = s2; st[q + 2] = s3; st[q + 3] = s4; st[q + 4] = t1; st[q + 5] = t2; st[q + 6] = t3; st[q + 7] = t4;
+        }
+        if (!this.live) return;
+        const h = this.h;
+        if (which) { this.kcX[h] += xx; this.kcD[h] += dd; this.kcDX[h] += dx; this.kcG[h] += amt * n; }
+        else { this.crX[h] += xx; this.crD[h] += dd; this.crDX[h] += dx; this.crG[h] += amt * n; }
+      }
+      /** Six bands by power-complementary splits (Butterworth pairs): the energies add up to the whole. */
+      bands(which, L, R, n, out) {
+        const C = this.bC, S = this.bS, NE = BAND_EDGES.length, N = this.n, h = this.h, live = this.live;
+        for (let ch = 0; ch < 2; ch++) {
+          const B = ch ? R : L, tmp = ch ? this.yR : this.yL;
+          for (let i = 0; i < n; i++) tmp[i] = B[i];
+          for (let j = 0; j < NE; j++) {
+            const c = j * 10, o = ((which * 2 + ch) * NE + j) * 4;
+            const p0 = C[c], p1 = C[c + 1], p2 = C[c + 2], p3 = C[c + 3], p4 = C[c + 4], q0 = C[c + 5], q1 = C[c + 6], q2 = C[c + 7];
+            let s0 = S[o], s1 = S[o + 1], s2 = S[o + 2], s3 = S[o + 3], e = 0;
+            for (let i = 0; i < n; i++) {
+              const x = tmp[i], y = p0 * x + s0; s0 = p1 * x - p3 * y + s1; s1 = p2 * x - p4 * y;
+              const z = q0 * x + s2; s2 = q1 * x - p3 * z + s3; s3 = q2 * x - p4 * z;   // the pair shares its poles
+              e += y * y; tmp[i] = z;
+            }
+            const t = 1e-25;
+            S[o] = s0 > -t && s0 < t ? 0 : s0; S[o + 1] = s1 > -t && s1 < t ? 0 : s1; S[o + 2] = s2 > -t && s2 < t ? 0 : s2; S[o + 3] = s3 > -t && s3 < t ? 0 : s3;
+            if (live) out[j * N + h] += e;
+          }
+          if (live) { let e = 0; for (let i = 0; i < n; i++) e += tmp[i] * tmp[i]; out[NE * N + h] += e; }
+        }
+      }
+      /** Everything heard, as plain transferable arrays. Energies are sums of squares per hop; `per` divides them into mean squares. */
+      result() {
+        return { mode: this.mode, sr: this.sr, n: this.n, hop: this.hopSec, per: this.hopB * BLOCK,
+          bus: this.bus, mus: this.mus, drm: this.drm, mix: this.mix, out: this.outE, fin: this.finE,
+          crX: this.crX, crD: this.crD, crDX: this.crDX, crG: this.crG, kcX: this.kcX, kcD: this.kcD, kcDX: this.kcDX, kcG: this.kcG,
+          bMus: this.bMus, bDrm: this.bDrm, bOut: this.bOut, pk: this.pk, opk: this.opk, mid: this.mid, side: this.side };
+      }
+    }
+
     /* ── §6 CORE: transport, scheduler, voice pool, mix ───────────────────── */
     class Core {
       constructor(sr, opts) {
@@ -1384,6 +1908,11 @@
         this.au = null; this.motion = 1; this.evolve = 0; this.pass0 = 0; this.auOn = false;
         this.auD = new Float64Array(LANES); this.auM = new Float64Array(LANES); this.auS = new Float64Array(LANES);
         this.auT = new Float64Array(3); this.xr = new Float64Array(PSTRIDE); this.rowS = DEFAULT_PATCH;
+        // master (§5d): the chain, each part's trim, the crushers' caps per section, and (offline) the probe
+        this.ms = new Master(sr); this.trT = new Float64Array(NBUS).fill(1); this.trG = new Float64Array(NBUS).fill(1);
+        this.dTrim = 1; this.secT = null; this.gate = false; this.crEnv = 0; this.crRel = 1 - Math.exp(-BLOCK / (0.12 * sr));
+        this.nzS = 1; this.rideS = 0; this.rideC = 1 - Math.exp(-BLOCK / (0.5 * sr));
+        this.holdK = 1; this.probe = null; this.lat = 0; this.swF = 1; this.planSig = 0;
         // tables
         this.cube = new Array(NCELL).fill(null); this.anyCell = null;
         this.saw = seriesTable((h) => 1 / h); this.glottal = seriesTable((h) => Math.pow(h, -1.5));
@@ -1587,7 +2116,8 @@
       emitT(pos) {
         if (!this.onTransport) return;
         const reg = this.regOn;
-        this.onTransport(this.blockTime + pos / this.sr, this.beat, this.playing ? this.bps : 0,
+        // `lat` is the limiter's look-ahead: the listener hears this moment that much later
+        this.onTransport(this.blockTime + (pos + this.lat) / this.sr, this.beat, this.playing ? this.bps : 0,
           reg ? this.regLo : 0, reg ? this.regHi : this.total, this.pass + this.pass0, reg);
       }
   
@@ -1597,6 +2127,8 @@
           case 'plan':
             this.ev = m.events; this.nEv = m.count | 0;
             if (m.sections && m.nSec > 0) { this.sec = m.sections; this.nSec = m.nSec; }
+            // a master plan's per-section numbers belong to the song they were worked out for
+            if (this.secT && (!m.keep || this.secT.length < 3 * this.nSec)) { this.secT = null; this.planSig = 0; }
             this.total = +m.total || 0;
             if (m.bpm) this.setBpm(m.bpm);
             if (m.passes != null) this.passMax = m.passes | 0;
@@ -1607,6 +2139,7 @@
             this.dirtyT = true; break;
           case 'sections':
             if (m.nSec > 0) { this.sec = m.sections; this.nSec = m.nSec; }
+            if (this.secT && this.secT.length < 3 * this.nSec) { this.secT = null; this.planSig = 0; }
             if (m.auto !== undefined) { this.setAuto(m.auto); this.autoSet(); }
             break;
           case 'auto': this.setAuto(m.auto); this.autoSet(); break;
@@ -1631,6 +2164,8 @@
             if (m.motion != null) this.motion = Math.max(0, +m.motion || 0);
             if (m.evolve != null) this.evolve = clamp(+m.evolve || 0, 0, 1);
             if (m.pass0 != null) this.pass0 = Math.max(0, m.pass0 | 0);
+            if (m.holdK != null) this.holdK = clamp(+m.holdK || 1, 0.1, 4);
+            if (m.boost != null) this.ms.boost = clamp(+m.boost || 0, 0, 12);
             if (m.motion != null || m.evolve != null || m.pass0 != null) { this.autoSet(); this.dirtyT = true; }
             break;
           case 'play':
@@ -1655,7 +2190,35 @@
           case 'noteOff': this.noteOff(m.id | 0); break;
           case 'trigger': this.queueLive(m.row, +m.when || 0, 0); break;
           case 'panic': this.panic(); break;
+          case 'master': this.setMaster(m); break;
+          case 'probe': this.probe = m.hops > 0 ? new Probe(this.sr, m.hops, m.skip, m.mode) : null; break;   // offline only
         }
+      }
+      /**
+       * Install (or, with no `p`, remove) the master plan: { p: MSTRIDE scalars (see MA), trim: one
+       * multiplier per bus, sec: three numbers per section (nSec of each: how much of the music
+       * crusher's grain is kept, how much of the kit's crusher, and the ride, a gain in dB the
+       * section is given on its way into the chain), snap }.
+       * Off means OFF: no trims, no caps, no rides, and the mix leaves as it did before there was a plan.
+       */
+      setMaster(m) {
+        const M = this.ms, on = !!(m.p && m.p[MA.ON] > 0), was = M.on;
+        if (on) M.set(m.p, !!m.snap || !was);
+        M.on = on;
+        for (let b = 0; b < NBUS; b++) {
+          const x = on && m.trim ? +m.trim[b] : 1;
+          this.trT[b] = x > 0 && x < 16 ? x : 1;
+        }
+        this.secT = on && m.sec && m.sec.length >= 3 * this.nSec ? m.sec : null;
+        this.planSig = on ? planSig(m.p, m.trim, this.secT) : 0;
+        this.gate = on && m.p[MA.GATE] > 0;
+        if (m.snap) { this.trG.set(this.trT); this.dTrim = this.trT[B_DRUMS]; this.rideS = this.rideAt(this.beat); }
+        if (on !== was) {                                      // switched: start the other way out clean, and faded in
+          if (on) { M.clear(); M.fade = m.snap ? 1 : 0; } else this.swF = m.snap ? 1 : 0;
+          this.compEnv = 0; this.compG = 1;
+        }
+        const lat = on && !M.stem ? M.lim.look : 0;
+        if (lat !== this.lat) { this.lat = lat; this.dirtyT = true; }
       }
       /** Install (or clear, with null) the automation table: { n, step, len, lanes, curves }. */
       setAuto(a) {
@@ -1684,6 +2247,7 @@
         this.dfS.fill(0); this.smEnv = 0; this.shapeOn = false; this.dfOn = false; this.roomOn = false; this.echoOn = false;
         this.dLive = 0;
         this.duckEnv = 0; this.glueEnv = 0; this.compEnv = 0; this.glueG = 1; this.compG = 1;
+        this.ms.clear(); this.crEnv = 0;
         this.meters.fill(0);
       }
   
@@ -1691,6 +2255,7 @@
       process(outL, outR, n, postL, postR) {
         for (let b = 0; b < NBUS; b++) { this.bL[b].fill(0, 0, n); this.bR[b].fill(0, 0, n); }
         this.key.fill(0, 0, n);
+        if (this.probe) this.probe.tick();
         if (this.dirtyT) { this.dirtyT = false; this.emitT(0); }
         if (this.playing && this.total > 0) this.schedule(n);
         if (this.nLive) this.dispatchLive(n);
@@ -1711,12 +2276,17 @@
       }
       updateFx(c) {
         const pb = this.rowAt(this.beat), S = this.rowS;
+        // the master plan's caps (§5d): how much of each crusher this section is allowed. No plan: all of it.
+        const T = this.secT, si = T ? this.secBase(this.beat) / PSTRIDE : 0, ns = this.nSec;
+        const capM = T ? T[si] : 1, capK = T ? T[ns + si] : 1, hk = this.holdK;
+        this.nzS += (capM - this.nzS) * c;
+        if (capM === 1 && this.nzS > 0.9995) this.nzS = 1;
         this.choS += (S[pb + PA.CHORUS] * 0.85 - this.choS) * c;
         this.echoS += (0.2 + S[pb + PA.ECHO] * 0.6 - this.echoS) * c;
         const grit = S[pb + PA.GRIT];
         this.gritS += (grit - this.gritS) * c;
         this.bits = grit > 0 ? clamp(Math.round(S[pb + PA.BITS]), 2, 16) : 16;
-        this.hold = Math.max(1, Math.round(S[pb + PA.HOLD]));
+        this.hold = Math.max(1, Math.round(S[pb + PA.HOLD] * hk));
         this.foldS += (S[pb + PA.FOLD] - this.foldS) * c;
         this.driveS += (S[pb + PA.DRIVE] - this.driveS) * c;
         this.duckS += (S[pb + PA.DUCK] - this.duckS) * c;
@@ -1726,10 +2296,10 @@
         this.dPunchS += (S[pb + PA.DPUNCH] - this.dPunchS) * c;
         this.dBodyS += (S[pb + PA.DBODY] - this.dBodyS) * c;
         this.dDriveS += (S[pb + PA.DDRIVE] - this.dDriveS) * c;
-        const dcr = S[pb + PA.DCRUSH];
+        const dcr = S[pb + PA.DCRUSH] * capK;
         this.dCrushS += (dcr - this.dCrushS) * c;
         this.dBits = dcr > 0 ? clamp(Math.round(S[pb + PA.DBITS]), 2, 16) : 16;
-        this.dHold = clamp(Math.round(S[pb + PA.DHOLD]), 1, 32);
+        this.dHold = clamp(Math.round(S[pb + PA.DHOLD] * hk), 1, 32);
         this.dFiltS += (S[pb + PA.DFILTER] - this.dFiltS) * c;
         this.dSmashS += (S[pb + PA.DSMASH] - this.dSmashS) * c;
         this.dRoomS += (S[pb + PA.DROOM] - this.dRoomS) * c;
@@ -1738,7 +2308,21 @@
         const dt = S[pb + PA.DTIME];
         this.decho.setTime((dt > 0 ? dt : 0.75) / this.bps);
       }
-      snapFx() { this.updateFx(1); this.busG.set(this.busT); this.decho.d = this.decho.dT; }
+      snapFx() {
+        this.updateFx(1); this.busG.set(this.busT); this.trG.set(this.trT); this.dTrim = this.trT[B_DRUMS];
+        this.rideS = this.rideAt(this.beat); this.decho.d = this.decho.dT;
+      }
+      /**
+       * The plan's ride at a beat, in dB. It is read a beat and a half AHEAD and then smoothed over
+       * half a second, so a section's level arrives with its downbeat instead of after it.
+       */
+      rideAt(beat) {
+        const T = this.secT;
+        if (!T) return 0;
+        let b = beat + 1.5;
+        if (this.total > 0 && b >= this.total && !this.regOn) b -= this.total;
+        return T[2 * this.nSec + this.secBase(b) / PSTRIDE];
+      }
       mixdown(outL, outR, n, postL, postR) {
         const mL = this.mL, mR = this.mR, dL = this.dL, dR = this.dR, pL = this.pL, pR = this.pR;
         const rL = this.rL, rR = this.rR, yL = this.yL, yR = this.yR, hL = this.hL, hR = this.hR;
@@ -1747,14 +2331,21 @@
         this.updateFx(this.fxC);
         if (this.used[B_DRUMS]) this.dLive = this.dHang; else if (this.dLive > 0) this.dLive--;
         // 1 · buses → music / drums / post, plus sends
+        const pr = this.probe && this.probe.mode === 1 ? this.probe : null, trG = this.trG, trT = this.trT;   // pass A hears the parts
         for (let b = 0; b < NBUS; b++) {
           let g = this.busG[b];
-          const g1 = g + (this.busT[b] - g) * this.lvlC;
+          let g1 = g + (this.busT[b] - g) * this.lvlC;
           this.busG[b] = g1;
+          // the master plan's trim for this part. The kit's is applied after its own chain (see master()).
+          const t0 = trG[b], t1 = t0 + (trT[b] - t0) * this.lvlC;
+          trG[b] = t1 > 0.999999 && t1 < 1.000001 && trT[b] === 1 ? 1 : t1;
+          if (b !== B_DRUMS) { g *= t0; g1 *= trG[b]; }
           if (!this.used[b]) continue;
           this.used[b] = 0;
           const dg = (g1 - g) / n, L = this.bL[b], R = this.bR[b];
-          const sRv = SEND_REV[b], sDl = SEND_DLY[b], sCh = SEND_CHO[b];
+          if (pr && b < 8) pr.busIn(b, L, R, n);
+          // (the kit's trim comes after its chain, so its share of the hall is trimmed here, at the send)
+          const sRv = b === B_DRUMS ? SEND_REV[b] * trG[b] : SEND_REV[b], sDl = SEND_DLY[b], sCh = SEND_CHO[b];
           const toL = b === B_DRUMS ? dL : b === B_POST ? pL : mL, toR = b === B_DRUMS ? dR : b === B_POST ? pR : mR;
           let pk = this.meters[b];
           for (let i = 0; i < n; i++) {
@@ -1787,29 +2378,76 @@
           this.duckEnv = e < 1e-7 ? 0 : e; this.duckG = gg;
         }
         // 4 · crusher (music only, so the kit stays clean)
-        if (this.gritS > 0.001) this.crush(mL, mR, n);
+        if (this.gritS > 0.001) {
+          if (pr) { this.crush(mL, mR, n, this.nzS, pr.xL, pr.xR); pr.pair(0, mL, mR, n, this.gritS); }
+          else this.crush(mL, mR, n, this.nzS, null, null);
+        }
         // 5 · the kit's own chain (§5b), around the glue: 4:1 above −14 dB, detected per block
         this.drumFx(dL, dR, n);
-        // 6 · master
+        // 6 · out: through the master chain (§5d) if a plan is in force, else as it always left
         this.master(outL, outR, n, postL, postR);
       }
-      crush(L, R, n) {
+      /**
+       * The music's crusher: drive → fold → quantise and hold (dithered), blended in by GRIT.
+       * `grain` (the master plan's cap, 0…1) scales only what the QUANTISER adds, the bit-depth and
+       * sample-hold error, and leaves the drive and the fold alone: distortion is the patch's colour,
+       * the grain is the part that can drown it. At 1, with no probe listening, this is the crusher
+       * exactly as it always was. `refL/refR` (the probe's) are given what would leave at grain 0.
+       */
+      crush(L, R, n, grain, refL, refR) {
         const mix = this.gritS, levels = Math.pow(2, this.bits - 1), inv = 1 / levels, hold = this.hold;
         const drive = this.driveS, fold = this.foldS, k = 1 + drive * 5, nrm = drive > 0.001 ? 1 / sat(k) : 1;
         const fk = Math.PI * 0.5 * (1 + 3 * fold), useD = drive > 0.001, useF = fold > 0.001;
+        /* Under a master plan the dither rides the signal: it is at full strength while the music is
+           at least half a step of the quantiser tall, and fades with it below that. A full-strength
+           dither turns whatever is left of a note as it dies away (a tail at −40 dB, say, under a
+           four-bit quantiser) into crackle louder than the tail itself; riding, it lets the tail go.
+           (Without a plan dk is exactly 1 and the crusher is as it always was.) */
+        let dk = 1;
+        if (this.gate) {
+          let pk = 0;
+          for (let i = 0; i < n; i++) { const a = L[i] < 0 ? -L[i] : L[i], b = R[i] < 0 ? -R[i] : R[i]; if (a > pk) pk = a; if (b > pk) pk = b; }
+          this.crEnv = pk > this.crEnv ? pk : this.crEnv + (pk - this.crEnv) * this.crRel;
+          if (this.crEnv < 1e-9) this.crEnv = 0;
+          dk = this.crEnv * levels * 2; if (dk > 1) dk = 1;
+        }
         let cn = this.crN, hl = this.crL, hr = this.crR, r = this.crRng | 0;
-        for (let i = 0; i < n; i++) {
-          if (cn <= 0) {
-            cn = hold;
-            r ^= r << 13; r ^= r >>> 17; r ^= r << 5;
-            const d = r * NZ * 0.5 * inv;
-            let a = useD ? sat(L[i] * k) * nrm : L[i], b = useD ? sat(R[i] * k) * nrm : R[i];
-            if (useF) { a = (1 - fold) * a + fold * Math.sin(a * fk); b = (1 - fold) * b + fold * Math.sin(b * fk); }
-            a = a < -1 ? -1 : a > 1 ? 1 : a; b = b < -1 ? -1 : b > 1 ? 1 : b;
-            hl = Math.round((a + d) * levels) * inv; hr = Math.round((b + d) * levels) * inv;
+        if (grain >= 0.9995 && !refL) {
+          for (let i = 0; i < n; i++) {
+            if (cn <= 0) {
+              cn = hold;
+              r ^= r << 13; r ^= r >>> 17; r ^= r << 5;
+              const d = r * NZ * 0.5 * inv * dk;
+              let a = useD ? sat(L[i] * k) * nrm : L[i], b = useD ? sat(R[i] * k) * nrm : R[i];
+              if (useF) { a = (1 - fold) * a + fold * Math.sin(a * fk); b = (1 - fold) * b + fold * Math.sin(b * fk); }
+              a = a < -1 ? -1 : a > 1 ? 1 : a; b = b < -1 ? -1 : b > 1 ? 1 : b;
+              hl = Math.round((a + d) * levels) * inv; hr = Math.round((b + d) * levels) * inv;
+            }
+            cn--;
+            L[i] += (hl - L[i]) * mix; R[i] += (hr - R[i]) * mix;
           }
-          cn--;
-          L[i] += (hl - L[i]) * mix; R[i] += (hr - R[i]) * mix;
+        } else {
+          // The driven, folded signal is worked out at every sample, so the grain can be told apart from it.
+          const q = grain < 0 ? 0 : grain > 1 ? 1 : grain, fp = fk / TAU;
+          for (let i = 0; i < n; i++) {
+            let a = useD ? sat(L[i] * k) * nrm : L[i], b = useD ? sat(R[i] * k) * nrm : R[i];
+            if (useF) {                                        // sin by table: |a|·fk is at most a turn
+              let pa = a * fp, pb = b * fp;
+              if (pa < 0) pa += 1; if (pa >= 1) pa -= 1; if (pb < 0) pb += 1; if (pb >= 1) pb -= 1;
+              a = (1 - fold) * a + fold * sinAt(pa); b = (1 - fold) * b + fold * sinAt(pb);
+            }
+            a = a < -1 ? -1 : a > 1 ? 1 : a; b = b < -1 ? -1 : b > 1 ? 1 : b;
+            if (cn <= 0) {
+              cn = hold;
+              r ^= r << 13; r ^= r >>> 17; r ^= r << 5;
+              const d = r * NZ * 0.5 * inv * dk;
+              hl = ((((a + d) * levels + 65536.5) | 0) - 65536) * inv; hr = ((((b + d) * levels + 65536.5) | 0) - 65536) * inv;
+            }
+            cn--;
+            const x = L[i], y = R[i];
+            if (refL) { refL[i] = x + (a - x) * mix; refR[i] = y + (b - y) * mix; }
+            L[i] = x + (a + (hl - a) * q - x) * mix; R[i] = y + (b + (hr - b) * q - y) * mix;
+          }
         }
         this.crN = cn; this.crL = hl; this.crR = hr; this.crRng = r;
       }
@@ -1824,7 +2462,12 @@
           if (this.dDriveS > EPS) this.drumDrive(L, R, n, this.dDriveS);
           if (pu > EPS || pu < -EPS || bo > EPS || bo < -EPS) { this.shaper.run(L, R, n, pu, bo); this.shapeOn = true; }
           else if (this.shapeOn) { this.shaper.clear(); this.shapeOn = false; }
-          if (this.dCrushS > EPS) this.dcrush.run(L, R, n, this.dCrushS > 1 ? 1 : this.dCrushS, this.dBits, this.dHold);
+          if (this.dCrushS > EPS) {
+            const pr = this.probe && this.probe.mode === 1 ? this.probe : null, amt = this.dCrushS > 1 ? 1 : this.dCrushS;
+            if (pr) pr.hold(L, R, n);
+            this.dcrush.run(L, R, n, amt, this.dBits, this.dHold);
+            if (pr) pr.pair(1, L, R, n, amt);
+          }
           if (fl > EPS || fl < -EPS) this.drumFilter(L, R, n, fl);
           else if (this.dfOn) { this.dfS.fill(0); this.dfOn = false; }
         } else {
@@ -1919,6 +2562,32 @@
       }
       master(outL, outR, n, postL, postR) {
         const mL = this.mL, mR = this.mR, dL = this.dL, dR = this.dR, pL = this.pL, pR = this.pR, mg = this.mg;
+        const M = this.ms, post = !!postL;
+        if (M.on) {
+          /* §5d. The kit's trim is laid on here, after its own chain, so that its glue cannot undo it. */
+          const pr = this.probe;
+          if (pr && pr.mode === 1) { pr.part(0, mL, mR, n); pr.part(1, dL, dR, n); }
+          let dt = this.dTrim; const dt1 = this.trG[B_DRUMS], ddt = (dt1 - dt) / n;
+          this.dTrim = dt1;
+          for (let i = 0; i < n; i++) { dt += ddt; mL[i] = (mL[i] + dL[i] * dt) * mg; mR[i] = (mR[i] + dR[i] * dt) * mg; }
+          if (pr) pr.mixIn(mL, mR, n);
+          this.rideS += (this.rideAt(this.beat) - this.rideS) * this.rideC;
+          if (this.rideS > -1e-4 && this.rideS < 1e-4) this.rideS = 0;
+          // A stem leaves as it entered (parts of one mix must add up), at most turned down to fit a file.
+          if (!M.stem) M.run(mL, mR, n, this.rideS, pr);
+          else if (M.stemG !== 1) { const g = M.stemG; for (let i = 0; i < n; i++) { mL[i] *= g; mR[i] *= g; } }
+          let pk = this.meters[NBUS];
+          for (let i = 0; i < n; i++) {
+            let l = mL[i], r = mR[i];
+            if (post) { postL[i] = sat(pL[i]); postR[i] = sat(pR[i]); }
+            else { l += pL[i]; r += pR[i]; }
+            outL[i] = l; outR[i] = r;
+            const a = l < 0 ? -l : l, b = r < 0 ? -r : r;
+            if (a > pk) pk = a; if (b > pk) pk = b;
+          }
+          this.meters[NBUS] = pk;
+          return;
+        }
         let pk = 0;
         for (let i = 0; i < n; i++) {
           const l = (mL[i] + dL[i]) * mg, r = (mR[i] + dR[i]) * mg;
@@ -1930,7 +2599,7 @@
         this.compEnv += (pk > this.compEnv ? this.compA : this.compR) * (pk - this.compEnv);
         if (this.compEnv < 1e-9) this.compEnv = 0;
         const e = this.compEnv, thr = 0.158, tg = e > thr ? (thr + (e - thr) / 3) / e : 1;
-        let g = this.compG; const dg = (tg - g) / n, post = !!postL;
+        let g = this.compG; const dg = (tg - g) / n;
         for (let i = 0; i < n; i++) {
           g += dg;
           let l = sat(mL[i] * g * MAKEUP), r = sat(mR[i] * g * MAKEUP);
@@ -1939,6 +2608,11 @@
           outL[i] = l; outR[i] = r;
         }
         this.compG = tg;
+        if (this.swF < 1) {                                    // just switched back from the master chain: come in over one block
+          let f = this.swF; const df = 1 / n;
+          for (let i = 0; i < n; i++) { outL[i] *= f; outR[i] *= f; f += df; }
+          this.swF = 1;
+        }
         const m = pk * tg * MAKEUP;
         if (m > this.meters[NBUS]) this.meters[NBUS] = m;
       }
@@ -1954,8 +2628,19 @@
             moved[j] = (this.auD[j] !== 0 ? autoCurve(au.curves, au.len, au.step, j, this.beat, this.auM[j]) * this.auD[j] : 0) + this.auS[j];
           }
         }
+        // The master chain's meters since the last tick: K-weighted energy out (the page turns it into LUFS),
+        // the lowest gain each compressor and the limiter reached, and the highest true peak before the limiter.
+        let master = null;
+        const M = this.ms;
+        if (M.on && !M.stem) {
+          const G = M.gr, lim = M.lim;
+          // `sig` is the plan the core holds; `ride` and `grain` what it is doing with it at this moment.
+          master = { k: M.kE, n: M.kN, lo: G[0], mid: G[1], hi: G[2], glue: G[3], lim: lim.gr, tp: lim.tp,
+            ceil: Math.pow(10, M.v[MA.CEIL] / 20), sig: this.planSig, ride: this.rideS, grain: this.nzS };
+          M.kE = 0; M.kN = 0; G.fill(1); lim.gr = 1; lim.tp = 0;
+        }
         return { type: 'tick', t, beat: this.beat, pass: this.pass + this.pass0, playing: this.playing, voices: this.act,
-          budget: this.budget, steals: this.steals, duck: this.duckG, load, meters, moved };
+          budget: this.budget, steals: this.steals, duck: this.duckG, load, meters, moved, master };
       }
       /** Run every voice kind briefly so the JIT compiles the hot loops before the first note. */
       warmup() {
@@ -1974,7 +2659,8 @@
     }
   
     /* ── §7 OFFLINE: render a time range of a job (Worker and Node bench share this) ── */
-    function renderRange(job, from, to, keep, onProgress) {
+    /** A core set up to play `job` from `from` seconds: cube, hall, plan, levels, amounts, master plan. */
+    function coreFor(job, from) {
       const sr = job.sr, core = new Core(sr, { voices: job.voices || 80, warm: false });
       core.command({ type: 'cube', spectra: job.spectra, tilt: job.tilt, density: job.density });
       if (job.reverb) core.command({ type: 'reverb', rt60: job.reverb.rt60, damp: job.reverb.damp, taps: job.reverb.taps });
@@ -1982,14 +2668,20 @@
         total: job.total, bpm: job.bpm, passes: job.passes, auto: job.auto || null });
       core.command({ type: 'levels', levels: job.levels || {}, snap: true });
       core.command(Object.assign({ type: 'params' }, job.params || {}));
+      if (job.master) core.command({ type: 'master', p: job.master.p, trim: job.master.trim, sec: job.master.sec, snap: true });
       const spb = 60 / job.bpm, passSec = job.total * spb, pass = Math.floor(from / passSec + 1e-9);
       if (pass < job.passes) core.command({ type: 'play', beat: (from - pass * passSec) / spb, pass, chase: true });
       core.snapFx();
-      const frames = Math.max(0, Math.round((to - from) * sr)), skip = Math.round((keep - from) * sr);
-      const L = new Float32Array(Math.max(0, frames - skip)), R = new Float32Array(L.length);
+      return core;
+    }
+    function renderRange(job, from, to, keep, onProgress) {
+      const sr = job.sr, core = coreFor(job, from);
+      // The limiter's look-ahead delays what the core hands back; the file is given it where it belongs.
+      const lat = core.lat, frames = Math.max(0, Math.round((to - from) * sr)), skip = Math.round((keep - from) * sr) + lat;
+      const L = new Float32Array(Math.max(0, frames + lat - skip)), R = new Float32Array(L.length);
       const bl = new Float32Array(BLOCK), br = new Float32Array(BLOCK);
       let next = sr;
-      for (let pos = 0; pos < frames; pos += BLOCK) {
+      for (let pos = 0; pos < frames + lat; pos += BLOCK) {
         core.blockTime = pos / sr;
         core.process(bl, br, BLOCK);
         for (let i = 0; i < BLOCK; i++) {
@@ -2000,11 +2692,33 @@
       }
       return { L, R };
     }
-  
+    /**
+     * Listen to a time range of a job instead of keeping it: the Probe's measurements of [keep, to).
+     * `mode` 1 hears the parts, 2 the finished mix (see Probe). The range before `keep` is pre-roll.
+     * Both ends must lie on the probe's hop grid (SigilDSP.probeHop(sr) seconds) for ranges to join.
+     */
+    function probeRange(job, from, to, keep, mode, onProgress) {
+      const sr = job.sr, core = coreFor(job, from);
+      const frames = Math.max(0, Math.round((to - from) * sr)), blocks = Math.ceil(frames / BLOCK);
+      const skip = Math.round(((keep - from) * sr) / BLOCK), hopB = Math.max(1, Math.round((0.1 * sr) / BLOCK));
+      core.command({ type: 'probe', hops: Math.max(1, Math.ceil((blocks - skip) / hopB)), skip, mode });
+      const bl = new Float32Array(BLOCK), br = new Float32Array(BLOCK);
+      let next = sr;
+      for (let b = 0; b < blocks; b++) {
+        core.blockTime = (b * BLOCK) / sr;
+        core.process(bl, br, BLOCK);
+        if (onProgress && b * BLOCK >= next) { next += sr; onProgress((b * BLOCK) / frames); }
+      }
+      return core.probe.result();
+    }
+    /** The probe's hop at a sample rate, in seconds: a whole number of blocks, as near a tenth of a second as they come. */
+    const probeHop = (sr) => (Math.max(1, Math.round((0.1 * sr) / BLOCK)) * BLOCK) / sr;
+
     G.SigilDSP = Object.freeze({
       VERSION, BLOCK, TLEN, TLEN1, TIERS, NT, CELL, H, UPPER, FX, FY, NCELL,
       KIND, BUS, BUS_NAMES, BUS_DEFAULT, EV, STRIDE, PA, PSTRIDE, DEFAULT_PATCH,
       AU, ASTRIDE, LANES, autoPass, autoCurve, autoApply, autoTrend, hash01,
-      Core, buildTables, buildCell, renderRange,
+      MA, MSTRIDE, MASTER_REST, BAND_EDGES, NBAND, kWeight, kSum, truePeak, probeHop, planSig,
+      Core, Limiter, MasterChain: Master, Probe, buildTables, buildCell, renderRange, probeRange,
     });
   })(typeof globalThis !== 'undefined' ? globalThis : self);

@@ -123,6 +123,7 @@ const Moods = (() => {
         cfg.P.swing = 0;
         cfg.levels = { drums: 0, bass: 0.9, pad: 1.3, drone: 1.35, arp: 0.4 };
         cfg.sound = { sub: 0.9, chorus: 0.8, grit: 0, bright: 0.35, sweep: 0.25, drift: 0.15, echo: 0.7 };
+        cfg.master = { tone: 0.6 };                   // 05e: vast and dark on purpose
       },
       plan(plan) {
         for (const s of plan) { s.intensity = 0; s.drone = true; s.halfTime = false; s.density = 0; if (s.arp) s.arp = 'light'; }
@@ -207,6 +208,7 @@ const Moods = (() => {
         cfg.levels = { arp: 1.2, drums: 1.05, pad: 0.7 };
         cfg.sound = { grit: 0.6, bits: 6, hold: 3, chorus: 0.1, sweep: 0.15, drift: 0, layer: 7, sub: 0.3, drums: 1.1, kPunch: 1.5, sSnap: 1.4, hDecay: 0.5 };
         cfg.drums = { human: 0, steady: true };   // the drum engine (m15): no drummer's hand, no liberties with the kick
+        cfg.master = { noise: 5 };                // the master (05e): the crushed grain IS this mood, so more of it is let through
       },
       plan(plan) {
         for (const s of plan) { s.halfTime = false; if (s.intensity > 0) s.intensity = 2; if (s.arp) s.arp = 'full'; }
@@ -220,6 +222,7 @@ const Moods = (() => {
         cfg.levels = { bass: 1.25, drone: 1.3, bell: 0.5, arp: 0.4, drums: 0.8 };
         cfg.sound = { bright: 0.16, layer: 4, sub: 1, tilt: 0.5, chorus: 0.5, echo: 0.7, grit: 0.2, bits: 10, drumX: 1, drumY: 0.2, kSub: 1.6, kDecay: 1.6, hTone: 0.4 };
         cfg.drums = { fills: 0.25 };                  // m15: felt more than heard
+        cfg.master = { tone: 0.5 };                   // 05e: it is meant to be dark; the master opens it only half as far as it would
       },
       plan(plan) { for (const s of plan) { s.drone = true; s.intensity = Math.min(1, s.intensity); s.density = 0; } },
     },
@@ -232,6 +235,7 @@ const Moods = (() => {
         cfg.voicing = { seventh: true, ninth: true };
         cfg.levels = { bell: 1.3, pad: 1.15, harm: 1.2 };
         cfg.sound = { voice: 'bell', bright: 0.95, chorus: 0.8, layer: 2, density: 1.6, tilt: -0.3, grit: 0, sub: 0.35, drums: 0.95, sTone: 1.4 };
+        cfg.master = { tone: 0.5 };                   // 05e: it is meant to be bright; the master tames it only half as far
       },
       plan(plan) { for (const s of plan) { if (s.intensity >= 2) s.harm = true; s.halfTime = false; } },
     },
@@ -242,6 +246,7 @@ const Moods = (() => {
         cfg.bpm = Math.round(cfg.bpm * (R.chance(0.5) ? 0.9 : 1.15));
         cfg.levels = { drums: 1.1, pad: 0.75, lead: 1.05 };
         cfg.sound = { grit: 0.9, bits: R.pick([3, 4, 5]), hold: R.pick([3, 5, 7]), fold: 0.6, drive: 0.7, layer: 3, density: 1.8, breath: 0.6, hTone: 1.8, hDecay: 0.5, drumY: 0.9 };
+        cfg.master = { noise: 8 };                    // 05e: a transmission breaking up is mostly grain; the master lets it be
       },
       plan(plan) { for (const s of plan) { if (s.intensity > 0) s.intensity = Math.max(2, s.intensity); s.density = 1; } },
     },

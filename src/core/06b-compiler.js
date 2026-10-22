@@ -24,6 +24,13 @@
    the SAME table goes to the live worklet (sendSong) and into every offline
    job (renderJob), full mix or stem. That is what makes a render move exactly
    as the performance did: there is only one table, and only one reader of it.
+
+   MASTERING. A job also says how its song asks to be finished (job.mix: the
+   letters' character for the chain, the kit level the patch asks for on
+   purpose, anything the mood overrides), which is what 05e needs, besides the
+   sound itself, to work out a master plan. The plan (job.master) is laid on
+   by whoever renders; and every time the engine is sent something that changes
+   what will be heard, 'compiled' is emitted so the plan can be worked out anew.
    ══════════════════════════════════════════════════════════════════════════ */
 const SigilPlan = (() => {
   'use strict';
@@ -31,7 +38,7 @@ const SigilPlan = (() => {
   const { EV, STRIDE, KIND, BUS, PA, PSTRIDE, AU, ASTRIDE } = D;
 
   const DEFAULTS = { tilt: 0, density: 1, kSub: 1, kPunch: 1, kDecay: 1, kTone: 0, sBody: 1, sSnap: 1, sTone: 1, hTone: 1, hDecay: 1,
-    motion: 1, evolve: 0.5, mVar: 0, mMute: 0 };
+    motion: 1, evolve: 0.5, mVar: 0, mMute: 0, finish: 0, fAmt: 1 };
   /** Mover (patch field) → the section column it moves. Only columns the core reads can be moved. */
   const LANE_COL = { wave: 'WAVE', layer: 'LAYER', sweep: 'SWEEP', drift: 'DRIFT', chorus: 'CHORUS', bright: 'BRIGHT',
     breath: 'BREATH', echo: 'ECHO', grit: 'GRIT', throat: 'THROAT', sub: 'SUB', drums: 'DRUMS', dRoom: 'DROOM', dBody: 'DBODY',
@@ -421,6 +428,7 @@ const SigilPlan = (() => {
     eng.setParams({ waveOff: waveOffset(), motion: p.motion, evolve: p.evolve });
     sendTables(eng, p.spec, p.Ps);
     sendReverb(eng, sigil);
+    Hooks.emit('compiled', eng, 'song');              // a new song is in the engine: its master plan is wanted
     return p;
   }
   /** Recompile and swap the events at the current playhead. Sounding voices ring on. */
@@ -431,6 +439,7 @@ const SigilPlan = (() => {
     if (motionSync(eng, p)) msg.auto = autoMsg(p.auto);
     eng.post(msg, [p.events.buffer, p.sections.buffer]);
     sendTables(eng, p.spec, p.Ps);
+    Hooks.emit('compiled', eng, 'plan');
   }
   /** Section patch only: what knob drags call. Cheap enough for every pointermove. */
   function refreshSections(eng) {
@@ -439,6 +448,7 @@ const SigilPlan = (() => {
     if (motionSync(eng, p)) msg.auto = autoMsg(p.auto);
     eng.post(msg, [p.sections.buffer]);
     sendTables(eng, p.spec, p.Ps);
+    Hooks.emit('compiled', eng, 'sections');
   }
 
   /* ── Rows for live notes and one-shots ─────────────────────────────── */
@@ -463,7 +473,22 @@ const SigilPlan = (() => {
     D.BUS_NAMES.forEach((b, i) => { out[b] = D.BUS_DEFAULT[i] * num(song.levels && song.levels[b], 1); });
     return out;
   }
-  /** Everything a worker needs to render: plain data only, structured-clone friendly. */
+  /**
+   * How a song asks to be finished (05e): the letters' character for the master chain and how
+   * strongly it is applied (both in the patch), the kit level the patch asks for ON PURPOSE (its
+   * Level against the sigil's own dealt one: a levelling that undid the knob would be no use),
+   * and anything the mood overrides (cfg.master: { noise dB, level ×, tone × }).
+   */
+  function mixInfo(song, sigil, spec) {
+    if (typeof Mastering === 'undefined') return null;
+    const P = spec.P, own = SD.derive(sigil.hash, spec.variant || 0).drums || 1;
+    return { finish: Mastering.character(sigil, num(P.finish, 0)), amount: clamp(num(P.fAmt, 1), 0, 1.5),
+      kit: clamp(num(P.drums, own) / own, 0.25, 4), mood: (song.cfg && song.cfg.master) || null };
+  }
+  /**
+   * Everything a worker needs to render: plain data only, structured-clone friendly.
+   * o: { sr, spb, passes, lens, spec, drums, levels, pass0, master (a plan's table, Mastering.table) }
+   */
   function renderJob(song, sigil, o) {
     const p = compile(song, sigil, { lens: !!o.lens, spec: o.spec, drums: o.drums });
     const eng = hasApp() ? app.engine : null;
@@ -477,12 +502,14 @@ const SigilPlan = (() => {
       auto: autoMsg(p.auto),
       params: { reverb: eng && eng.params ? eng.params.reverb : 0.85, waveOff: waveOffset(),
         motion: p.motion, evolve: p.evolve, pass0: Math.max(0, o.pass0 | 0) },
+      // How the song asks to be finished, and (if the caller has one) the plan that finishes it.
+      mix: mixInfo(song, sigil, p.spec), master: o.master || null,
     };
   }
 
   return {
     compile, sendSong, replan, refreshSections, sendTables, sendReverb,
-    soundSpec, defaultSpec, waveOffset, row, liveNote, renderJob, spectra,
+    soundSpec, defaultSpec, waveOffset, row, liveNote, renderJob, spectra, mixInfo,
     KIND, BUS, LANE_COL,
   };
 })();

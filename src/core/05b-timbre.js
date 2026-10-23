@@ -334,11 +334,13 @@ const SoundDesign = (() => {
       drumX: clampTo(D.drumX + 0.3 * I, 0, 1),
       drumY: clampTo(D.drumY + 0.25 * k, 0, 1),
     };
-    if (sec.final) {
+    // The Banishing dims; a rite that ends at its height (05g: ends 'struck') does not.
+    if (sec.final && sec.ends !== 'struck') {
       out.bright *= 0.45; out.grit *= 0.3; out.chorus = clampTo(out.chorus * 1.2, 0, 1);
       out.wave = clampTo(D.wave * 0.5, 0, FX - 1); out.drums *= 0.4;
     }
-    if (si === 0) { out.grit *= 0.25; out.bright *= 0.8; }
+    // An opening is gentle, unless the rite begins in force (05g: a section with a role, at level 2 or more).
+    if (si === 0 && !(sec.role && sec.intensity >= 2)) { out.grit *= 0.25; out.bright *= 0.8; }
     /* The kit's FX follow the rite too. Loud sections hit harder, dirtier and denser; sparse and
        half-time ones open into the room and let the echo speak; the Banishing dissolves into both.
        Only fields the patch actually carries are arced, so a patch without the chain stays without. */
@@ -348,8 +350,9 @@ const SoundDesign = (() => {
     fx('dDrive', D.dDrive * (0.6 + 0.6 * I));
     fx('dCrush', D.dCrush * (0.4 + 0.8 * I));
     fx('dSmash', D.dSmash * (0.6 + 0.55 * I));
-    fx('dRoom', D.dRoom * (1.1 - 0.3 * I + 0.3 * half) * (sec.final ? 1.5 : 1));
-    fx('dEcho', D.dEcho * (1.1 - 0.5 * I + 0.4 * half) * (sec.final ? 1.6 : 1));
+    const fade = sec.final && sec.ends !== 'struck';
+    fx('dRoom', D.dRoom * (1.1 - 0.3 * I + 0.3 * half) * (fade ? 1.5 : 1));
+    fx('dEcho', D.dEcho * (1.1 - 0.5 * I + 0.4 * half) * (fade ? 1.6 : 1));
     return out;
   }
 

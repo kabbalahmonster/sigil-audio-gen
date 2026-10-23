@@ -47,6 +47,12 @@
   "style:THWLBDNS:trap.water": "331484995097bd45896f38eddf42afed",
   "style:BCD:edm.air": "68bed1899cb6ffb7f44b1a5dbc1c4c18",
   "style:PLMNKJHGFDSTRVWXYZBC:jazz.earth": "a2de22e9522900ade49e3e7a04116756",
+  "rite:KRSTVM:iao": "bcb546cf1a598184db8d19bbce596e01",
+  "rite:THWLBDNS:gates": "4b1b3576df11c412278d17b7e5227b02",
+  "rite:BCD:posture": "73a068a9d71f6bae00fa7c2e93dcbb9e",
+  "rite:PLMNKJHGFDSTRVWXYZBC:gnostic": "6225213eb98ce3f381c6009e6bfaa9c2",
+  "rites:forms": "ccc6aa5c7266f9c3c6fb30fce2201cf8",
+  "rites:own": "gnostic,seasons,mass,opus",
   "codec:encode": "eyJ3IjoyLjUsInYiOiJ2b3giLCJnIjowLjQsImQiOjN9",
   "codec:roundtrip": "{\"o\":{\"wave\":2.5,\"voice\":\"vox\",\"grit\":0.4},\"variant\":3}"
 }

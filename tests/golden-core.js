@@ -98,6 +98,35 @@ function styleFingerprint(reduced, style, element) {
   return toHex(hashStr([song.bpm, song.sections.map((x) => `${x.intensity}${x.halfTime ? 'h' : ''}${x.arp || ''}`).join(','), set.voice, set.layer, rows.join(';')].join('#'))).slice(0, 32);
 }
 
+/**
+ * A rite other than the Sevenfold (05g), in the Ritual mood with the groove's kit: its form (each
+ * section's id, role, transform, length, level, layers and cadence) and every event of its score.
+ * The hooks are the ones m22 and m15 register in the app, put on for the length of one composition.
+ */
+function riteSong(reduced, rite) {
+  const s = buildSigil(reduced);
+  const off = [
+    Hooks.on('compose', (cfg) => { cfg.rite = rite; }, -30),
+    Hooks.on('plan', (plan, cfg) => Rite.open(cfg), -30),
+    Hooks.on('plan', (plan, cfg) => { Rite.seal(plan, cfg); }, 60),
+    Hooks.on('score', (events, c) => Groove.score(events, c, { ...((c.cfg && c.cfg.drums) || {}) })),
+  ];
+  try { return composeSong(s); } finally { off.forEach((f) => f()); }
+}
+const riteForm = (song) => song.sections.map((x) => [x.id, x.role, `${x.T.k}${x.T.m < 0 ? 'm' : ''}${x.T.reverse ? 'r' : ''}`, x.phrases,
+  `${x.intensity}${x.halfTime ? 'h' : ''}`, x.voice, x.harm ? 'H' : '', x.arp || '', x.octave ? 'O' : '', x.bass ? 'b' : '', x.drone ? 'd' : '',
+  x.cadence || '', x.final ? `final${x.ends || ''}` : '', x.name, x.desc].join('|')).join(';');
+function riteFingerprint(reduced, rite) {
+  const song = riteSong(reduced, rite);
+  const rows = song.events.map((e) => [e.type, Math.round(e.beat * 960), e.midi ?? (e.midis || []).join('/'), Math.round((e.vel ?? 0) * 1000),
+    Math.round((e.dur ?? 0) * 960), e.tom ?? '', e.open ? 1 : 0].join(':'));
+  return toHex(hashStr([song.total, riteForm(song), rows.join(';')].join('#'))).slice(0, 32);
+}
+/** The form of every rite, for one sigil: a rite that is changed, added out of order or removed shows here. */
+function ritesFingerprint(reduced) {
+  return toHex(hashStr(Object.keys(Rite.RITES).filter((id) => id !== Rite.DEFAULT).map((id) => `${id}=${riteForm(riteSong(reduced, id))}`).join('#'))).slice(0, 32);
+}
+
 /** Everything the CI compares, as a flat object of name → value. */
 function computeAll() {
   const out = {};
@@ -115,6 +144,12 @@ function computeAll() {
   [['punk', 'fire'], ['trap', 'water'], ['edm', 'air'], ['jazz', 'earth']].forEach(([st, el], i) => {
     out[`style:${GOLDEN_INPUTS[i]}:${st}.${el}`] = styleFingerprint(GOLDEN_INPUTS[i], st, el);
   });
+  // One rite per sigil, event for event, and the forms of all of them; tests/rite.spec.mjs walks the rest.
+  ['iao', 'gates', 'posture', 'gnostic'].forEach((rite, i) => {
+    out[`rite:${GOLDEN_INPUTS[i]}:${rite}`] = riteFingerprint(GOLDEN_INPUTS[i], rite);
+  });
+  out['rites:forms'] = ritesFingerprint(GOLDEN_INPUTS[0]);
+  out['rites:own'] = GOLDEN_INPUTS.map((w) => Rite.own(buildSigil(w))).join(',');   // the rite each sigil draws for itself
   const patch = { wave: 2.5, voice: 'vox', grit: 0.4 };
   out['codec:encode'] = SoundDesign.encodePatch(patch, 3);
   out['codec:roundtrip'] = JSON.stringify(SoundDesign.decodePatch(SoundDesign.encodePatch(patch, 3)));

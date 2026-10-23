@@ -365,9 +365,12 @@ class Renderer {
     const kp = pulse(song.kicks, beat, 5);     // fast decay: a thump
     const sp = pulse(song.snares, beat, 1.4);  // slow decay: an expanding ripple
 
+    // The ghosts leave during the last section's first phrase; in a rite that ends at its
+    // height (05g: ends 'struck') they stay to the last stroke and leave with its ring.
     const outro = song.sections[song.sections.length - 1];
+    const rung = outro.ends === 'struck' ? outro.end - (outro.tail || 0) : outro.start;
     const outroFade = si === song.sections.length - 1
-      ? 1 - clamp((beat - outro.start) / 16, 0, 1) : 1;
+      ? 1 - clamp((beat - rung) / (outro.ends === 'struck' ? Math.max(1, outro.tail || 0) : 16), 0, 1) : 1;
 
     const lines = [];   // everything burnable, collected for burn()
 
@@ -408,11 +411,13 @@ class Renderer {
     lines.push(pts);
     this.drawTerminals(pts, F, 1, prog >= ph.seq.length - 1);
 
-    // Node dots, plus an expanding flare for 2 beats after each note sounds.
+    // Node dots, plus an expanding flare for 2 beats after each note sounds
+    // (none where the phrase is traced but not sung: voice 'none', 05g).
+    const sung = sec.voice !== 'none';
     ph.path.forEach((n) => {
       const [x, y] = nodeXY(n, T, F), age = beat - n.beat;
       this.circle(x, y, 1.7, L, 0.45, true);
-      if (age >= 0 && age < 2) {
+      if (sung && age >= 0 && age < 2) {
         const q = age / 2;
         this.circle(x, y, 3 + F.R * 0.07 * q, A, 0.7 * (1 - q), false, 1.2);
       }

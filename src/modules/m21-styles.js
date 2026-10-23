@@ -22,11 +22,13 @@
 
    THE WORKING. Mood, style and element travel together as one word,
    "mood.style.element" (trailing defaults dropped): in a link (#KRSTVM~dirge.trap.water),
-   in the Grimoire, and through cast({ preset }). M6 reads the first part, this file the rest.
+   in the Grimoire, and through cast({ preset }). M6 reads the first part, this file the next
+   two. A fourth word, if there is one, is the RITE (05g, M22): the form the working takes.
+   M22 reads it, and puts its own tab in the chooser built here (addTab).
 
    THE LOTS draw a mood, a style and an element at random (it is the one place in SIGIL
    where chance is not the sigil's: what is drawn is then as deterministic as anything
-   else, and the link says which).
+   else, and the link says which). With Shift held they draw a rite too.
    ══════════════════════════════════════════════════════════════════════════ */
 
 const Styles = (() => {
@@ -38,21 +40,25 @@ const Styles = (() => {
   let style = ST[Prefs.get('style', 'none')] ? Prefs.get('style', 'none') : 'none';
   let element = EL[Prefs.get('element', 'aether')] ? Prefs.get('element', 'aether') : 'aether';
 
-  /* ── The working: three choices as one word ──────────────────────────── */
+  /* ── The working: the choices as one word ────────────────────────────── */
 
-  /** "mood.style.element" with trailing defaults dropped ('' when all three are the defaults). */
-  function tagOf(mood, st, el) {
-    const parts = [mood || 'ritual', st || 'none', el || 'aether'];
-    if (parts[2] === 'aether') { parts.pop(); if (parts[1] === 'none') { parts.pop(); if (parts[0] === 'ritual') parts.pop(); } }
+  const RT = typeof Rite !== 'undefined' ? Rite.RITES : {}, RITE0 = typeof Rite !== 'undefined' ? Rite.DEFAULT : 'sevenfold';
+  const DEFAULTS = ['ritual', 'none', 'aether', RITE0];
+
+  /** "mood.style.element.rite" with trailing defaults dropped ('' when all are the defaults). */
+  function tagOf(mood, st, el, rite) {
+    const parts = [mood || DEFAULTS[0], st || DEFAULTS[1], el || DEFAULTS[2], rite || DEFAULTS[3]];
+    while (parts.length && parts[parts.length - 1] === DEFAULTS[parts.length - 1]) parts.pop();
     return parts.join('.');
   }
   /** The working a song was composed in. */
-  const tag = (cfg) => tagOf(cfg && cfg.mood, cfg && cfg.style, cfg && cfg.element);
-  /** A working, as words: "Dirge · Trap · Water". Defaults are left unsaid. */
+  const tag = (cfg) => tagOf(cfg && cfg.mood, cfg && cfg.style, cfg && cfg.element, cfg && cfg.rite);
+  /** A working, as words: "Dirge · Trap · Water · Seven Gates". Defaults are left unsaid. */
   function words(t) {
-    const [m, s, e] = String(t || '').split('.');
+    const [m, s, e, r] = String(t || '').split('.');
     return [hasMoods && m && m !== 'ritual' && Moods.MOODS[m] ? Moods.MOODS[m].label : '',
-      s && s !== 'none' && ST[s] ? ST[s].label : '', e && e !== 'aether' && EL[e] ? EL[e].label : ''].filter(Boolean).join(' · ');
+      s && s !== 'none' && ST[s] ? ST[s].label : '', e && e !== 'aether' && EL[e] ? EL[e].label : '',
+      r && r !== RITE0 && RT[r] ? RT[r].label : ''].filter(Boolean).join(' · ');
   }
 
   function setStyle(id, { persist = true } = {}) {
@@ -113,24 +119,30 @@ const Styles = (() => {
   /* ── The lots ────────────────────────────────────────────────────────── */
 
   const pickOf = (list) => list[Math.floor(Math.random() * list.length)];
-  /** Draw a mood, a style and an element, never the three already chosen. Recomposes if a rite is sounding. */
-  function lots() {
+  /**
+   * Draw a mood, a style and an element, never the three already chosen. Recomposes if a rite is sounding.
+   * With Shift held (Shift-click, Shift+Y) a rite is drawn as well (M22), and the performance begins again
+   * in it; without, the rite is left as it is and the performance resumes where it was.
+   */
+  function lots(ev) {
     const moods = hasMoods ? Object.keys(Moods.MOODS) : ['ritual'], styles = Object.keys(ST), els = Object.keys(EL);
     const now = tagOf(hasMoods ? Moods.get() : 'ritual', style, element);
     let m, s, e, tries = 0;
     do { m = pickOf(moods); s = pickOf(styles); e = pickOf(els); } while (tagOf(m, s, e) === now && ++tries < 20);
     if (hasMoods) Moods.set(m);
     setStyle(s); setElement(e);
-    const said = words(tagOf(m, s, e)) || 'Ritual, unstyled, of Aether';
-    if (app.mode === 'playing') UI.recompose();
+    const rite = ev && ev.shiftKey && typeof Rites !== 'undefined' ? Rites.draw() : null;
+    const said = words(tagOf(m, s, e, rite)) || 'Ritual, unstyled, of Aether';
+    if (app.mode === 'playing') UI.recompose(rite ? { top: true } : undefined);
     toast(said, true, 2600);
     UI.announce(`The lots: ${said}.`);
-    return tagOf(m, s, e);
+    return tagOf(m, s, e, rite);
   }
 
   /* ── The chooser: Mood · Style · Element, and the lots ───────────────── */
 
   const choosers = [];   // every chooser on the page (the invocation's and the Tools panel's), kept in step
+  const extras = [];     // tabs other modules have added (M22's Rite): { key, label, tray(live), name(), sum() }
 
   function pills(kind, live) {
     const table = kind === 'style' ? ST : EL, cur = () => (kind === 'style' ? style : element);
@@ -174,25 +186,47 @@ const Styles = (() => {
       const k = keys[mod(i + (e.key === 'ArrowRight' ? 1 : -1), keys.length)];
       show(k); tabs[k].focus(); e.preventDefault(); e.stopPropagation();
     });
-    const lotsBtn = UI.button('Cast lots', lots, { class: 'sm wk-lots', title: 'Draw a mood, a style and an element at random (Y)' });
+    const lotsBtn = UI.button('Cast lots', lots, { class: 'sm wk-lots', title: 'Draw a mood, a style and an element at random (Y). With Shift held, a rite as well' });
     bar.append(lotsBtn);
     const sum = h('div', { class: 'wk-sum', role: 'status', 'aria-live': 'off' });
     const box = h('div', { class: 'wk' }, bar);
     if (moodGroup) { moodGroup.before(box); moodGroup.addEventListener('click', () => setTimeout(sync, 0)); }
     box.append(...Object.values(trays).filter(Boolean), sum);
-    const c = { box, show, sync() {
-      names.mood.textContent = hasMoods ? Moods.MOODS[Moods.get()].label : '';
-      names.style.textContent = ST[style].label; names.element.textContent = EL[element].label;
-      trays.style._sync(); trays.element._sync();
-      const w = words(tagOf(hasMoods ? Moods.get() : 'ritual', style, element));
-      sum.textContent = w ? `${w}${ST[style].tempo ? ` · ${ST[style].tempo[0] * (ST[style].felt || 1)}–${ST[style].tempo[1] * (ST[style].felt || 1)} bpm` : ''}` : 'the rite as the sigil wrote it';
-    } };
+    const mine = [];       // the extra tabs of this chooser
+    const c = { box, show, live,
+      /** Another module's tab, after the three: its tray is built for this chooser and kept in step with it. */
+      add(x) {
+        const tray = x.tray(live);
+        trays[x.key] = tray; names[x.key] = h('b');
+        tabs[x.key] = h('button', { class: 'wk-tab', type: 'button', role: 'tab', 'aria-selected': 'false', tabindex: '-1', onclick: () => show(x.key) }, x.label, names[x.key]);
+        lotsBtn.before(tabs[x.key]);
+        tray.hidden = true;
+        sum.before(tray);
+        mine.push(x);
+      },
+      sync() {
+        names.mood.textContent = hasMoods ? Moods.MOODS[Moods.get()].label : '';
+        names.style.textContent = ST[style].label; names.element.textContent = EL[element].label;
+        trays.style._sync(); trays.element._sync();
+        for (const x of mine) { names[x.key].textContent = x.name(); if (trays[x.key]._sync) trays[x.key]._sync(); }
+        const w = words(tagOf(hasMoods ? Moods.get() : 'ritual', style, element));
+        const tempo = ST[style].tempo ? `${ST[style].tempo[0] * (ST[style].felt || 1)}–${ST[style].tempo[1] * (ST[style].felt || 1)} bpm` : '';
+        sum.textContent = [w, tempo, ...mine.map((x) => (x.sum ? x.sum() : ''))].filter(Boolean).join(' · ') || 'the rite as the sigil wrote it';
+      } };
+    for (const x of extras) c.add(x);
     show(moodGroup ? 'mood' : 'style');
     choosers.push(c);
     return c;
   }
 
   function sync() { for (const c of choosers) c.sync(); }
+
+  /** Give every chooser another tab (M22's Rite). x = { key, label, tray(live) → element with _sync(), name(), sum() }. */
+  function addTab(x) {
+    extras.push(x);
+    for (const c of choosers) c.add(x);
+    sync();
+  }
 
   UI.css(`.wk{margin-top:14px}.wk .moods{margin-top:10px}
     .wk-tabs{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:4px 14px}
@@ -219,12 +253,12 @@ const Styles = (() => {
     UI.section({ id: 'styles', title: 'Style · Element', order: 10, build(el) { el.append(chooser(null, true).box); } });
   }
 
-  UI.key('y', 'Cast lots: a random mood, style and element', lots, { group: 'Performance', display: 'Y' });
+  UI.key('y', 'Cast lots: a random mood, style and element (with Shift, a rite too)', lots, { group: 'Performance', display: 'Y' });
 
   Hooks.on('song', sync);
   UI.whenReady(sync);
 
-  return { setStyle, setElement, adopt, lots, tag, tagOf, words, get: () => ({ style, element }) };
+  return { setStyle, setElement, adopt, lots, tag, tagOf, words, addTab, sync, get: () => ({ style, element }) };
 })();
 
 if (typeof window !== 'undefined') window.Styles = Styles;

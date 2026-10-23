@@ -40,6 +40,14 @@ const INTERVAL_WORD = { 2: 'third', 3: 'fourth', 4: 'fifth' };
  *   harm / arp / octave / pad / bass / drone / halfTime / density / final
  *
  * Moods (M6) and Mixer (M2) mutate this array through the 'plan' filter.
+ *
+ * This is one rite of several. The others (05g-rite.js, M22) replace this array, through the
+ * same filter, with forms of their own built from the same fields, and may use three things
+ * the Sevenfold never does (so that, for it, nothing below behaves differently):
+ *   voice 'none'     the phrase is traced but not sung (the pad and the drone go on)
+ *   cadence 'half'   the section's last phrase is left open, for the next section to answer
+ *   ends 'struck'    (with final) the rite ends at its height: a last stroke, left to ring
+ *   role             which of these seven sections it stands for, when its id is its own
  */
 function makePlan(rotK, shift) {
   const id = { k: 0, m: 1, reverse: false };
@@ -394,6 +402,20 @@ function drumBar(ev, t0, sec, P, fill, R) {
   }
 }
 
+/**
+ * The kit's last stroke in a rite that ends at its height (05g: final, ends 'struck'), at beat `t`:
+ * the kick, and a crash once the section is loud enough to have one. Sized by the section's level,
+ * so a hushed mood ends on a soft foot and a drumless one on the bell alone. Empty for any other
+ * ending. Shared by the three writers of the kit (here, 05c, 05f).
+ */
+function lastStroke(sec, t) {
+  const I = Math.min(3, sec.intensity | 0);
+  if (!(sec.final && sec.ends === 'struck' && I > 0 && (sec.tail || 0) > 0)) return [];
+  const out = [{ beat: t, type: 'kick', vel: [0, 0.6, 0.85, 0.95][I] }];
+  if (I >= 2) out.push({ beat: t, type: 'crash', vel: I >= 3 ? 0.8 : 0.55 });
+  return out;
+}
+
 /** Bass for one bar. Patient roots at low intensity; Euclidean hits otherwise. */
 function bassBar(ev, t0, c, sec, P, R, bassBase, scale) {
   if (sec.halfTime || sec.intensity <= 1) {
@@ -583,7 +605,7 @@ function composeSong(sigil) {
         ? ph.notes.concat(...pps.map((x) => x.notes.map((n) => ({ ...n, passing: true }))))
         : ph.notes;
 
-      const chords = harmonize(hNotes, scale, cfg.bias, lastPhrase ? 'full' : 'half');
+      const chords = harmonize(hNotes, scale, cfg.bias, lastPhrase ? sec.cadence || 'full' : 'half');
       if (sec.final) chords[3] = 0;  // the Banishing always lands on the tonic
 
       ph.start = beat; ph.end = beat + 16; ph.chords = chords; ph.si = si; ph.partners = pps;
@@ -601,7 +623,8 @@ function composeSong(sigil) {
         const t0 = beat + b * 4;
         const isLastBar = lastPhrase && b === 3;
         // The final pad is held through the tail so the song decays, not stops.
-        const padDur = sec.final && isLastBar ? 4 + (sec.tail || 0) + 0.5 : 4.25;
+        // (A rite that ends struck strikes its last chord afresh instead: see below.)
+        const padDur = sec.final && isLastBar && sec.ends !== 'struck' ? 4 + (sec.tail || 0) + 0.5 : 4.25;
 
         events.push({ beat: t0, type: 'pad',
                       midis: padVoicing(c, scale, leadBase, cfg.voicing),
@@ -617,6 +640,19 @@ function composeSong(sigil) {
       if (sec.final)  // the last bell, struck into the silence
         events.push({ beat: beat + 16, type: 'bell', midi: leadBase + 12, dur: 8, vel: 0.7,
                       deg: 0, off: 0, reg: leadBase, add: 12, part: 0 });
+
+      // A rite that ends at its height (05g) is ended by the whole band, on the bar-line after its
+      // last bar: the tonic chord struck once more, the bass under it, the kit's stroke, and the bell.
+      // The chord is let go after three beats, so what fills the rest of the tail is its ring.
+      if (lastPhrase && sec.final && sec.ends === 'struck' && (sec.tail || 0) > 0) {
+        const t = beat + 16, held = Math.min(3, sec.tail);
+        events.push(...lastStroke(sec, t));
+        events.push({ beat: t, type: 'pad', midis: padVoicing(0, scale, leadBase, cfg.voicing),
+                      dur: held, vel: sec.pad, bright: sec.intensity, chord: 0 });
+        if (sec.bass)
+          events.push({ beat: t, type: 'bass', midi: bassPitch(0, 'root', bassBase, scale),
+                        dur: held, vel: 0.9, chord: 0, role: 'root', last: true });
+      }
 
       phrases.push(ph);
       beat += 16;
@@ -663,7 +699,7 @@ function composeSong(sigil) {
 
 /* ── §5.7 TIME-LOOKUP HELPERS (shared by renderer and HUD) ─────────────── */
 
-/** Index of the section containing `beat`. Linear scan; sections.length is 7. */
+/** Index of the section containing `beat`. Linear scan; a rite has at most a dozen or so sections. */
 function sectionIndexAt(song, beat) {
   let j = 0;
   song.sections.forEach((s, i) => { if (beat >= s.start) j = i; });
@@ -715,7 +751,8 @@ function displayTransform(song, beat) {
   let j = 0;
   for (let i = 0; i < S.length; i++) if (beat >= S[i].start - 1) j = i;
 
-  const to = S[j].Tdisp, from = S[mod(j - 1, S.length)].Tdisp;
+  // The first section has nothing to turn from (a rite need not end in the form it began in).
+  const to = S[j].Tdisp, from = j === 0 ? to : S[j - 1].Tdisp;
   const p = ease((beat - (S[j].start - 1)) / 2.5);
   const dphi = mod(to.phi - from.phi + Math.PI, TAU) - Math.PI;  // shortest way round
 

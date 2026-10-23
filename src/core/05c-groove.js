@@ -169,8 +169,12 @@ const Groove = (() => {
 
   /* ── §5c.4 THE WRITER ──────────────────────────────────────────────────── */
 
+  /** A rite that ends at its height (05g): its last section is not dissolved, it is struck. */
+  const struck = (sec) => !!sec.final && sec.ends === 'struck' && sec.intensity > 0;
+
   /** What the boundary after this bar asks of the kit. */
   function boundary(sec, next) {
+    if (struck(sec)) return sec.intensity >= 2 ? 'rise' : 'turn';  // the kit builds into the last stroke (a hushed one only turns)
     if (sec.final || !next || next.final || !(next.intensity > 0)) return 'dissolve';
     if (next.intensity > sec.intensity) return 'rise';
     if (next.intensity < sec.intensity) return 'fall';
@@ -195,6 +199,11 @@ const Groove = (() => {
     if (f >= 0.85) return 4;
     if (f >= 0.5) return u < 0.4 ? 4 : 2;                          // most turns are two notes; some are a beat
     return f >= 0.25 ? 2 : 0;
+  }
+
+  /** The last stroke of a rite that ends at its height (§5's lastStroke), with the composer's last bell. */
+  function ending(ev, sec, bars) {
+    ev.push(...lastStroke(sec, sec.start + bars * 4));
   }
 
   /**
@@ -394,7 +403,7 @@ const Groove = (() => {
             for (let j = 0; j < 4; j++) put((12 + j) * 2, 'snare', 0.3 + 0.15 * j, { fill: true });
             if (!fast && f >= 0.8 && I >= 2) { put(29, 'snare', 0.52, { fill: true }); put(31, 'snare', 0.66, { fill: true }); }
             if (W >= 8 && I >= 2) for (let s = from; s < STEPS; s += 4) put(s * 2, 'kick', 0.7, { fill: true });
-            if (next && next.intensity >= 3) ev.push({ beat: t0, type: 'swell', dur: 4, vel: 0.8 });
+            if ((next && next.intensity >= 3) || struck(sec)) ev.push({ beat: t0, type: 'swell', dur: 4, vel: 0.8 });
           } else if (sectionEnd && kind !== 'dissolve') {
             if (W >= 8 && I >= 2 && from % 4 === 0) put(from * 2, 'kick', 0.7, { fill: true });   // the fill starts from a kick
             // …and ends on something with a body, so that the next bar is arrived at, not stumbled into.
@@ -428,6 +437,7 @@ const Groove = (() => {
           ev.push(e);
         }
       }
+      ending(ev, sec, bars);
     });
 
     const total = m.total || Infinity;
@@ -511,7 +521,7 @@ const Groove = (() => {
     };
   }
 
-  return { TYPES, DEFAULTS, CH, dna, turn, turnSteps, anchor, recite, limb, boundary, fillWidth, write, score, apply, restore, sigOf, describe, noise };
+  return { TYPES, DEFAULTS, CH, dna, turn, turnSteps, anchor, recite, limb, boundary, fillWidth, struck, ending, write, score, apply, restore, sigOf, describe, noise };
 })();
 
 if (typeof window !== 'undefined') window.Groove = Groove;

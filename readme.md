@@ -69,8 +69,9 @@ idle ──cast──► reducing ──► playing ⇄ charging
    ticking like a quill. The surviving consonants are then lit one at a time, each
    sounding a bell tuned to the note it will occupy in the song.
 3. **Inscription / performance.** The sigil is drawn by a pen clocked by the audio
-   hardware. Seven sections unfold; each applies a different geometric transform,
-   and the music transforms with it.
+   hardware. The sections of the chosen rite unfold (seven, in the Sevenfold; see
+   *Rites* below); each applies a different geometric transform, and the music
+   transforms with it.
 4. **Charge.** Fullscreen gnosis mode: all interface dissolves, the sigil centres
    and enlarges, and a breathing ring pulses on an 8-beat cycle.
 5. **Banishing (Forget).** The lines break into embers and rise, a low-pass sweep
@@ -112,6 +113,63 @@ The seven sections are exactly that list:
 | V | Reversal | retrograde, half-time |
 | VI | Apotheosis | rotated again, every voice at once |
 | VII | Banishing | identity, returning to silence |
+
+**Rites.** That is the Sevenfold, the rite SIGIL has always performed, and it is still
+the default. It is one answer to a question that has others: *in what order, and at
+what weight, are the sigil's symmetries performed?* A rite (`05g-rite.js`, M22) is
+another answer: another form, shorter or longer, built from the same three moves
+(turn, mirror, retrace) and nothing else, so every rite is the same sigil and the same
+music, differently unfolded. The forms are taken from ritual formulae that are
+themselves sequences, and each is read for its *shape*: what repeats, what returns,
+where the height is, how it ends.
+
+| Rite | After | Phrases | Its shape |
+|---|---|---|---|
+| **Sevenfold** | SIGIL's own | 12 | Two heights, a dark reversal between them, a banishing |
+| **Charge** | the barest sigil working (Spare) | 4 | Stated, held, let go |
+| **Five Seasons** | the Discordian year | 5 | Five sections of one phrase; the height in the middle |
+| **I·A·O** | Isis, Apophis, Osiris (Golden Dawn, Crowley) | 6 | As written, undone, exalted; **ends at its height**, struck once |
+| **Death Posture** | Spare, *The Book of Pleasure* | 6 | Falls to a silence in which the path is traced but not sung; then the Flash |
+| **Four Adorations** | Crowley, *Liber Resh* | 7 | Dawn, noon, sunset, midnight: an early height and a long going-down |
+| **S.P.L.I.F.F.** | Phil Hine, *Condensed Chaos* | 8 | Statement, Pathways, Link, Intense gnosis, Fire, Forget |
+| **Lesser Pentagram** | the Golden Dawn's pentagram ritual | 8 | A frame. The four quarters are the four forms of a melody: as written, mirrored, retraced, both |
+| **Cone of Power** | the witches' circle | 8 | Only ever rises, a seventh of the wheel each round; **ends struck** |
+| **Seven Gates** | the Descent of Inanna | 8 | Begins at its height; something is taken at each gate; seven sevenths are one whole turn |
+| **Mantra** | japa; *Liber Null* | 8 | One phrase, never transformed; each round another voice has it |
+| **Great Work** | the alchemists' four colours | 9 | Heard broken down first; as written only third; then exalted |
+| **Conjuration** | the Goetia | 9 | Three calls, each a step higher; the answer; the charge; the licence to depart, retraced |
+| **Eight Rays** | Carroll, *Liber Kaos* | 9 | The eight forms a melody has, each once: variations |
+| **Servitor** | chaos magick's servitors (Hine) | 10 | A rondo: the name returns as written, each time with more voices |
+| **Gnostic Pentagram** | Carroll, *Liber Kaos* | 12 | A palindrome: down a step at a time, the pentagrams, back up retraced |
+| **Mass** | Crowley, *Liber XV* | 16 | The long ceremony, with a litany of versicle and response |
+| **Abramelin** | *The Sacred Magic of Abramelin* | 17 | A long plateau of prayer, a vigil, one apex, a dark binding |
+| **Bornless One** | the Bornless Ritual (PGM V; *Liber Samekh*) | 19 | Verse and refrain: five invocations, each answered by the same charge |
+
+A phrase is four bars (the sigil traced once), so these run from under a minute to
+about four at the sigil's own tempo (slower or faster as the mood and style have it).
+Nothing here claims to *be* the rite it is named for; each rite's tab says where its
+form is from.
+
+What keeps any rite one piece of music with any mood and style:
+
+- **Every section stands for one of the Sevenfold's seven** (its *role*: an opening, a
+  plain statement, a lift, a turn, the dark half-time one, the crown, a close). Moods
+  and styles already know what to make of those seven, and dress a rite's sections by
+  role, so a Lullaby is hushed in every rite, an Ambient rite drumless, and in EDM
+  Apophis is the breakdown and Osiris the drop.
+- **A rite only ever takes away.** After the mood and the style have spoken, a rite may
+  cap a level or silence a voice where its shape needs it (Vacuity stays empty in any
+  mood; the Seven Gates never rise; the Cone never falls). It never adds above what the
+  mood allowed.
+- **Harmony and cadence are the composer's.** Each phrase is harmonised as it always
+  was; a section may leave its last phrase open for the next to answer, and every rite
+  ends on the tonic.
+- **Two endings.** Most rites close as the Sevenfold does, bells over a held chord. A
+  rite that ends at its height is *struck*: the whole band on the last bar-line (sized
+  by the level the mood left, so a hushed mood ends on a soft foot), then its ring.
+
+Choose **By the sigil** and the sigil draws its own rite from its own streams; the link
+then names the rite it drew.
 
 **Harmony** is chosen *after* the melody, because the melody is the sigil and is
 sacred. One chord per bar, via a Viterbi search over diatonic major/minor triads with
@@ -179,10 +237,10 @@ what you render is what you heard; stems take the plan's trims and caps and leav
 the chain, so that side by side they are the mix that entered it. Switched off, the mix
 leaves exactly as it did before any of this existed.
 
-**Mood × Style × Element.** The sigil writes a melody, its chords and a form. Three
-choices then decide how that is *performed*. Each owns a different part of the answer,
-which is why any three can be combined and still make one piece of music
-(`05f-style.js`, M6, M21):
+**Mood × Style × Element.** The sigil writes a melody and its chords; the rite (above)
+is the form they take. Three more choices then decide how that is *performed*. Each
+owns a different part of the answer, which is why any three can be combined, in any
+rite, and still make one piece of music (`05f-style.js`, M6, M21):
 
 | | Decides | Never touches |
 |---|---|---|
@@ -218,8 +276,9 @@ The rules that keep every combination coherent:
   shuffle swings the lead, the bass, the kit and the drawing together.
 
 With None and Aether chosen, none of this runs and the song is, event for event, what it
-was. **Cast lots** (`Y`) draws a mood, a style and an element at random; the link then
-says which: `#KRSTVM~dirge.trap.water`.
+was. **Cast lots** (`Y`) draws a mood, a style and an element at random (it leaves the
+rite alone; with Shift held it draws a rite as well); the link then says which: `#KRSTVM~dirge.trap.water`, or with a rite,
+`#KRSTVM~dirge.trap.water.gates`.
 
 ---
 
@@ -228,6 +287,7 @@ says which: `#KRSTVM~dirge.trap.water`.
 ### Core
 - Deterministic sigil + song from any text (SHA-256 avalanche: one letter changes everything)
 - Live Web Audio synthesis — **no samples**; three lead timbres (glass FM bell, reed, plucked koto), choir, pad, saturated bass, arpeggio, drone, synthesised drum kit, generated convolution reverb, tempo-synced dotted-eighth delay
+- **Nineteen rites**: the Sevenfold and eighteen other forms, from four phrases to nineteen, each taken from a ritual formula (Spare's sigil working, the pentagram ritual, I·A·O, the Goetia's conjurations, the seven gates…) and each built from the sigil's own symmetries
 - **Mastered output**: every rite is listened to, then levelled, de-noised, toned and set to a loudness target under a true-peak ceiling, identically on the stage and in a render
 - Canvas 2D renderer with additive "ember ink", motes, particle sparks, ghost transforms, Euclidean rhythm polygons
 - Charge (fullscreen) mode with breath guide · Forget (banishing) with burn animation
@@ -240,7 +300,7 @@ says which: `#KRSTVM~dirge.trap.water`.
 | **M1 Score · MIDI** | Multitrack GM Standard MIDI File (format 1, 480 PPQ) with tempo/key/time signature, section markers, chord text, letters as lyrics; plus a plain-text chord chart |
 | **M2 Mixer & Tempo** | Per-bus faders, mute/solo, mix scenes, master + reverb send, 40–240 bpm with position-preserving tempo change, tap tempo, tempo lock (lengthens the form above 132 bpm) |
 | **M3 Grimoire** | Local gallery of cast sigils (consonants only), generated thumbnails, replay, optional fade-after-N-days, JSON import/export |
-| **M4 Form & Loop** | Section jump list, gapless section looping, keyboard navigation, loop band on the progress bar |
+| **M4 Form & Loop** | Section jump list (of whichever rite is being performed, and where that rite is from), gapless section looping, keyboard navigation, loop band on the progress bar |
 | **M5 Access** | Reduced motion, high contrast (wins over all palettes), larger text, screen-reader section announcements, `describe()` of the current sigil, progress bar as an ARIA slider |
 | **M6 Moods** | Twenty-eight arrangement presets (Ritual, Ambient, Pulse, Lullaby, Dirge, Ecstatic … Triumph, Reverie, Wrath, Longing, Mischief, Hymn, Dread, Storm), applied as `compose`/`plan` filters; re-composes live and resumes at the current section |
 | **M7 Render & Export** | Offline faster-than-realtime render, **parallelised across CPU cores** with section-aligned cuts and crossfades, → WAV 16/24, MP3 (worker LAME), AAC (ADTS) and Opus (hand-written Ogg muxer) via WebCodecs. Every mover moves as it does on the stage; over more than one pass the rite evolves, by the Evolution set in Motion. The file leaves through the same master as the stage, by the same plan, and the status line says what it measures (LUFS, true peak, range) |
@@ -248,7 +308,8 @@ says which: `#KRSTVM~dirge.trap.water`.
 | **M9 Live Lens** | Drag the wheel to transpose, double-tap to mirror — in real time, affecting melody, harmony, bass and arpeggios, and propagating to MIDI/audio export |
 | **M10 Hours & Moon** | Planetary hours (true sunrise equation if you share location), moon phase, optional attunement of mode/timbre/tempo/palette to the hour, and timed charging sessions |
 | **M19 Motion** | The movers, shown and steered. A row per mover (its letter, what it moves and how, a live meter, a switch to hold it still); `◀ motion ▶` for another deal; **Motion** 0–200 % and **Evolution** 0–100 %, which governs the live loop and the passes of a render alike. In Sound & Patch each moved knob wears its letter, a band for the span it travels and a bead that travels it; on the wheel a ray grows at each moving letter |
-| **M21 Style & Element** | Nineteen styles and four elements laid over the mood (see *Mood × Style × Element* above), in one chooser on the invocation screen and in Tools: three tabs, a line saying what the combination is, and **Cast lots** for a random three. The working travels in the link and the Grimoire as one word (`mood.style.element`); an element also recolours the wheel |
+| **M22 Rites** | Eighteen rites beside the Sevenfold (see *Rites* above): a **Rite** tab in the chooser, with where each form is from and how long it is; **By the sigil** lets the sigil draw its own. The rite travels in the link and the Grimoire as the fourth word of the working; the Form panel and the screen-reader description name it. Changing the rite during a performance begins it again (the form is what changed) |
+| **M21 Style & Element** | Nineteen styles and four elements laid over the mood (see *Mood × Style × Element* above), in one chooser on the invocation screen and in Tools: three tabs (M22 adds a fourth, the Rite), a line saying what the combination is, and **Cast lots** for a random three (with Shift held, a rite as well). The working travels in the link and the Grimoire as one word (`mood.style.element`, and `.rite` if it is not the Sevenfold); an element also recolours the wheel |
 | **M20 Master** | The rite is listened to, then finished (see *Mastering* above). **Loudness** (−16 / −14 / −12 / −10 LUFS), **Balance** (how far the parts are drawn to the house balance), **Noise** (how much of the crusher's grain is let through: cleaner ↔ rawer ↔ exactly as composed), **Dynamics** (how far the quiet sections sit under the loud), `◀ finish ▶` for another deal of the chain's character and **Character** for how strongly it colours. Live meters (loudness now and so far, true peak against the ceiling, gain held back) and a plain account of what the plan did: each part's trim, each section's ride and grain, the EQ. One switch turns it all off, for comparing |
 | **M15 Drum Engine** | How the kit plays: Sigil or Classic patterns, a hundred grooves per sigil (`◀ groove ▶`; the number travels in the share link), Variation / Fills / Ghosts / Humanise / Dynamics, sidechain ducking, and a bypass for the kit's own FX chain. The chain itself (drive → punch/body transient shaper → crusher → filter, with parallel compression, a room and a tempo-synced ping-pong echo beside the dry hit) runs in the DSP worklet; its `D·` knobs are in Sound & Patch, dealt per sigil and saved with the patch |
 
@@ -273,7 +334,7 @@ Press **?** for the in-app sheet.
 | `M` | Lens: mirror |
 | `0` | Lens: reset |
 | `,` `.` | Previous / next groove |
-| `Y` | Cast lots: a random mood, style and element |
+| `Y` | Cast lots: a random mood, style and element (`Shift`+`Y`: a rite as well) |
 
 ---
 
@@ -281,9 +342,10 @@ Press **?** for the in-app sheet.
 
 - Nothing is transmitted. No analytics, no fonts, no CDN at runtime (the MP3 encoder
   falls back to a CDN **only** if you do not vendor `lame.min.js`).
-- The URL fragment contains the reduced consonants and, optionally, what the rite is
-  dressed in (a mood, a style, an element): `#KRSTVM+MNLP~ambient`,
-  `#KRSTVM~dirge.trap.water`. That is the *sigil*, not the desire behind it.
+- The URL fragment contains the reduced consonants and, optionally, the working: what
+  the rite is dressed in (a mood, a style, an element) and which rite it is:
+  `#KRSTVM+MNLP~ambient`, `#KRSTVM~dirge.trap.water`, `#KRSTVM~ritual.none.aether.iao`.
+  That is the *sigil*, not the desire behind it.
 - The Grimoire stores consonant keys only, in `localStorage`, under the `sigil.*`
   namespace. **Forget** deletes the entry.
 
@@ -311,6 +373,7 @@ index.html
 | `05c-groove.js` | §5c | `Groove`: the drum part written from the sigil (polygons under each section's transform, letter accents, fills). Pure; `apply` / `restore` rewrite a song's kit in place |
 | `05d-motion.js` | §5d | `Motion`: which letter moves which parameter (`deal`), the nine gestures, and the baked table of curves the core and the interface both read (`bake`). Pure |
 | `05f-style.js` | §5f | `Style`: the nineteen idioms and four elements, and the rules by which they are laid over a mood: `compose` (tempo, swing, voicing, sound signature, faders, master hints), `plan` (the contour, inside the mood's range), the kit writer (through `Groove`'s `feel`), `parts` (bass, chords, arpeggio, phrasing, and the swing over everyone), `pitch` (so the Live Lens can turn what a style wrote). Pure |
+| `05g-rite.js` | §5g | `Rite`: the rites other than the Sevenfold (their sections, by role; where each is from), `open` (a rite's plan, before the moods, each section answering to its role's name) and `seal` (after the styles: the rite's holds, its length, each section's own id back), `own` (the rite a sigil draws for itself), `measure`. Pure |
 | `05e-master.js` | §5e | `Mastering`: the master plan. `character` (the letters' finish), `solveA` / `solveB` (from the Probe's measurements to trims, caps, rides, EQ and gains), loudness arithmetic (`lufs`, `range`, `measure`), and the job plumbing the listening needs. Pure; loaded after the DSP core, whose tables it reads |
 | `06-engine.js` | §6 | `Engine`: buses, FX, voices, lookahead scheduler, transport, ritual sounds |
 | `07-renderer.js` | §7 | `Renderer`: frame composition, wheel, rhythm polygons, pen, particles, burn |
@@ -345,7 +408,7 @@ Listeners run in ascending priority and are individually try/caught.
 |---|---|---|
 | `buildSigil` | `null` → sigil | Return a sigil object to take over construction (M8) |
 | `compose` | config object | **Do not draw from the composer's `R`.** Use `stream(sigil.hash, 'your:label')` |
-| `plan` | array of sections | Mutate in place or return a new array |
+| `plan` | array of sections | Mutate in place or return a new array. Priorities: −30 a rite lays out its sections (M22) · 0 moods · +20 styles · +50 the mixer's long form · +60 the rite is sealed. Between −30 and +60 a section's `id` is its **role** (`intro`, `verse1`, `chorus1`, `verse2`, `bridge`, `chorus2`, `outro`), whatever the rite: dress by that name and you dress every rite. In the finished song `id` is the section's own and the role is `role` |
 | `score` | array of events | The whole score, before it is sorted and indexed; second argument `{sigil, cfg, sections, phrases, total}`. Return a replacement array (M15 rewrites the kit's part here). **Do not draw from `R`** |
 | `palette` | `{name,bg,line,accent}` | Contrast runs at priority 100 and wins |
 | `meta` | `string[]` | HUD meta line parts |
@@ -479,14 +542,29 @@ This is the most important rule in the project.
    None and Aether the layer does not run at all. The one thing that is NOT the sigil's
    is the lots, which only choose; the link records what was chosen.
 
+9. And rites. A rite draws nothing: its form is a table, dressed by the same filters as
+   the Sevenfold. The composer's `R` is drawn from once per phrase and per bar as ever,
+   so a rite's score is its own deterministic sequence, and **the Sevenfold's is
+   untouched**: for it `Rite.open` returns nothing, the composer's own plan goes through,
+   and none of the three things a rite may ask of the composer (an open cadence, a
+   voice that is traced but not sung, a struck ending) is ever asked. The one draw is
+   `Rite.own`: every rite draws a number against the sigil (`stream(hash, 'rite:<id>')`)
+   and the highest takes it, so a rite added later changes the answer only for the sigils
+   it wins. A link names the rite itself all the same, which is why **a rite's id is for
+   ever**: add rites, never rename or remove one.
+
 `npm run golden` pins all of the above. `npm run drums`, `npm run motion`,
-`npm run style` and `npm run master` check the invariants, and that with the kit's FX bypassed, Motion and
+`npm run style`, `npm run rite` and `npm run master` check the invariants, and that with the kit's FX bypassed, Motion and
 Evolution at zero and no master plan the engine is, to the sample, the engine before
 any of this existed. `npm run master` also holds the meter to BS.1770 reference tones,
 the limiter to its ceiling, and a finished render to the loudness it was asked for.
 `npm run style` composes every mood × style and style × element, checks that each idiom
 is what it says (the strokes that make a style that style are where they should be) and
-that the mood's contour survives every style.
+that the mood's contour survives every style. `npm run rite` composes every rite × mood
+and rite × style, checks that each rite is the shape it says, that what is sung in every
+section is the sigil's path under that section's transform, that the mood's word holds
+in every rite, and that with the Sevenfold chosen the song is, event for event, the song
+before rites existed.
 
 ---
 

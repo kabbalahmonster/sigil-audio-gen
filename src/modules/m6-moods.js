@@ -6,6 +6,14 @@
    untouched, which is why UI.recompose() can swap moods mid-performance and
    resume at the same section.
 
+   A plan filter here is given the sections of whichever RITE is being
+   performed (05g, m22), not always the Sevenfold's seven. Every section of
+   every rite answers, while it is being dressed, to the name of the Sevenfold
+   section whose part it plays: `s.id` is 'intro', 'verse1', 'chorus1',
+   'verse2', 'bridge', 'chorus2' or 'outro', and may occur more than once or
+   not at all. So write a mood per section and by name, as the ones below are,
+   and it dresses every rite; never count on seven, or on an order.
+
    Presets that need randomness draw from stream(hash, 'mood:<id>'), never from
    the composer's R, so they cannot disturb the melody or the rhythm jitter.
 

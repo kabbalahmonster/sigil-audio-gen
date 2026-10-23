@@ -968,6 +968,9 @@ const Style = (() => {
    * in a style that is not fast, it is let go.
    */
   function plan(sections, cfg) {
+    // `sections` are those of whichever rite is performed (05g), each answering to its role's name
+    // (`id`), with the roles the rite does not use standing by as shadows: so the range read here
+    // is the mood's over all seven roles, whatever the rite's own form.
     const st = styleOf(cfg.style);
     if (!st) return sections;
     const body = sections.filter((s) => s.id !== 'intro' && s.id !== 'outro');
@@ -975,8 +978,9 @@ const Style = (() => {
     const hi = Math.max(...all), floor = Math.min(...all);
     const hadArp = sections.some((s) => s.arp), droneAll = sections.every((s) => s.drone);
     // Half-time in more than the Reversal is the mood's doing, and is kept, unless it was only there for speed.
+    // (Counted by name: in a rite of another form, 05g, several sections may all be "the Reversal".)
     const forSpeed = cfg.moodHalf === 'speed' && cfg.bpm * (cfg.felt || 1) < 126;
-    const moodHalf = body.filter((s) => s.halfTime).length > 1 && !forSpeed;
+    const moodHalf = new Set(body.filter((s) => s.halfTime).map((s) => s.id)).size > 1 && !forSpeed;
     for (const s of sections) {
       const want = st.form && st.form[s.id];
       const edge = s.id === 'intro' || s.id === 'outro';
@@ -1135,7 +1139,7 @@ const Style = (() => {
             if (kind === 'rise' && sectionEnd) {
               for (let j = 0; j < 4; j++) put(12 + j, 'snare', (0.3 + 0.15 * j) * (F.soft || 1));
               if (width >= 8 && I >= 2 && !F.soft) for (let s = from; s < 16; s += 4) put(s, 'kick', 0.7);
-              if (next && next.intensity >= 3) ev.push({ beat: t0, type: 'swell', dur: 4, vel: 0.8 });
+              if ((next && next.intensity >= 3) || G.struck(sec)) ev.push({ beat: t0, type: 'swell', dur: 4, vel: 0.8 });
             } else if (sectionEnd && kind !== 'dissolve' && last && (last.type === 'hat' || last.type === 'shaker' || last.type === 'ride') && !F.soft) {
               put(last.s, I === 1 ? 'rim' : 'snare', I === 1 ? 0.4 : 0.7);     // arrive on something with a body
             } else if (kind === 'dissolve' && sectionEnd) {
@@ -1162,6 +1166,11 @@ const Style = (() => {
           if (h.fill) e.fill = true;
           ev.push(e);
         }
+      }
+      // A rite that ends at its height (05g) is struck, in this idiom's own weight: its kick, and its crash if it has one.
+      for (const e of lastStroke(sec, sec.start + bars * 4)) {
+        if (e.type === 'crash') { if (crashVel > 0) ev.push({ ...e, vel: Math.min(1, e.vel * (crashVel / 0.7)) }); }
+        else ev.push({ ...e, vel: e.vel * (F.soft || 1) });
       }
     });
 
@@ -1193,7 +1202,7 @@ const Style = (() => {
 
     /* what stays, re-phrased */
     for (const e of events) {
-      if (e.type === 'bass' && st.bass) continue;
+      if (e.type === 'bass' && st.bass && !e.last) continue;        // (the last note of a rite that ends struck is kept: 05 §5.6)
       if (e.type === 'arp' && reArp) continue;
       if (e.type === 'pad') {
         const p = st.pad || {};

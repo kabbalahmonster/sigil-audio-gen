@@ -264,11 +264,14 @@ const UI = (() => {
      Rebuild the current song in place (after a mood or attunement change),
      resuming at the section you were in. The SIGIL, melody and form are
      unchanged; only the arrangement differs.
+     `top: true` begins again from the first section instead: for a change of
+     the form itself (another rite, M22), where "the section you were in" no
+     longer means anything.
      ─────────────────────────────────────────────────────────────────────── */
-  function recompose() {
+  function recompose(opts) {
     if (app.mode !== 'playing' || !app.sigil || app.busy) return;
 
-    const si = renderer.info ? renderer.info.si : 0;
+    const si = opts && opts.top === true ? 0 : renderer.info ? renderer.info.si : 0;
     const pass = app.engine.passNow ? app.engine.passNow() : 0;   // the rite keeps its place in its own evolution
     const song = composeSong(app.sigil);
 
@@ -277,6 +280,8 @@ const UI = (() => {
     app.engine.load(song);
     app.engine.start(0.1, pass);
     app.engine.seek(song.sections[Math.min(si, song.sections.length - 1)].start);
+    // What the renderer last published is about the old form; nobody should read a section index from it.
+    if (opts && opts.top === true) renderer.info = null;
 
     applyPalette(app.sigil.palette);
     buildHUD();

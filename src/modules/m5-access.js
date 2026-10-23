@@ -64,8 +64,10 @@ const Access = (() => {
     if (sigil.partners && sigil.partners.length) {
       parts.push(`Joined by ${sigil.partners.map((p) => [...p.reduced].join(' ')).join(', and ')}.`);
     }
+    const rite = typeof Rite !== 'undefined' && song.cfg ? Rite.RITES[song.cfg.rite || Rite.DEFAULT] : null;
+    if (rite) parts.push(`The rite is ${rite.label}, in ${song.sections.length} sections.`);
     const si = renderer.info ? renderer.info.si : null;
-    if (si != null && app.mode === 'playing') {
+    if (si != null && app.mode === 'playing' && song.sections[si]) {
       const s = song.sections[si];
       parts.push(`Now in section ${s.roman}, ${s.name}: ${s.desc}.`);
     }

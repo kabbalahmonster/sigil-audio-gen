@@ -57,6 +57,7 @@ const Form = (() => {
     .f-row.cur .f-name{color:rgb(var(--accent))}
     .f-roman{font-size:11px;letter-spacing:.2em;opacity:.6}.f-name{font-style:italic;font-size:15px}
     .f-len{font-size:11px;opacity:.45;margin-left:6px;font-style:normal}
+    .f-rite{font-size:11.5px;opacity:.55;padding:2px 0 8px;line-height:1.45}.f-rite b{font-weight:normal;font-style:italic;font-size:15px;opacity:1;margin-right:.6em}
     #progress .loopband{position:absolute;top:3px;height:9px;background:rgba(var(--accent),.16);border-left:1px solid rgba(var(--accent),.7);border-right:1px solid rgba(var(--accent),.7);pointer-events:none;display:none}
     #loopBadge{margin-left:.8em;letter-spacing:.1em}`);
 
@@ -72,6 +73,10 @@ const Form = (() => {
     if (!list) return;
     list.innerHTML = '';
     if (!app.song) { list.append(UI.note('Cast a sigil to see its form.')); return; }
+
+    // Which rite this form is, and where it is from (05g). The Sevenfold is the composer's own.
+    const rite = typeof Rite !== 'undefined' ? Rite.RITES[app.song.cfg.rite || Rite.DEFAULT] : null;
+    if (rite) list.append(h('div', { class: 'f-rite' }, h('b', {}, rite.label), rite.from));
 
     app.song.sections.forEach((s, i) => {
       list.append(h('div', { class: 'f-row', 'data-si': i },

@@ -29,9 +29,13 @@
      something this file knows, not something it assumes.
 
    A RENDER IS FINISHED BY THE SAME PLAN. m7 asks prepare(job): if the job is the one on
-   the stage its plan is already here; if not (another tempo, the lens off, an evolved
-   pass) it is listened to first. Stems are given the plan's trims and caps and leave
-   before the chain, so that laid side by side they are the mix that entered it.
+   the stage its plan is already here; if not (another tempo, the lens off) it is listened
+   to first. The parts (pass A) are heard once, in one pass; the mix (pass B) is heard through
+   the passes of the render (the first four: a rite's evolution has settled by then), so the
+   loudness it lands on is the file's and the peak its stems must fit under is the highest heard. A render may ask for its own loudness
+   and ceiling (prepare's `opts`): the rest of the plan is the sound, and is shared. Stems are
+   given the plan's trims and caps and leave before the chain, so that laid side by side they
+   are the mix that entered it.
 
    THE LISTENER'S SETTINGS (Prefs 'master': they are this listener's, like the drummer's
    amounts): on · loudness · balance · noise · dynamics. THE FINISH (which deal of the
@@ -44,6 +48,7 @@ const Master = (() => {
   const { h } = UI;
   const M = Mastering, hasSound = typeof Sound !== 'undefined';
   const WORKER = 'src/dsp/sigil-render.worker.js';
+  const LISTEN_PASSES = 4;   // how many passes of a render the mix is listened to through
 
   const S = { ...M.DEFAULTS, ...Prefs.get('master', {}) };
   const save = () => Prefs.set('master', S);
@@ -136,6 +141,12 @@ const Master = (() => {
   async function planFor(job, levels, o, ctl = {}) {
     const key = M.keyOf(job, levels), ref = M.probeJob(job, levels);
     ctl.key = key;
+    // A render of several passes has pass B heard through them (a file is measured whole); pass A is the parts, of one.
+    // Through the first four: by then a rite's evolution has settled (DSP autoTrend: 0 · .58 · .82 · .93 · .97), and the file
+    // itself is measured again once it is rendered, so a long render is not listened to for as long as it is rendered.
+    const passes = Math.min(LISTEN_PASSES, Math.max(1, job.passes | 0));
+    const gone = () => { if (ctl.aborted) throw new Error('cancelled'); };
+    gone();
     let A = heardA.get(key);
     if (!A) {
       ctl.phase = 'parts';
@@ -146,12 +157,13 @@ const Master = (() => {
     // the limiter must be heard working as hard as it will).
     let at = M.interim(M.solveA(A, ref, o)), plan = null;
     for (let turn = 0; turn < 2; turn++) {
-      const kb = `${key}:${M.keyOfPlan(at)}`;
+      const kb = `${key}:${passes}:${M.keyOfPlan(at)}`;
       let B = heardB.get(kb);
       if (!B) {
+        gone();
         if (ctl.onInterim) ctl.onInterim(at);
         ctl.phase = 'mix';
-        B = await hear(kb, M.probeJob(job, levels, M.table(at)), 2, ctl);
+        B = await hear(kb, M.probeJob(job, levels, M.table(at), passes), 2, ctl);
         heardB.set(kb, B);
       }
       plan = M.solveB(B, at);
@@ -247,15 +259,21 @@ const Master = (() => {
   }
 
   /**
-   * The plan's table for a render job (m7, m14), listening first if this job has not been heard.
+   * The plan's table for a render job (m7), listening first if this job has not been heard.
    * Resolves null when the master is off: the job then leaves as the engine always left it.
-   * o: { stem (parts of one mix: trims and caps, no chain), onProgress(0…1) }
+   * o: { stem      parts of one mix: trims and caps, no chain. `true`, or { lift, room }: see Mastering.table
+   *      on        master this render or not (default: the panel's switch)
+   *      opts      what this render asks of the chain instead of the panel: { target, ceiling }
+   *      ctl       an object to be handed the means of leaving: set `ctl.aborted` and call `ctl.cancel()`
+   *      onProgress(0…1) }
+   * The balance, noise, dynamics and the finish are the panel's and the patch's: they are the sound, not the delivery.
    */
   async function prepare(job, song, o = {}) {
-    if (!S.on) return null;
-    const ctl = { phase: '', onProgress: (f) => { if (o.onProgress) o.onProgress(ctl.phase === 'mix' ? 0.5 + f * 0.5 : f * 0.5); } };
-    const plan = await planFor(job, M.referenceLevels(song), opts(), ctl);
-    return { table: M.table(plan, !!o.stem), plan };
+    if (o.on === undefined ? !S.on : !o.on) return null;
+    const ctl = o.ctl || {};
+    ctl.phase = ''; ctl.onProgress = (f) => { if (o.onProgress) o.onProgress(ctl.phase === 'mix' ? 0.5 + f * 0.5 : f * 0.5); };
+    const plan = await planFor(job, M.referenceLevels(song), M.options(Object.assign({}, S, o.opts)), ctl);
+    return { table: M.table(plan, o.stem), plan };
   }
 
   /* ── Meters: what leaves the chain, as a loudness meter would show it ── */
@@ -464,7 +482,7 @@ const Master = (() => {
       onChange: (v) => { S.on = v; save(); sync('now'); UI.announce(v ? 'Master on.' : 'Master off.'); } });
     targetRow = UI.select({ label: 'Loudness', value: S.target,
       options: M.TARGETS.map(([v, name]) => [String(v), `${name} · ${String(v).replace('-', '−')} LUFS`]),
-      title: 'Where the finished rite lands. Streaming services play everything at about −14; louder costs dynamics',
+      title: 'Where the finished rite lands on the stage. Streaming services play everything at about −14; louder costs dynamics. A render has its own (Render & Export)',
       onChange: (v) => setting('target', +v) });
     levelRow = UI.slider({ label: 'Balance', min: 0, max: 1, step: 0.01, value: S.level, format: pct,
       title: 'How far each part is drawn toward the house balance. At zero the parts stay exactly where the sigil put them',

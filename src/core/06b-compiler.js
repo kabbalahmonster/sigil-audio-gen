@@ -360,13 +360,19 @@ const SigilPlan = (() => {
   /** What is sent: the numbers only. (Not transferred: the page keeps reading the same arrays.) */
   const autoMsg = (a) => (a ? { n: a.n, step: a.step, len: a.len, lanes: a.lanes, curves: a.curves } : null);
 
-  /** Compile a song. opts: { spec, lens, events:false (sections only), drums (settings override) } */
+  /**
+   * The body the passes go round (05i Flow): { lo, hi } in beats, or null (every pass the whole rite). Only where asked for:
+   * `flow` true, or, by default, where the listener has it on and the module is here (tests and the bench are not).
+   */
+  const loopOf = (song, flow) => ((flow ?? (typeof Flow !== 'undefined' && Flow.enabled())) && typeof Flow !== 'undefined' ? Flow.loop(song) : null);
+
+  /** Compile a song. opts: { spec, lens, events:false (sections only), drums (settings override), flow (the passes go round the body) } */
   function compile(song, sigil, opts = {}) {
     const spec = opts.spec || soundSpec(sigil, song);
     const Ps = patches(song, spec), DS = drumSettings(opts.drums);
     const p = { spec, Ps, sections: sectionsTable(song, sigil, spec, Ps, DS), nSec: Ps.length, total: song.total,
       auto: motionTable(song, sigil, spec, DS),
-      motion: clamp(num(spec.P.motion, 1), 0, 2), evolve: clamp(num(spec.P.evolve, 0.5), 0, 1) };
+      motion: clamp(num(spec.P.motion, 1), 0, 2), evolve: clamp(num(spec.P.evolve, 0.5), 0, 1), loop: loopOf(song, opts.flow) };
     if (opts.events !== false) {
       const lens = opts.lens ?? (typeof LiveLens !== 'undefined' && LiveLens.active());
       Object.assign(p, compileEvents(song, sigil, spec, Ps, lens, DS));
@@ -460,7 +466,7 @@ const SigilPlan = (() => {
     eng.auto = null;                                  // a new song: its table is always sent
     motionSync(eng, p);
     eng.post({ type: 'plan', events: p.events, count: p.count, sections: p.sections, nSec: p.nSec,
-      total: p.total, bpm: 60 / eng.spb, passes: 0, keep: false, auto: autoMsg(p.auto) }, [p.events.buffer, p.sections.buffer]);
+      total: p.total, bpm: 60 / eng.spb, passes: 0, keep: false, auto: autoMsg(p.auto), loop: p.loop }, [p.events.buffer, p.sections.buffer]);
     eng.setParams({ waveOff: waveOffset(), motion: p.motion, evolve: p.evolve });
     sendTables(eng, p.spec, p.Ps);
     sendReverb(eng, sigil);
@@ -471,7 +477,7 @@ const SigilPlan = (() => {
   function replan(eng) {
     if (!eng || !eng.song || !hasApp() || !app.sigil) return;
     const p = compile(eng.song, app.sigil), msg = { type: 'plan', events: p.events, count: p.count, sections: p.sections,
-      nSec: p.nSec, total: p.total, keep: true };
+      nSec: p.nSec, total: p.total, keep: true, loop: p.loop };
     if (motionSync(eng, p)) msg.auto = autoMsg(p.auto);
     eng.post(msg, [p.events.buffer, p.sections.buffer]);
     sendTables(eng, p.spec, p.Ps);
@@ -502,7 +508,7 @@ const SigilPlan = (() => {
     return row({ kind: 'LEAD', bus: 'fx', f: mtof(midi), dur: 0, vel, aux: deg, p: [TIMBRE[timbre] ?? 0, -1, CONS.nasal, 1] });
   }
 
-  /* ── Offline jobs (m7 Render, m14 Stems/Evolve, tests/dsp-bench) ───── */
+  /* ── Offline jobs (m7 Render & Export, tests/dsp-bench) ───── */
   function currentLevels(song) {
     if (hasApp() && app.engine && app.engine.song === song && app.engine.levels) return Object.assign({}, app.engine.levels);
     const out = {};
@@ -523,21 +529,24 @@ const SigilPlan = (() => {
   }
   /**
    * Everything a worker needs to render: plain data only, structured-clone friendly.
-   * o: { sr, spb, passes, lens, spec, drums, levels, pass0, master (a plan's table, Mastering.table) }
+   * o: { sr, spb, passes, lens, spec, drums, levels, pass0, flow, master (a plan's table, Mastering.table),
+   *      holdK (the crushers' hold, in samples, is for 44.1 kHz: a render at another rate is given rate/44100, so a
+   *      hold lasts as long in time) }
    */
   function renderJob(song, sigil, o) {
-    const p = compile(song, sigil, { lens: !!o.lens, spec: o.spec, drums: o.drums });
+    const p = compile(song, sigil, { lens: !!o.lens, spec: o.spec, drums: o.drums, flow: o.flow });
     const eng = hasApp() ? app.engine : null;
     return {
       sr: o.sr, bpm: 60 / o.spb, passes: Math.max(1, o.passes | 0), voices: 80,
-      events: p.events, count: p.count, sections: p.sections, nSec: p.nSec, total: p.total,
+      events: p.events, count: p.count, sections: p.sections, nSec: p.nSec, total: p.total, loop: p.loop,
       spectra: spectra(p.spec.cube), tilt: num(p.spec.P.tilt, 0), density: num(p.spec.P.density, 1),
       reverb: reverbSpec(sigil, p.spec, hallOf(song)), levels: o.levels || currentLevels(song),
       // The live engine's own lane table and amounts: a render, whole or stem, moves as the stage does.
-      // pass0 starts the evolution further on (m14 renders its passes one at a time).
+      // pass0 starts the evolution further on (a render begins at pass 0, the rite as written).
       auto: autoMsg(p.auto),
       params: { reverb: eng && eng.params && eng.song === song ? eng.params.reverb : 0.85 * spaceOf(song), waveOff: waveOffset(),
-        motion: p.motion, evolve: p.evolve, pass0: Math.max(0, o.pass0 | 0) },
+        motion: p.motion, evolve: p.evolve, pass0: Math.max(0, o.pass0 | 0),
+        holdK: o.holdK > 0 ? o.holdK : 1 },
       // How the song asks to be finished, and (if the caller has one) the plan that finishes it.
       mix: mixInfo(song, sigil, p.spec), master: o.master || null,
     };

@@ -15,6 +15,10 @@
     "style": "node tests/style.spec.mjs",
     "style:quick": "node tests/style.spec.mjs --quick",
     "rite": "node tests/rite.spec.mjs",
-    "rite:quick": "node tests/rite.spec.mjs --quick"
+    "rite:quick": "node tests/rite.spec.mjs --quick",
+    "flow": "node tests/flow.spec.mjs",
+    "flow:quick": "node tests/flow.spec.mjs --quick",
+    "deliver": "node tests/deliver.spec.mjs",
+    "deliver:quick": "node tests/deliver.spec.mjs --quick"
   }
 }

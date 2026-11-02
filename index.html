@@ -171,6 +171,8 @@
     <script src="src/core/05e-master.js" onerror="SIGIL_FAIL(this)"></script>      <!-- reads SigilDSP's tables -->
     <script src="src/core/05f-style.js"  onerror="SIGIL_FAIL(this)"></script>      <!-- styles and elements; needs 05c -->
     <script src="src/core/05g-rite.js"   onerror="SIGIL_FAIL(this)"></script>      <!-- the rites (forms); needs 05's makePlan -->
+    <script src="src/core/05i-flow.js"   onerror="SIGIL_FAIL(this)"></script>      <!-- the passes of a rite go round its body, not the whole -->
+    <script src="src/core/05h-deliver.js" onerror="SIGIL_FAIL(this)"></script>     <!-- delivery: the end of a render, its loudness, its bits; needs 05e -->
     
     <!-- Core: runtime layer -->
     <script src="src/core/06-engine.js"   onerror="SIGIL_FAIL(this)"></script>
@@ -179,12 +181,13 @@
 
     <script src="src/core/07-renderer.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/core/08-app.js"      onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/export/codecs.js"    onerror="SIGIL_FAIL(this)"></script>     <!-- WAV, FLAC, MP3, AAC (M4A), Opus, ZIP: the bytes of a file -->
     
     <!-- Shared module infrastructure -->
     <script src="src/ui/ui-kit.js" onerror="SIGIL_FAIL(this)"></script>
     
-    <!-- Optional offline MP3 encoder. M7 fetches this file; if it is absent, M7
-         falls back to a CDN. Vendor it to work offline. -->
+    <!-- Optional offline MP3 encoder. The codecs fetch this file; if it is absent, they
+         fall back to a CDN. Vendor it to work offline. -->
     <script type="text/plain" id="lamejs-src"></script>
     
     <!-- Feature modules -->
@@ -201,7 +204,6 @@
     <script src="src/modules/m11-voices.js"        onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m12-sound-ui.js"      onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m13-sound-visuals.js" onerror="SIGIL_FAIL(this)"></script>
-    <script src="src/modules/m14-render-plus.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m15-drum-engine.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m16-audio-guard.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m17-profiler.js" onerror="SIGIL_FAIL(this)"></script>
@@ -235,11 +237,14 @@
         ['src/core/05e-master.js',   ['Mastering']],
         ['src/core/05f-style.js',    ['Style']],
         ['src/core/05g-rite.js',     ['Rite']],
+        ['src/core/05i-flow.js',     ['Flow']],
+        ['src/core/05h-deliver.js',  ['Deliver']],
         ['src/core/06-engine.js',    ['Engine', 'TransportClock']],
         ['src/core/06b-compiler.js', ['SigilPlan']],
         ['src/core/06c-stage.js',    ['Stage']],
         ['src/core/07-renderer.js',  ['Renderer']],
         ['src/core/08-app.js',       ['app', 'renderer', 'hud', 'TIMBRE_NAMES', 'cast', 'forget', 'newDesire', 'toast', 'SigilCore']],
+        ['src/export/codecs.js',     ['Codecs']],
         ['src/ui/ui-kit.js',         ['UI']],
         ['src/modules/m1-midi.js',   ['MidiExport']],
         ['src/modules/m2-mixer.js',  ['Mixer']],
@@ -254,7 +259,6 @@
         ['src/modules/m11-voices.js',       ['Sound']],
         ['src/modules/m12-sound-ui.js',     ['SoundUI']],
         ['src/modules/m13-sound-visuals.js', ['SoundVisuals']],
-        ['src/modules/m14-render-plus.js', ['RenderPlus']],    
         ['src/modules/m15-drum-engine.js',   ['DrumEngine']],
         ['src/modules/m16-audio-guard.js', ['AudioGuard']],
         ['src/modules/m17-profiler.js', ['Profiler']],

@@ -36,7 +36,7 @@ const Sound = (() => {
   let bank = Prefs.get('soundbank', {});
   let library = Prefs.get('soundlib', []);
   const cur = { key: null, variant: 0, o: {}, base: null, P: null, tables: null, mags: null, mut: 0 };
-  let renderSpec = null, pending = null, lastVowel = null, frozen = false, vowelMemory = null;
+  let pending = null, lastVowel = null, frozen = false, vowelMemory = null;
   const subs = new Set();
   const notify = () => subs.forEach((fn) => { try { fn(); } catch (e) { console.error('[sound:ui]', e); } });
   const keyOf = (sig) => sig.fusionKey || sig.reduced;
@@ -118,7 +118,7 @@ const Sound = (() => {
     recompute();
   }
 
-  const specFor = () => renderSpec || { P: cur.P, tables: cur.tables };
+  const specFor = () => ({ P: cur.P, tables: cur.tables });
 
   /* ── Sound arc: one merged patch per section, built once ─────────────── */
 
@@ -309,7 +309,7 @@ const Sound = (() => {
     buildArc(eng);
 
     if (prefs.sigilVerb && app.sigil) {
-      try { eng.reverb.buffer = sigilIR(eng.ctx, app.sigil, renderSpec ? cur.variant : cur.variant); }
+      try { eng.reverb.buffer = sigilIR(eng.ctx, app.sigil, cur.variant); }
       catch (e) { console.warn('[sound] sigil reverb failed:', e.message); }
     }
 
@@ -1093,13 +1093,6 @@ const Sound = (() => {
     },
     code: () => SD.encodePatch(cur.o, cur.variant),
 
-    setRenderSpec(spec) {
-      if (!spec || !app.sigil) { renderSpec = null; return; }
-      const c = composePatch(app.sigil, spec.variant ?? cur.variant, { ...cur.o, ...(spec.o || {}) });
-      renderSpec = { P: c.P, tables: c.tables };
-    },
-    clearRenderSpec() { renderSpec = null; },
-
     library: () => library.slice(),
     save(name) { library.push({ name: String(name).slice(0, 40), o: { ...cur.o } }); saveLibrary(); notify(); },
     applyLibrary(i) { const it = library[i]; if (!it || !app.sigil) return; cur.o = { ...it.o }; persist(); recompute(); refreshEngine(); notify(); },
@@ -1114,7 +1107,7 @@ const Sound = (() => {
       saveLibrary(); notify();
       return n;
     },
-    currentSpec: () => specFor(),                                             // honours setRenderSpec (Evolve)
+    currentSpec: () => specFor(),
     vowelMemory: () => (prefs.vowelMemory && vowelMemory ? vowelMemory.slice() : null),
   };
 

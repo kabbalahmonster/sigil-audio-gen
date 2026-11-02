@@ -13,7 +13,7 @@
      • hands the core its master plan (setMaster; worked out by 05e / m20), and
        keeps the page's copy of the one it holds
      • exposes bus "proxies" with AudioParam-like gains, so the Mixer (M2) and
-       Stems (m14) keep working without knowing the buses live in a worklet
+       Stems (m7) keep working without knowing the buses live in a worklet
 
    SIGNAL FLOW (native nodes after the worklet)
      worklet out[0] → tone (LP, swept by banish) → out → speakers
@@ -86,7 +86,7 @@ class TransportClock {
 /* ── §6.2 Engine ─────────────────────────────────────────────────────────── */
 class Engine {
   constructor(ctx) {
-    if (ctx) throw new Error('Engine v2 no longer renders through OfflineAudioContext. Use Render.renderSong (workers).');
+    if (ctx) throw new Error('Engine v2 no longer renders through OfflineAudioContext. Use Render.go (workers).');
     const AC = window.AudioContext || window.webkitAudioContext;
     const c = (this.ctx = new AC({ latencyHint: Prefs.get('audio.latency', 'playback') }));
     this.isDSP = true;

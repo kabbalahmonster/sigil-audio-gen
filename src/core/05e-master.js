@@ -490,11 +490,18 @@ const Mastering = (() => {
    * `stem`: parts of one mix. They are given the trims and the caps and leave BEFORE the chain, so
    * that side by side they are the mix that entered it; all of them are turned down by the same
    * amount, if the mix they add up to would not fit under full scale with a little to spare.
+   * `stem` may be `{ lift: true, room: 1.5 }`: then all of them are also turned UP, together, until the mix
+   * they add up to peaks `room` dB under full scale (a file of a stem should not be a whisper).
    */
   function table(plan, stem) {
     if (!plan || !plan.on) return null;
     const p = Float64Array.from(plan.p);
-    if (stem) { p[MA.STEM] = 1; p[MA.OUT] = Math.min(0, -1.5 - num(plan.report && plan.report.mixPeak, -1.5)); }
+    if (stem) {
+      // The gain that would put the mix's loudest peak `room` under full scale. Always turned down to fit; turned UP as well
+      // (`stem.lift`) by the same amount for every part, so the parts still add up to the mix, only nearer full scale.
+      const room = -(stem.room > 0 ? stem.room : 1.5) - num(plan.report && plan.report.mixPeak, -1.5);
+      p[MA.STEM] = 1; p[MA.OUT] = stem.lift ? clampN(room, -24, 18) : Math.min(0, room);
+    }
     return { p, trim: Float64Array.from(plan.trim), sec: Float64Array.from(plan.sec) };
   }
   /** A plan that only listens: the chain at rest, the dither riding the signal as it will. For pass A. */
@@ -534,8 +541,8 @@ const Mastering = (() => {
    * The job to listen to: the render job at the listening rate, one pass, reference levels.
    * The crushers hold their samples for as long, in time, as they would at a playing rate.
    */
-  function probeJob(job, levels, master) {
-    return Object.assign({}, job, { sr: RATE, passes: 1, levels: levels || job.levels, master,
+  function probeJob(job, levels, master, passes) {
+    return Object.assign({}, job, { sr: RATE, passes: Math.max(1, passes | 0), levels: levels || job.levels, master,
       params: Object.assign({}, job.params, { holdK: RATE / 44100 }) });
   }
   /** Cut [0, seconds) into `lanes` ranges on the probe's hop grid: [{ from, to, keep }]. */
@@ -566,9 +573,13 @@ const Mastering = (() => {
     }
     return out;
   }
-  /** How long a job's first pass lasts, in seconds; and how much of it is listened to (the pass and its ring-out). */
+  /**
+   * How long a job's first pass lasts, in seconds; and how much of it is listened to: every pass the job has, and the
+   * ring-out after the last. (The stage's listening, and pass A, are of one pass. A render's pass B is of all of its
+   * passes, so that the loudness it lands on is the loudness of the whole file, and so is the peak its stems must fit under.)
+   */
   const secondsOf = (job) => (job.total * 60) / job.bpm;
-  const heardOf = (job) => secondsOf(job) + TAIL;
+  const heardOf = (job) => (D.beatsOf(job.total, job.loop, job.passes) * 60) / job.bpm + TAIL;
 
   /**
    * A key for everything pass A hears: the compiled job itself (its events, sections, spectra,
@@ -591,7 +602,7 @@ const Mastering = (() => {
     if (job.auto) { bytes(job.auto.lanes); bytes(job.auto.curves); text(`${job.auto.n}|${job.auto.step}|${job.auto.len}`); }
     if (job.reverb) { bytes(job.reverb.taps); text(`${job.reverb.rt60}|${job.reverb.damp}`); }
     const P = job.params || {};
-    text(JSON.stringify([VERSION, D.VERSION, job.count, job.nSec, job.total, +(+job.bpm).toFixed(4), job.tilt, job.density,
+    text(JSON.stringify([VERSION, D.VERSION, job.count, job.nSec, job.total, +(+job.bpm).toFixed(4), job.loop || 0, job.tilt, job.density,
       P.reverb, P.waveOff, P.motion, P.evolve, P.pass0 | 0, levels || job.levels]));
     return (h >>> 0).toString(16);
   }

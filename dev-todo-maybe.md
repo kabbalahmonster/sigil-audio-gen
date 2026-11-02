@@ -9,8 +9,6 @@
 
 -Velocity-to-timbre mapping. Hard hits should open filters and lengthen decays, not merely get louder. It is the difference between a sampler and an instrument.
 
--Render queue with progress per item. Stems and Evolve currently run in one blocking pass. A queue with cancel, and per-item download, would make long exports usable.
-
 -A proper mixer metering layer. Per-bus peak and RMS, clip indicators, and a master loudness estimate, so the balance work stops being guesswork.
 
 -Sound arc editor. The section curve is fixed in code. A small editable envelope per parameter would make the narrative authored rather than derived.
@@ -36,8 +34,6 @@
 -Visual style presets per mood. Each mood suggests a default visual style, so Glacier opens in Bloom and Swarm in Helix.
 
 -Lens-driven kit. Turning the wheel moves through the drum cube, so the kit can be performed live.
-
--Loudness-aware export. LUFS metering and a target loudness, replacing the peak normalisation that currently only guards clipping.
 
 -Saved sessions. Store the full state (sigil, dream, patch, drum kit, visual style, section) as one shareable link, which extends the current patch code.
 

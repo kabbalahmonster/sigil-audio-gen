@@ -73,6 +73,8 @@
     const NBUS = BUS_NAMES.length, B_DRUMS = BUS.drums, B_POST = BUS.post;
     //                    lead  harm  bell  pad   bass  arp   drums drone fx    post
     const BUS_DEFAULT = [0.9,  0.55, 0.8,  0.8,  0.85, 0.55, 0.85, 0.7,  0.8,  1];
+    /** How much of each part is kept on the very first pass of a rite that goes round, at full Evolution (1 = all of it). */
+    const GATHER = [1, 0.45, 1, 1, 1, 0.3, 1, 0.65, 1, 1];   // lead harm bell pad bass arp drums drone fx post
     const SEND_REV    = [0.32, 0.45, 0.55, 0.5,  0.04, 0.35, 0.12, 0.45, 0.5,  0];
     const SEND_DLY    = [0.22, 0.1,  0.28, 0,    0,    0.42, 0,    0,    0.1,  0];
     const SEND_CHO    = [1,    0,    0,    1,    0,    0,    0,    0,    0,    0];
@@ -214,6 +216,38 @@
       if (!(morph > 0)) return a;
       const b = curves[b0] + (curves[b0 + 1] - curves[b0]) * f;
       return a + (b - a) * morph;
+    }
+
+
+    /* ── §2c FLOW: which stretch of the rite each pass plays ──────────────────
+       A rite is an opening, a body and an ending. Sung through again and again it would open and end every
+       time round: a fade to nothing and a beginning again, a seam that is a seam. So the passes go round
+       the BODY: the first begins at the start, the last plays through to the end, and the ones between
+       are the body alone, the end of it running into the start of it. `loop` = { lo, hi } (beats), the
+       body; without it every pass is the whole rite, as it always was. The page works out `loop`
+       (src/core/05i-flow.js); this is the one place that says what it means. `passes` 0 is the stage:
+       it goes round for ever, and is never on its last pass. */
+    function passSpan(total, loop, passes, pass) {
+      if (!loop || !(loop.hi > loop.lo) || !(loop.hi < total)) return [0, total];
+      const last = passes > 0 && pass >= passes - 1;
+      return [pass > 0 ? loop.lo : 0, last ? total : loop.hi];
+    }
+    /** How many beats `passes` passes of a song last (one or more). */
+    function beatsOf(total, loop, passes) {
+      let b = 0;
+      for (let p = 0; p < Math.max(1, passes | 0); p++) { const s = passSpan(total, loop, Math.max(1, passes | 0), p); b += s[1] - s[0]; }
+      return b;
+    }
+    /** Where `seconds` into a job it is: { pass, beat } (pass ≥ passes if the render is over). */
+    function locate(job, seconds) {
+      const spb = 60 / job.bpm, n = Math.max(1, job.passes | 0);
+      let t = seconds;
+      for (let p = 0; p < n; p++) {
+        const s = passSpan(job.total, job.loop, n, p), len = (s[1] - s[0]) * spb;
+        if (t < len - 1e-9 || p === n - 1) return { pass: t < len - 1e-9 ? p : n, beat: s[0] + Math.max(0, t) / spb };
+        t -= len;
+      }
+      return { pass: n, beat: 0 };
     }
 
     const SIN = new Float32Array(TLEN1);
@@ -1378,7 +1412,7 @@
     const MA = Object.freeze({ ON: 0, IN: 1, OUT: 2, LOW: 3, MUD: 4, PRES: 5, AIR: 6,
       LO_T: 7, LO_R: 8, MID_T: 9, MID_R: 10, HI_T: 11, HI_R: 12, GLUE_T: 13, GLUE_R: 14, GLUE_A: 15, GLUE_RL: 16,
       DRIVE: 17, WIDTH: 18, MONO: 19, CEIL: 20, CLIP: 21, GATE: 22, STEM: 23 });
-    // STEM > 0: the chain is skipped and OUT (≤ 0 dB) is a plain gain: see Core.master().
+    // STEM > 0: the chain is skipped and OUT (±24 dB) is a plain gain, common to every stem: see Core.master().
     const MSTRIDE = 24;
     const MASTER_REST = new Float64Array(MSTRIDE);
     Object.entries({ LO_T: -24, LO_R: 2, MID_T: -22, MID_R: 1.5, HI_T: -30, HI_R: 2, GLUE_T: -20, GLUE_R: 1.8,
@@ -1596,7 +1630,7 @@
         for (let j = 0; j < 4; j++) t[MA.LOW + j] = clamp(t[MA.LOW + j], -12, 12);
         t[MA.WIDTH] = clamp(t[MA.WIDTH], 0, 2); t[MA.MONO] = clamp(t[MA.MONO], 0, 1); t[MA.DRIVE] = clamp(t[MA.DRIVE], 0, 1);
         this.stem = t[MA.STEM] > 0;
-        this.stemG = this.stem ? Math.pow(10, Math.min(0, t[MA.OUT]) / 20) : 1;   // a stem takes only a common, linear gain
+        this.stemG = this.stem ? Math.pow(10, clamp(t[MA.OUT], -24, 24) / 20) : 1;   // a stem takes only a common, linear gain (down, or up together)
         if (snap) { this.v.set(t); this.gOut = Math.pow(10, t[MA.OUT] / 20); this.eqDb.fill(NaN); this.snapIn = true; }
       }
       /**
@@ -1904,6 +1938,7 @@
         // transport
         this.playing = false; this.beat = 0; this.bps = 1; this.total = 0; this.pass = 0; this.passMax = 0;
         this.regOn = false; this.regLo = 0; this.regHi = 0; this.ptr = 0; this.dirtyT = false;
+        this.loop = null; this.open = false;   // FLOW (see passSpan): the body the passes go round, and a pass the listener has walked into the ending of
         this.ev = new Float64Array(0); this.nEv = 0; this.sec = DEFAULT_PATCH; this.nSec = 1;
         this.blockTime = 0; this.onTransport = null; this.waveOff = 0;
         // motion (§5c): the lanes, this pass's scalars for each, and the row they are laid over
@@ -1912,6 +1947,7 @@
         this.auT = new Float64Array(3); this.xr = new Float64Array(PSTRIDE); this.rowS = DEFAULT_PATCH;
         // master (§5d): the chain, each part's trim, the crushers' caps per section, and (offline) the probe
         this.ms = new Master(sr); this.trT = new Float64Array(NBUS).fill(1); this.trG = new Float64Array(NBUS).fill(1);
+        this.pgT = new Float64Array(NBUS).fill(1); this.pgS = new Float64Array(NBUS).fill(1);   // GATHERING (buildSet)
         this.dTrim = 1; this.secT = null; this.gate = false; this.crEnv = 0; this.crRel = 1 - Math.exp(-BLOCK / (0.12 * sr));
         this.nzS = 1; this.rideS = 0; this.rideC = 1 - Math.exp(-BLOCK / (0.5 * sr));
         this.holdK = 1; this.probe = null; this.lat = 0; this.swF = 1; this.planSig = 0;
@@ -1955,9 +1991,21 @@
       }
 
       /* ── motion (§5c) ── */
+      /**
+       * GATHERING. A track that goes round more than once should not say everything the first time: the arpeggio
+       * and the choir come in over the passes, and the last pass has them all. How much is held back is what
+       * Evolution asks for (at zero nothing is: every pass is the same), and it is let go of as the trend of the
+       * passes settles (autoTrend). One pass alone (a render of one) is never held back.
+       */
+      buildSet() {
+        const p = this.pass + this.pass0, E = clamp(+this.evolve || 0, 0, 1), last = this.passMax > 0 && this.pass >= this.passMax - 1;
+        const one = this.passMax === 1, held = one || last || E === 0 ? 0 : E * (1 - autoTrend(p));
+        for (let b = 0; b < NBUS; b++) this.pgT[b] = held > 0 && GATHER[b] < 1 ? 1 - held * (1 - GATHER[b]) : 1;
+      }
       /** Work out what this pass does to every lane. Called when the pass, the table or an amount changes, never per sample. */
       autoSet() {
         const au = this.au;
+        this.buildSet();
         this.auOn = false;
         if (!au) return;
         const p = this.pass + this.pass0, T = this.auT;
@@ -2076,6 +2124,7 @@
       seek(beat, chase) {
         this.releaseAll(0.05, true);
         this.beat = beat; this.ptr = this.lower(beat);
+        this.open = !!this.loop && beat >= this.loop.hi;      // walked into the ending (the Form list, a click on the bar): let it be played
         if (chase) this.chase(beat);
         this.dirtyT = true;
       }
@@ -2085,7 +2134,7 @@
         const E = this.ev, bpsS = this.bps / this.sr;
         let pos = 0, guard = 0;
         while (pos < n && this.playing && guard++ < 64) {
-          const reg = this.regOn, lo = reg ? this.regLo : 0, hi = reg ? this.regHi : this.total;
+          const reg = this.regOn, sp = reg ? null : this.spanNow(), lo = reg ? this.regLo : sp[0], hi = reg ? this.regHi : sp[1];
           const until = (hi - this.beat) / bpsS;
           if (until <= 0) { this.wrap(pos, lo, hi, reg); continue; }
           const seg = Math.min(n - pos, Math.ceil(until));
@@ -2104,23 +2153,32 @@
         }
       }
       wrap(pos, lo, hi, reg) {
+        const over = this.beat - hi;
         if (!reg) {
           this.pass++;
+          this.open = false;
           if (this.passMax > 0 && this.pass >= this.passMax) { this.beat = hi; this.playing = false; this.emitT(pos); return; }
           this.autoSet();                                     // a new pass: the lanes evolve
+          [lo, hi] = this.spanNow();                          // and it may be another stretch of the rite (FLOW)
         }
-        const span = hi - lo, over = this.beat - hi;
+        const span = hi - lo;
         this.beat = lo + (span > 0 && over > 0 ? over % span : 0);
         this.ptr = this.lower(lo);
         this.emitT(pos);
       }
+      /** The stretch of the rite this pass plays: [from, to) in beats. */
+      spanNow() {
+        const t = this.total;
+        if (!this.loop) return [0, t];
+        return this.open ? [this.pass > 0 ? this.loop.lo : 0, t] : passSpan(t, this.loop, this.passMax, this.pass);
+      }
       /** Publish a transport segment: "at context time t the beat was b, moving at bps". */
       emitT(pos) {
         if (!this.onTransport) return;
-        const reg = this.regOn;
+        const reg = this.regOn, sp = reg ? null : this.spanNow();
         // `lat` is the limiter's look-ahead: the listener hears this moment that much later
         this.onTransport(this.blockTime + (pos + this.lat) / this.sr, this.beat, this.playing ? this.bps : 0,
-          reg ? this.regLo : 0, reg ? this.regHi : this.total, this.pass + this.pass0, reg);
+          reg ? this.regLo : sp[0], reg ? this.regHi : sp[1], this.pass + this.pass0, reg);
       }
   
       /* ── messages (between blocks) ── */
@@ -2132,10 +2190,11 @@
             // a master plan's per-section numbers belong to the song they were worked out for
             if (this.secT && (!m.keep || this.secT.length < 3 * this.nSec)) { this.secT = null; this.planSig = 0; }
             this.total = +m.total || 0;
+            this.loop = m.loop && m.loop.hi > m.loop.lo && m.loop.hi < this.total ? { lo: +m.loop.lo || 0, hi: +m.loop.hi } : null;
             if (m.bpm) this.setBpm(m.bpm);
             if (m.passes != null) this.passMax = m.passes | 0;
             if (m.keep) this.ptr = this.lower(this.beat);
-            else { this.playing = false; this.beat = 0; this.ptr = 0; this.pass = 0; this.regOn = false; }
+            else { this.playing = false; this.beat = 0; this.ptr = 0; this.pass = 0; this.regOn = false; this.open = false; }
             if (m.auto !== undefined) this.setAuto(m.auto);
             this.autoSet();
             this.dirtyT = true; break;
@@ -2172,6 +2231,7 @@
             break;
           case 'play':
             this.beat = +m.beat || 0; this.pass = m.pass | 0; this.ptr = this.lower(this.beat);
+            this.open = !!this.loop && this.beat >= this.loop.hi;   // begun inside the ending: it is played
             this.autoSet();
             this.playing = this.total > 0;
             if (m.chase) this.chase(this.beat);
@@ -2311,7 +2371,7 @@
         this.decho.setTime((dt > 0 ? dt : 0.75) / this.bps);
       }
       snapFx() {
-        this.updateFx(1); this.busG.set(this.busT); this.trG.set(this.trT); this.dTrim = this.trT[B_DRUMS];
+        this.updateFx(1); this.busG.set(this.busT); this.trG.set(this.trT); this.pgS.set(this.pgT); this.dTrim = this.trT[B_DRUMS];
         this.rideS = this.rideAt(this.beat); this.decho.d = this.decho.dT;
       }
       /**
@@ -2322,7 +2382,7 @@
         const T = this.secT;
         if (!T) return 0;
         let b = beat + 1.5;
-        if (this.total > 0 && b >= this.total && !this.regOn) b -= this.total;
+        if (this.total > 0 && !this.regOn) { const sp = this.spanNow(); if (b >= sp[1]) b = passSpan(this.total, this.loop, this.passMax, this.pass + 1)[0] + b - sp[1]; }
         return T[2 * this.nSec + this.secBase(b) / PSTRIDE];
       }
       mixdown(outL, outR, n, postL, postR) {
@@ -2342,6 +2402,9 @@
           const t0 = trG[b], t1 = t0 + (trT[b] - t0) * this.lvlC;
           trG[b] = t1 > 0.999999 && t1 < 1.000001 && trT[b] === 1 ? 1 : t1;
           if (b !== B_DRUMS) { g *= t0; g1 *= trG[b]; }
+          const q0 = this.pgS[b], q1 = q0 + (this.pgT[b] - q0) * this.lvlC;           // gathering: smoothed like the faders
+          this.pgS[b] = q1 > 0.999999 && this.pgT[b] === 1 ? 1 : q1;
+          g *= q0; g1 *= this.pgS[b];
           if (!this.used[b]) continue;
           this.used[b] = 0;
           const dg = (g1 - g) / n, L = this.bL[b], R = this.bR[b];
@@ -2667,12 +2730,12 @@
       core.command({ type: 'cube', spectra: job.spectra, tilt: job.tilt, density: job.density });
       if (job.reverb) core.command({ type: 'reverb', rt60: job.reverb.rt60, damp: job.reverb.damp, taps: job.reverb.taps });
       core.command({ type: 'plan', events: job.events, count: job.count, sections: job.sections, nSec: job.nSec,
-        total: job.total, bpm: job.bpm, passes: job.passes, auto: job.auto || null });
+        total: job.total, bpm: job.bpm, passes: job.passes, auto: job.auto || null, loop: job.loop || null });
       core.command({ type: 'levels', levels: job.levels || {}, snap: true });
       core.command(Object.assign({ type: 'params' }, job.params || {}));
       if (job.master) core.command({ type: 'master', p: job.master.p, trim: job.master.trim, sec: job.master.sec, snap: true });
-      const spb = 60 / job.bpm, passSec = job.total * spb, pass = Math.floor(from / passSec + 1e-9);
-      if (pass < job.passes) core.command({ type: 'play', beat: (from - pass * passSec) / spb, pass, chase: true });
+      const at = locate(job, from);
+      if (at.pass < job.passes) core.command({ type: 'play', beat: at.beat, pass: at.pass, chase: true });
       core.snapFx();
       return core;
     }
@@ -2719,7 +2782,7 @@
     G.SigilDSP = Object.freeze({
       VERSION, BLOCK, TLEN, TLEN1, TIERS, NT, CELL, H, UPPER, FX, FY, NCELL,
       KIND, BUS, BUS_NAMES, BUS_DEFAULT, EV, STRIDE, PA, PSTRIDE, DEFAULT_PATCH,
-      AU, ASTRIDE, LANES, autoPass, autoCurve, autoApply, autoTrend, hash01,
+      AU, ASTRIDE, LANES, autoPass, autoCurve, autoApply, autoTrend, hash01, passSpan, beatsOf, locate,
       MA, MSTRIDE, MASTER_REST, BAND_EDGES, NBAND, kWeight, kSum, truePeak, probeHop, planSig,
       Core, Limiter, MasterChain: Master, Probe, buildTables, buildCell, renderRange, probeRange,
     });

@@ -18,6 +18,7 @@ dependency, and no network request. Open the file and it runs.
 - [The rite](#the-rite)
 - [How a line becomes music](#how-a-line-becomes-music)
 - [Features](#features)
+- [Render & Export](#render--export)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Sharing & privacy](#sharing--privacy)
 - [Architecture](#architecture)
@@ -211,6 +212,21 @@ picture of the automation but the automation itself, and a render moves exactly 
 stage did. **Motion** (how far), **Evolution** (how much each pass differs) and the
 deal of movers are patch fields: saved per sigil, carried in a shared link.
 
+**Flow.** A rite has an opening (the Invocation: a few bells and a drone), a body, and an ending (the
+Banishing: the line returns to silence, a last bell, the hall left to ring). Sung through whole, again and again, it
+opens and ends every pass, and the seam between two passes is the end of a track, repeated. So the passes go round
+the **body** (`05i-flow.js`, the DSP core's `passSpan`): the first begins at the start, with its opening; the last
+plays through to the ending and rings out; every pass between is the body alone, the crown running into the verse
+the way a chorus does. Nothing fades, because nothing has finished, and the end, when it comes, is an end. The same
+on the stage, which goes round the body for ever (it never reaches its last pass, unless you walk into the ending
+with the form list or the bar, and then it is played). And the layers **gather**: what Evolution asks for is held back
+of the arpeggio, the choir and the drone at first (to a third of the arpeggio, at the most), and let go of over the
+passes as the evolution settles; the last pass of a render has everything, and so does one pass alone. At Evolution
+zero nothing is held back and every pass is the same. No note is changed: only the way round the rite, and how much of
+it is there at first. Which stretch is the body is each rite's own: the Sevenfold's is its five middle sections; a rite
+that ends at its height (I·A·O, the Cone of Power) holds its crown back for the end. *Flow between passes* (Render &
+Export → More) turns it off, on the stage and in a render alike.
+
 **Mastering.** Nothing upstream of the output ever *heard* the song it made. A reed
 lead could sit eight decibels under a koto one, a four-bit crusher could hiss as loud
 as the music it coloured, and one rite could leave nine decibels louder than the next.
@@ -289,6 +305,7 @@ rite alone; with Shift held it draws a rite as well); the link then says which: 
 - Live Web Audio synthesis — **no samples**; three lead timbres (glass FM bell, reed, plucked koto), choir, pad, saturated bass, arpeggio, drone, synthesised drum kit, generated convolution reverb, tempo-synced dotted-eighth delay
 - **Nineteen rites**: the Sevenfold and eighteen other forms, from four phrases to nineteen, each taken from a ritual formula (Spare's sigil working, the pentagram ritual, I·A·O, the Goetia's conjurations, the seven gates…) and each built from the sigil's own symmetries
 - **Mastered output**: every rite is listened to, then levelled, de-noised, toned and set to a loudness target under a true-peak ceiling, identically on the stage and in a render
+- **Render & Export**: the full track and each of its stems, in WAV, FLAC, MP3, AAC or Opus, delivered for where it is going (streaming, a PA, a club, broadcast), measured, tagged and checked
 - Canvas 2D renderer with additive "ember ink", motes, particle sparks, ghost transforms, Euclidean rhythm polygons
 - Charge (fullscreen) mode with breath guide · Forget (banishing) with burn animation
 - **Seal** export: 2048² PNG talisman · **Record**: canvas + master audio → WebM/MP4
@@ -303,7 +320,7 @@ rite alone; with Shift held it draws a rite as well); the link then says which: 
 | **M4 Form & Loop** | Section jump list (of whichever rite is being performed, and where that rite is from), gapless section looping, keyboard navigation, loop band on the progress bar |
 | **M5 Access** | Reduced motion, high contrast (wins over all palettes), larger text, screen-reader section announcements, `describe()` of the current sigil, progress bar as an ARIA slider |
 | **M6 Moods** | Twenty-eight arrangement presets (Ritual, Ambient, Pulse, Lullaby, Dirge, Ecstatic … Triumph, Reverie, Wrath, Longing, Mischief, Hymn, Dread, Storm), applied as `compose`/`plan` filters; re-composes live and resumes at the current section |
-| **M7 Render & Export** | Offline faster-than-realtime render, **parallelised across CPU cores** with section-aligned cuts and crossfades, → WAV 16/24, MP3 (worker LAME), AAC (ADTS) and Opus (hand-written Ogg muxer) via WebCodecs. Every mover moves as it does on the stage; over more than one pass the rite evolves, by the Evolution set in Motion. The file leaves through the same master as the stage, by the same plan, and the status line says what it measures (LUFS, true peak, range) |
+| **M7 Render & Export** | One panel for the full track and its stems, in every format, ready to hand over: see *Render & Export* below. Parallel across CPU cores; every render evolves, by the Evolution set in Motion; destinations (Streaming, PA · Live, Club, Broadcast, Archive, Quick share); a queue with progress, cancel, audition and download per file, and a ZIP |
 | **M8 Fusion** | Up to three desires on one wheel as counterpoint; partners weigh into harmony at passing-tone strength |
 | **M9 Live Lens** | Drag the wheel to transpose, double-tap to mirror — in real time, affecting melody, harmony, bass and arpeggios, and propagating to MIDI/audio export |
 | **M10 Hours & Moon** | Planetary hours (true sunrise equation if you share location), moon phase, optional attunement of mode/timbre/tempo/palette to the hour, and timed charging sessions |
@@ -312,6 +329,52 @@ rite alone; with Shift held it draws a rite as well); the link then says which: 
 | **M21 Style & Element** | Nineteen styles and four elements laid over the mood (see *Mood × Style × Element* above), in one chooser on the invocation screen and in Tools: three tabs (M22 adds a fourth, the Rite), a line saying what the combination is, and **Cast lots** for a random three (with Shift held, a rite as well). The working travels in the link and the Grimoire as one word (`mood.style.element`, and `.rite` if it is not the Sevenfold); an element also recolours the wheel |
 | **M20 Master** | The rite is listened to, then finished (see *Mastering* above). **Loudness** (−16 / −14 / −12 / −10 LUFS), **Balance** (how far the parts are drawn to the house balance), **Noise** (how much of the crusher's grain is let through: cleaner ↔ rawer ↔ exactly as composed), **Dynamics** (how far the quiet sections sit under the loud), `◀ finish ▶` for another deal of the chain's character and **Character** for how strongly it colours. Live meters (loudness now and so far, true peak against the ceiling, gain held back) and a plain account of what the plan did: each part's trim, each section's ride and grain, the EQ. One switch turns it all off, for comparing |
 | **M15 Drum Engine** | How the kit plays: Sigil or Classic patterns, a hundred grooves per sigil (`◀ groove ▶`; the number travels in the share link), Variation / Fills / Ghosts / Humanise / Dynamics, sidechain ducking, and a bypass for the kit's own FX chain. The chain itself (drive → punch/body transient shaper → crusher → filter, with parallel compression, a room and a tempo-synced ping-pong echo beside the dry hit) runs in the DSP worklet; its `D·` knobs are in Sound & Patch, dealt per sigil and saved with the patch |
+
+---
+
+## Render & Export
+
+One panel (Tools → **Render & Export**) renders the rite, whole or in parts, faster than real time and
+exactly as the stage performs it: your mix, tempo and Live Lens, and every mover moving as it does live.
+You choose four things, top to bottom, and the bar at the foot of the panel always says what you will get
+(files, size, time) and holds the button.
+
+| | |
+|---|---|
+| **What** | The **full track**, the **stems** (any of the eight parts), or both. Stems are parts of one mix, all the same length and all starting at zero; they leave *before* the master chain, so they can be mastered elsewhere. A part the rite does not sing is skipped, and marked before you ask |
+| **How long** | Passes of the rite, with the running time of each choice. **Every render evolves**: the rite goes round, and each pass is further evolved than the last (Motion's *Evolution*, the same control and the same core as the loop on the stage; it is on this panel too). Pass 1 is the rite as written, so two passes, the default, is the rite and its evolution. The passes **flow** (see *Flow* above): the opening is heard once, at the start, and the ending once, at the end, with the body coming round again between, the arpeggio and the choir gathering as it does, and no fade anywhere in the middle. There is no separate "evolving" render |
+| **Where it is going** | A destination sets the loudness, the true-peak ceiling, the format and the rate at once: **Streaming** (−14 LUFS, −1 dBTP, 24-bit 44.1 kHz WAV), **PA · Live** (−12, 48 kHz), **Club · Loud** (−9), **Broadcast** (−23, EBU R128), **Archive** (−18 LUFS, −3 dBTP, FLAC) and **Quick share** (−14, 256 kbps MP3). Any of them can then be moved |
+| **In what** | **WAV** (16, 24 or 32-bit float), **FLAC** (16 or 24), **MP3**, **AAC** (M4A) and **Opus**; 44.1 to 96 kHz where the format takes it. *Every format can be asked of every item*: a stem may be an MP3 and the track a FLAC. A format the browser cannot write is shown, greyed, with the reason |
+
+**What is done to the file on its way out** (`05h-deliver.js`; the master, `05e`, finishes the *sound*, this finishes the *file*):
+
+- **One performance.** The job is compiled once for the whole run, so the track and every stem are the same
+  events, the same lanes, the same passes. The master listens once, *through the passes* (the first four: by then
+  a rite's evolution has settled), so the loudness it lands on is the file's, and the peak stems must fit under is
+  the highest it heard.
+- **Landing.** The plan was solved on a listening at 32 kHz. The file is measured again, at its own rate, as a
+  BS.1770 meter would (integrated LUFS, range, true peak), and brought the last fraction of a decibel to the
+  loudness asked for with one linear gain, never past the ceiling. (ffmpeg's EBU R128 meter agrees to a tenth.)
+- **The end.** The dead air after the hall stops ringing is trimmed, and the last breath is glided to zero, over
+  as long as what is still sounding asks: a file never ends on a step or on seconds of nothing.
+- **Lossy headroom.** A lossy codec rings around a peak. A file to be encoded is mastered a decibel under its
+  ceiling, then *decoded again* and its true peak measured; if it is over, it is encoded once more, lower.
+- **Dither.** 16-bit files are dithered, flat (TPDF) or *shaped* out of the ears' most sensitive band, with a
+  **seeded** generator: the same render is the same file, byte for byte. Digital silence stays silent; 24-bit is
+  not dithered.
+- **Stems.** All raised by one common gain (*Raised together*, the default: the mix they add up to peaks at
+  −1.5 dBFS), so a stem is not a whisper in a DAW and the balance between them is still the mix's. Or *as mixed*
+  (exactly as they enter the chain), or each *to full scale* (they then no longer add up).
+- **Tags.** Title, artist, and the **tempo** and key of the sigil, written into the file (LIST/INFO, Vorbis
+  comments, ID3v2.3, iTunes atoms), and into the file name: `sigil-KRSTVM-83bpm-Eb-Dorian-bass.wav`.
+- **The report.** Each file says what it measures: loudness against the target, true peak against the ceiling,
+  loudness range, and how much it loses if a system **sums it to mono** (on a PA, it matters).
+- **Handing over.** One download, a ZIP of several (with a README of the tempo, key and how the files were
+  made), or each on its own. Every file can be auditioned in the panel (the stage pauses while you listen) and
+  downloaded singly; **Cancel** stops at any moment. Forgetting a sigil lets go of its files.
+
+The loudness and ceiling here are *the render's*; the stage keeps the ones in the Master panel. Balance, noise,
+dynamics and the finish are the sound, not the delivery, and are shared.
 
 ---
 
@@ -357,8 +420,9 @@ Press **?** for the in-app sheet.
 index.html
 └── styles/core.css, styles/ui-kit.css
 └── src/core/00-utils → 08-app      (load in order; they define globals)
+└── src/export/codecs.js             (the bytes of a file: WAV, FLAC, MP3, M4A, Opus, ZIP)
 └── src/ui/ui-kit.js                 (defines UI)
-└── src/modules/m1 … m10             (self-registering IIFEs)
+└── src/modules/m1 … m22             (self-registering IIFEs)
 └── src/vendor/lame.min.js           (optional, for offline MP3)
 ```
 
@@ -375,6 +439,9 @@ index.html
 | `05f-style.js` | §5f | `Style`: the nineteen idioms and four elements, and the rules by which they are laid over a mood: `compose` (tempo, swing, voicing, sound signature, faders, master hints), `plan` (the contour, inside the mood's range), the kit writer (through `Groove`'s `feel`), `parts` (bass, chords, arpeggio, phrasing, and the swing over everyone), `pitch` (so the Live Lens can turn what a style wrote). Pure |
 | `05g-rite.js` | §5g | `Rite`: the rites other than the Sevenfold (their sections, by role; where each is from), `open` (a rite's plan, before the moods, each section answering to its role's name) and `seal` (after the styles: the rite's holds, its length, each section's own id back), `own` (the rite a sigil draws for itself), `measure`. Pure |
 | `05e-master.js` | §5e | `Mastering`: the master plan. `character` (the letters' finish), `solveA` / `solveB` (from the Probe's measurements to trims, caps, rides, EQ and gains), loudness arithmetic (`lufs`, `range`, `measure`), and the job plumbing the listening needs. Pure; loaded after the DSP core, whose tables it reads |
+| `05h-deliver.js` | §5h | `Deliver`: what happens to a finished mix on its way into a file. Destinations, formats, the lossy margin, the end of a render (`tidy`), measurement (`analyse`, `judge`) and landing on a loudness (`land`), seeded dither (`quantise`), file names. Pure; loaded after the master, whose meter it uses |
+| `export/codecs.js` | | `Codecs`: WAV, FLAC (written here: fixed predictors, Rice-coded, stereo decorrelated, MD5-signed), MP3 (LAME, in a worker), AAC in M4A and Opus in Ogg (the browser's encoders through WebCodecs, muxed here), ZIP, and the tags of each |
+| `05i-flow.js` | §5i | `Flow`: where the body of a rite is (`loop`: its opening heard once, its ending once, what the passes go round). Pure. What each pass then plays is the DSP core's (`SigilDSP.passSpan`) |
 | `06-engine.js` | §6 | `Engine`: buses, FX, voices, lookahead scheduler, transport, ritual sounds |
 | `07-renderer.js` | §7 | `Renderer`: frame composition, wheel, rhythm polygons, pen, particles, burn |
 | `08-app.js` | §8 | `cast`, `performReduction`, HUD, controls, `exportSeal`, `toggleRecord`, `share`, `forget`, boot |
@@ -553,11 +620,25 @@ This is the most important rule in the project.
    it wins. A link names the rite itself all the same, which is why **a rite's id is for
    ever**: add rites, never rename or remove one.
 
+10. And flow. `Flow.loop` draws nothing and changes no note: the song is the song, and only the way round it differs
+    (`SigilDSP.passSpan` says which beats a pass plays; the core, the page and every render worker ask the same
+    function). The layers that gather are a function of (pass, passes, Evolution) alone. With no body, or Flow off,
+    or Evolution at zero, the core plays what it always played, to the sample.
+
+11. And so does a render's delivery. The dither is a seeded xorshift (`Deliver.prng`), the Ogg stream's serial is a
+    function of the audio's length, and no encoder is given a clock or `Math.random()`: **the same render is the same
+    file, byte for byte**. What a render hears is decided once (the job is compiled once for a whole run), and its loudness
+    is measured on the file itself.
+
 `npm run golden` pins all of the above. `npm run drums`, `npm run motion`,
-`npm run style`, `npm run rite` and `npm run master` check the invariants, and that with the kit's FX bypassed, Motion and
+`npm run style`, `npm run rite`, `npm run master`, `npm run flow` and `npm run deliver` check the invariants, and that with the kit's FX bypassed, Motion and
 Evolution at zero and no master plan the engine is, to the sample, the engine before
 any of this existed. `npm run master` also holds the meter to BS.1770 reference tones,
-the limiter to its ceiling, and a finished render to the loudness it was asked for.
+the limiter to its ceiling, and a finished render to the loudness it was asked for. `npm run deliver` checks the
+last stretch: that every writer writes what a reader reads (FLAC decoded here, frame CRCs and MD5 checked; WAV, ZIP,
+M4A, Ogg and ID3 parsed back, and ffmpeg asked to agree where it is installed), that dither is seeded, flat or shaped as
+asked and silent where the signal is, that landing reaches the loudness without passing the ceiling, and that the
+stems' common gain and the master's listening over all the passes of a render are what they say.
 `npm run style` composes every mood × style and style × element, checks that each idiom
 is what it says (the strokes that make a style that style are where they should be) and
 that the mood's contour survives every style. `npm run rite` composes every rite × mood
@@ -575,10 +656,12 @@ before rites existed.
 | Core audio/visual | Web Audio + Canvas 2D | — |
 | Stereo panning | `createStereoPanner` | mono routing |
 | Record | `MediaRecorder` + `captureStream` | toast: unsupported |
-| Offline render | `OfflineAudioContext` | panel disabled |
-| Parallel render | `OfflineAudioContext.suspend` | serial render |
+| Offline render | Web Workers (the DSP core) | panel says so |
+| Parallel render | several Workers (`hardwareConcurrency`) | one Worker |
+| WAV / FLAC / ZIP | written by `codecs.js`; nothing needed | — |
 | MP3 | Worker + LAME (vendored or CDN) | main-thread encode |
-| AAC / Opus | WebCodecs `AudioEncoder` | hidden from the format list |
+| AAC / Opus | WebCodecs `AudioEncoder` | shown greyed, with the reason |
+| Checking a lossy file | `decodeAudioData` of what was just encoded | the check is skipped |
 | Fullscreen charge | `requestFullscreen` | in-page charge mode |
 
 Tested on current Chromium, Firefox and WebKit. iOS Safari: audio requires the

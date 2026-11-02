@@ -19,6 +19,9 @@
     "flow": "node tests/flow.spec.mjs",
     "flow:quick": "node tests/flow.spec.mjs --quick",
     "deliver": "node tests/deliver.spec.mjs",
-    "deliver:quick": "node tests/deliver.spec.mjs --quick"
+    "deliver:quick": "node tests/deliver.spec.mjs --quick",
+    "voices": "node tests/voices.spec.mjs",
+    "voices:quick": "node tests/voices.spec.mjs --quick",
+    "calibrate": "node tools/calibrate-voices.mjs"
   }
 }

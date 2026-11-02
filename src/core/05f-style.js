@@ -1015,7 +1015,7 @@ const Style = (() => {
     const lay = st.lay || 1, crashVel = st.crash ?? 0.7;
     const W = (tick) => warp(tick / TPB, feel.swing, feel.shuffle);
     const ev = [], said = [], kicksAt = {};
-    let turnCursor = 0, fills = 0;
+    let turnCursor = 0, fills = 0, lastFig = null;
 
     m.sections.forEach((sec, si) => {
       const I = sec.intensity | 0, half = !!sec.halfTime, T = sec.T || ID;
@@ -1045,7 +1045,7 @@ const Style = (() => {
         const putT = (tick, type, vel, x) => {
           if (tick >= from * 6 && !(x && (x.keep || x.fill))) return;
           if (tick < 0 || tick >= BAR) return;
-          const key = `${type}|${x && x.tom != null ? x.tom : ''}|${x && x.grace ? 'g' : ''}|${tick}`, old = hits.get(key);
+          const key = `${type}|${x && x.tom != null ? x.tom : x && x.pi != null ? x.pi : ''}|${x && x.grace ? 'g' : ''}|${tick}`, old = hits.get(key);
           if (old && old.vel >= vel) return;
           hits.set(key, { tick, type, vel, ...(x || {}) });
         };
@@ -1111,39 +1111,57 @@ const Style = (() => {
             if (next && next.intensity >= 3) ev.push({ beat: t0 - lead, type: 'swell', dur: 4 + lead, vel: 0.8 });
             for (let j = 0; j < width && j < say.seq.length; j += 4) said.push({ beat: t0 + W(S(from + j)), slot: say.seq[j % say.seq.length].slot, ring: say.seq[j % say.seq.length].ring });
           } else {
-            let cur = sectionEnd ? 0 : turnCursor;
-            const slots = new Array(width).fill(true);
-            if (width > 2 && I === 2) { const H = clamp(Math.round(width * (0.5 + 0.35 * f)), 2, width); euclid(H, width, 0).forEach((on, j) => (slots[width - 1 - j] = on)); }
-            else if (width > 2 && I === 1) slots.forEach((_, j) => (slots[j] = (width - 1 - j) % 2 === 0));
-            if (kind === 'dissolve') slots[width - 1] = false;
-            let last = null;
-            for (let j = 0; j < width; j++) {
-              if (!slots[j]) continue;
-              const s = from + j, nd = say.seq[cur++ % say.seq.length], lb = G.limb(nd, say.flip);
-              let type = lb.type;
-              if (F.map && type in F.map) type = F.map[type];
-              if (type === null) continue;                        // in this idiom that letter is a rest
-              const pos = width > 1 ? j / (width - 1) : 1;
-              const shape = kind === 'rise' ? lerp(0.62, 1.08, pos) : kind === 'fall' ? lerp(1, 0.72, pos) : kind === 'dissolve' ? lerp(0.85, 0.42, pos) : lerp(0.78, 1, pos);
-              let vel = lb.vel * shape * (1 + (lb.ring - 1) * 0.08) * (F.soft || 1);
-              const x = {};
-              if (type === 'tom') x.tom = lb.tom;
-              if (type === 'hat') { x.open = !!lb.open && j === width - 1; x.pan = (N(s, CH.hatPan) - 0.5) * 0.6; }
-              if (I === 1 && type === 'snare') { type = 'rim'; vel *= 0.62; }
-              if (kind === 'dissolve' && type === 'snare') { type = 'rim'; vel *= 0.7; }
-              put(s, type, clamp(vel * (1 + (N(s, CH.fillVel) - 0.5) * 0.1), 0.08, 1), x);
-              said.push({ beat: t0 + W(S(s)), slot: nd.slot, ring: nd.ring });
-              last = { s, type };
-            }
-            if (!sectionEnd) turnCursor = cur;
-            if (kind === 'rise' && sectionEnd) {
-              for (let j = 0; j < 4; j++) put(12 + j, 'snare', (0.3 + 0.15 * j) * (F.soft || 1));
-              if (width >= 8 && I >= 2 && !F.soft) for (let s = from; s < 16; s += 4) put(s, 'kick', 0.7);
-              if ((next && next.intensity >= 3) || G.struck(sec)) ev.push({ beat: t0, type: 'swell', dur: 4, vel: 0.8 });
-            } else if (sectionEnd && kind !== 'dissolve' && last && (last.type === 'hat' || last.type === 'shaker' || last.type === 'ride') && !F.soft) {
-              put(last.s, I === 1 ? 'rim' : 'snare', I === 1 ? 0.4 : 0.7);     // arrive on something with a body
-            } else if (kind === 'dissolve' && sectionEnd) {
-              put(14, 'kick', 0.45);
+            /* Which fill (05k): the kit's name said on it, or something else, by where the bar falls and what the idiom does. */
+            const fctx = { W: width, from, I, kind, sectionEnd, f, fast, half, N, idiom: st.fill || 'rock', style: st.id, map: F.map, soft: F.soft, recent: lastFig };
+            const fig = Fills.choose(fctx);
+            lastFig = fig;
+            if (fig !== 'recite') {
+              for (const h of Fills.write(fig, fctx)) {
+                const x = {};
+                if (h.tom != null) x.tom = h.tom;
+                if (h.pi != null) x.pi = h.pi;
+                if (h.open) x.open = true;
+                if (h.pan != null) x.pan = h.pan;
+                if (h.grace) x.grace = true;
+                putT(Math.round(h.s * 6), h.type, clamp(h.vel * (1 + (N(h.s, CH.fillVel) - 0.5) * 0.1), 0.05, 1), { ...x, fill: true });
+              }
+              if (kind === 'rise' && sectionEnd && ((next && next.intensity >= 3) || G.struck(sec))) ev.push({ beat: t0, type: 'swell', dur: 4, vel: 0.8 });
+              if (sectionEnd && width >= 8 && next && next.intensity === 2 && crashVel > 0) ev.push({ beat: t0 + 4, type: 'crash', vel: crashVel * 0.65 });
+            } else {
+              let cur = sectionEnd ? 0 : turnCursor;
+              const slots = new Array(width).fill(true);
+              if (width > 2 && I === 2) { const H = clamp(Math.round(width * (0.5 + 0.35 * f)), 2, width); euclid(H, width, 0).forEach((on, j) => (slots[width - 1 - j] = on)); }
+              else if (width > 2 && I === 1) slots.forEach((_, j) => (slots[j] = (width - 1 - j) % 2 === 0));
+              if (kind === 'dissolve') slots[width - 1] = false;
+              let last = null;
+              for (let j = 0; j < width; j++) {
+                if (!slots[j]) continue;
+                const s = from + j, nd = say.seq[cur++ % say.seq.length], lb = G.limb(nd, say.flip);
+                let type = lb.type;
+                if (F.map && type in F.map) type = F.map[type];
+                if (type === null) continue;                        // in this idiom that letter is a rest
+                const pos = width > 1 ? j / (width - 1) : 1;
+                const shape = kind === 'rise' ? lerp(0.62, 1.08, pos) : kind === 'fall' ? lerp(1, 0.72, pos) : kind === 'dissolve' ? lerp(0.85, 0.42, pos) : lerp(0.78, 1, pos);
+                let vel = lb.vel * shape * (1 + (lb.ring - 1) * 0.08) * (F.soft || 1);
+                const x = {};
+                if (type === 'tom') x.tom = lb.tom;
+                if (type === 'hat') { x.open = !!lb.open && j === width - 1; x.pan = (N(s, CH.hatPan) - 0.5) * 0.6; }
+                if (I === 1 && type === 'snare') { type = 'rim'; vel *= 0.62; }
+                if (kind === 'dissolve' && type === 'snare') { type = 'rim'; vel *= 0.7; }
+                put(s, type, clamp(vel * (1 + (N(s, CH.fillVel) - 0.5) * 0.1), 0.08, 1), x);
+                said.push({ beat: t0 + W(S(s)), slot: nd.slot, ring: nd.ring });
+                last = { s, type };
+              }
+              if (!sectionEnd) turnCursor = cur;
+              if (kind === 'rise' && sectionEnd) {
+                for (let j = 0; j < 4; j++) put(12 + j, 'snare', (0.3 + 0.15 * j) * (F.soft || 1));
+                if (width >= 8 && I >= 2 && !F.soft) for (let s = from; s < 16; s += 4) put(s, 'kick', 0.7);
+                if ((next && next.intensity >= 3) || G.struck(sec)) ev.push({ beat: t0, type: 'swell', dur: 4, vel: 0.8 });
+              } else if (sectionEnd && kind !== 'dissolve' && last && (last.type === 'hat' || last.type === 'shaker' || last.type === 'ride') && !F.soft) {
+                put(last.s, I === 1 ? 'rim' : 'snare', I === 1 ? 0.4 : 0.7);     // arrive on something with a body
+              } else if (kind === 'dissolve' && sectionEnd) {
+                put(14, 'kick', 0.45);
+              }
             }
             if (sectionEnd && width >= 8 && next && next.intensity === 2 && crashVel > 0) ev.push({ beat: t0 + 4, type: 'crash', vel: crashVel * 0.65 });
           }
@@ -1151,7 +1169,7 @@ const Style = (() => {
 
         /* ── hits → events: the feel, and the drummer's hand ── */
         for (const h of hits.values()) {
-          const ch = h.type.charCodeAt(0) + (h.tom || 0), p2 = Math.round(h.tick / 3);
+          const ch = h.type.charCodeAt(0) + (h.tom || h.pi || 0), p2 = Math.round(h.tick / 3);
           let t = t0 + W(h.tick), vel = h.vel;
           if (h.grace) t -= flamBeats;
           if (hu > 0 && !(h.type === 'kick' && (h.tick === 0 || isFour))) {
@@ -1163,7 +1181,9 @@ const Style = (() => {
           const e = { beat: Math.max(0, t), type: h.type, vel: clamp(vel, 0.05, 1) };
           if (h.type === 'hat' || h.type === 'ride') { e.open = !!h.open; e.pan = h.pan || 0; }
           if (h.type === 'tom') e.tom = h.tom | 0;
+          if (h.type === 'perc') { e.pi = h.pi | 0; if (h.pan != null) e.pan = h.pan; }
           if (h.fill) e.fill = true;
+          if (h.grace) e.grace = true;
           ev.push(e);
         }
       }

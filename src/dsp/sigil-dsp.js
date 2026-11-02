@@ -48,7 +48,7 @@
     'use strict';
   
     /* ── §1 CONSTANTS ──────────────────────────────────────────────────────── */
-    const VERSION = 5;
+    const VERSION = 6;
     const TAU = Math.PI * 2;
     const SQ2 = Math.SQRT2;
     const BLOCK = 128;                 // render quantum (Web Audio's, and ours offline)
@@ -65,7 +65,10 @@
   
     /** Voice kinds. LEAD is resolved at note-on by the patch's VOICE field. */
     const KIND = Object.freeze({ LEAD: 1, WAVE: 2, VOX: 3, FM: 4, BOW: 5, BELL: 6, PAD: 7,
-      DRONE: 8, KICK: 9, SNARE: 10, HAT: 11, NOISE: 12, FIRE: 13, TOM: 14 });
+      DRONE: 8, KICK: 9, SNARE: 10, HAT: 11, NOISE: 12, FIRE: 13, TOM: 14,
+      // The palette's engines (sigil-voices.js). Their parameters are not in the event row but in the INSTRUMENT TABLE
+      // (see IN): a row names its instrument in P0. ⚠ APPEND ONLY: an id is in every link that has ever used it.
+      PLUCK: 15, MODAL: 16, ANALOG: 17, ORGAN: 18, DX: 19, BREATH: 20, FOLD: 21, CLOUD: 22 });
   
     /** Buses. 'fx' = live keys and ritual sounds; 'post' bypasses the master chain and the banish filter. */
     const BUS_NAMES = Object.freeze(['lead', 'harm', 'bell', 'pad', 'bass', 'arp', 'drums', 'drone', 'fx', 'post']);
@@ -87,9 +90,21 @@
      *   PAN   −1…1               AUX    scale degree (melodic) | kind param
      *   P0…P5 kind-specific (see the init functions)   SEED  int32 noise seed
      */
+    /** The palette's pad and drone slots in the instrument table (05j Palette.SLOT): held parts, restarted after a seek. */
+    const SLOT_PAD = 6, SLOT_DRONE = 7;
     const EV = Object.freeze({ BEAT: 0, KIND: 1, BUS: 2, F: 3, F0: 4, DUR: 5, VEL: 6, PAN: 7,
       AUX: 8, P0: 9, P1: 10, P2: 11, P3: 12, P4: 13, P5: 14, SEED: 15 });
     const STRIDE = 16;
+
+    /**
+     * INSTRUMENT TABLE (NINST slots of IST numbers each): what the palette (05j) has dealt to each part. An event row of
+     * one of the palette's kinds says which slot it is in P0; the slot says how that engine is to sound, and the
+     * section row (BRIGHT, WAVE, LAYER, SWEEP, DRIFT, SUB, BREATH, THROAT, CHORUS …) says how it is sounding NOW, so that
+     * the movers (05d) animate every one of them without being told about any.
+     *   0 KIND   the engine (redundant; the row's own kind decides)   1 GAIN   its level, measured (see tests/voices.spec)
+     *   2…23     the engine's own parameters (see sigil-voices.js for the meaning of each, engine by engine)
+     */
+    const NINST = 16, IST = 24;
   
     /**
      * SECTION ROW (PSTRIDE = 40): the per-section sound patch, read at note-on and per block.
@@ -316,6 +331,7 @@
         this.tab = null; this.tab1 = null; this.o0 = 0; this.o1 = 0; this.xf = 0; this.xfInc = 0;
         this.env = 0; this.stage = 0; this.aInc = 0; this.dC = 0; this.sus = 0; this.rC = 0; this.peak = 0;
         this.kf = 1; this.kd = 1; this.rng = 1; this.sub = 0; this.n = 0; this.mode = 0;
+        this.dampAt = 0; this.dampC = 1;      // a note that is let go after this many samples, and damped at this rate (the palette's: row P3)
         this.vibA = 0; this.vibPh = 0; this.vibInc = 0; this.vibR = 0; this.vibRI = 0;
         this.cut = 0; this.cutT = 0; this.cutC = 0;
         this.p = new Float64Array(24);   // kind-specific scalars
@@ -325,10 +341,13 @@
         this.dk = new Float64Array(8);   // per-sample decay multipliers
         this.cf = new Float64Array(24);  // up to 6 SVF coefficient sets
         this.fs = new Float64Array(12);  // up to 6 SVF states
+        this.q = new Float64Array(64);   // the palette's engines: their state (sigil-voices.js)
+        this.buf = null; this.buf2 = null; this.m = null; // …and their delay lines and mode banks, made when first wanted
       }
       clear() {
+        this.q.fill(0);
         this.p.fill(0); this.ph.fill(0); this.inc.fill(0); this.lv.fill(0); this.dk.fill(0); this.fs.fill(0);
-        this.kf = 1; this.kd = 1; this.glide = 1; this.xf = 0; this.xfInc = 0; this.vibA = 0; this.vibR = 0;
+        this.kf = 1; this.kd = 1; this.dampAt = 0; this.dampC = 1; this.glide = 1; this.xf = 0; this.xfInc = 0; this.vibA = 0; this.vibR = 0;
         this.sub = 0; this.tab1 = null; this.lvl = 1; this.t = 0; this.age = 0; this.n = 0; this.mode = 0;
         this.stage = 0; this.env = 0;
       }
@@ -1026,6 +1045,9 @@
       if ((t > Math.max(2, dur) && cl < 1e-4) || kf < 1e-3) v.active = false;
     }
   
+    /** Engines registered by sigil-voices.js: kind → init(c, v, src, o, pb, el), and its render is RENDER[kind]. */
+    const EXT_INIT = [];
+    function registerVoice(kind, init, render) { EXT_INIT[kind] = init; RENDER[kind] = render; }
     const RENDER = [];
     RENDER[KIND.LEAD] = rWave; RENDER[KIND.WAVE] = rWave; RENDER[KIND.VOX] = rVox; RENDER[KIND.FM] = rFm;
     RENDER[KIND.BOW] = rBow; RENDER[KIND.BELL] = rBell; RENDER[KIND.PAD] = rPad; RENDER[KIND.DRONE] = rDrone;
@@ -1938,6 +1960,7 @@
         // transport
         this.playing = false; this.beat = 0; this.bps = 1; this.total = 0; this.pass = 0; this.passMax = 0;
         this.regOn = false; this.regLo = 0; this.regHi = 0; this.ptr = 0; this.dirtyT = false;
+        this.inst = null;                      // the instrument table (NINST × IST), or none
         this.loop = null; this.open = false;   // FLOW (see passSpan): the body the passes go round, and a pass the listener has walked into the ending of
         this.ev = new Float64Array(0); this.nEv = 0; this.sec = DEFAULT_PATCH; this.nSec = 1;
         this.blockTime = 0; this.onTransport = null; this.waveOff = 0;
@@ -2062,7 +2085,11 @@
       }
       noteOff(id) {
         for (const v of this.voices) {
-          if (v.active && v.id === id) { if (v.stage === 1 || v.stage === 2) v.stage = 3; v.gate = -1; }
+          if (v.active && v.id === id) {
+            if (v.stage === 1 || v.stage === 2) v.stage = 3;
+            v.gate = -1;
+            if (v.kind >= KIND.PLUCK) this.kill(v, 0.25);     // a struck or plucked instrument has no note-off of its own: a key let go damps it
+          }
         }
         for (let i = 0; i < this.nLive; i++) if (this.liveId[i] === id) this.liveEv[i * STRIDE + EV.DUR] = 0.05;
       }
@@ -2091,7 +2118,7 @@
         // where the block boundaries fell: a live note and a rendered one are given the same row.
         const pb = this.rowAt(v.live ? this.beat : src[o]), plan = this.sec;
         this.sec = this.rowS;
-        switch (src[o + EV.KIND] | 0) {
+        switch ((src[o + EV.KIND] | 0) & 255) {
           case KIND.LEAD: initLead(this, v, src, o, pb, el); break;
           case KIND.WAVE: initWave(this, v, src, o, pb, el, src[o + EV.P0], src[o + EV.P1],
             src[o + EV.P2] || 0.32, src[o + EV.P3] === 1, src[o + EV.P4] === 1); break;
@@ -2107,7 +2134,11 @@
           case KIND.NOISE: initNoise(this, v, src, o, pb); break;
           case KIND.FIRE: initFire(this, v, src, o); break;
           case KIND.TOM: initTom(this, v, src, o, pb); break;
-          default: v.active = false; this.sec = plan; return;
+          default: {
+            const init = EXT_INIT[(src[o + EV.KIND] | 0) & 255];
+            if (!init || !this.inst) { v.active = false; this.sec = plan; return; }    // an engine nobody has registered, or no instruments dealt
+            init(this, v, src, o, pb, el);
+          }
         }
         this.sec = plan;
         v.active = true;
@@ -2116,8 +2147,9 @@
       chase(beat) {
         const E = this.ev;
         for (let i = this.lower(beat - 512); i < this.ptr; i++) {
-          const o = i * STRIDE, k = E[o + EV.KIND];
-          if (k !== KIND.PAD && k !== KIND.DRONE) continue;
+          const o = i * STRIDE, k = E[o + EV.KIND] & 255;
+          // a held part: the cube's pad and drone, or a palette instrument in the pad's or the drone's slot
+          if (k !== KIND.PAD && k !== KIND.DRONE && !(k >= KIND.PLUCK && ((E[o + EV.P0] | 0) === SLOT_PAD || (E[o + EV.P0] | 0) === SLOT_DRONE))) continue;
           if (E[o] + E[o + EV.DUR] > beat + 0.25) this.spawn(E, o, 0, beat - E[o], 0);
         }
       }
@@ -2144,6 +2176,7 @@
             if (eb >= lim) break;
             this.ptr++;
             if (eb < this.beat - bpsS) continue;              // behind the playhead (after a re-plan)
+            if (E[o + EV.KIND] >= 256 && !this.rowOn(E[o + EV.KIND] >> 8, hi)) continue;   // a stroke of the turnaround, on a pass that does not turn
             let off = pos + Math.floor((eb - this.beat) / bpsS);
             if (off < pos) off = pos; else if (off >= n) off = n - 1;
             this.spawn(E, o, off, 0, 0);
@@ -2166,6 +2199,16 @@
         this.ptr = this.lower(lo);
         this.emitT(pos);
       }
+      /**
+       * Whether a row of the turnaround is played on this pass (flags from the compiler: 1 only on a pass that turns, 2 only on
+       * the pass after a turn, 4 only where the pass ends for good). `hi` is where this pass stops.
+       */
+      rowOn(f, hi) {
+        const L = this.loop;
+        if (!L) return false;
+        const turns = hi <= L.hi + 1e-9 && hi < this.total;       // it stops at the end of the body because another pass follows
+        return ((f & 1) && turns) || ((f & 2) && this.pass > 0) || ((f & 4) && !turns) ? true : false;
+      }
       /** The stretch of the rite this pass plays: [from, to) in beats. */
       spanNow() {
         const t = this.total;
@@ -2186,6 +2229,7 @@
         switch (m.type) {
           case 'plan':
             this.ev = m.events; this.nEv = m.count | 0;
+            if (m.inst !== undefined) this.inst = m.inst && m.inst.length >= NINST * IST ? m.inst : null;
             if (m.sections && m.nSec > 0) { this.sec = m.sections; this.nSec = m.nSec; }
             // a master plan's per-section numbers belong to the song they were worked out for
             if (this.secT && (!m.keep || this.secT.length < 3 * this.nSec)) { this.secT = null; this.planSig = 0; }
@@ -2208,6 +2252,7 @@
             if (m.reset) { this.cube.fill(null); this.anyCell = null; }
             this.installCells(m.cells, m.data); break;
           case 'cube': this.buildCube(m.spectra, m.tilt || 0, m.density ?? 1); break;   // offline only
+          case 'inst': this.inst = m.inst && m.inst.length >= NINST * IST ? m.inst : null; break;
           case 'reverb': this.reverb.configure(m.rt60, m.damp, m.taps); break;
           case 'levels':
             for (const k in m.levels) {
@@ -2330,6 +2375,7 @@
           this.used[v.bus] = 1;
           const fn = RENDER[v.kind];
           if (fn === undefined) { v.active = false; continue; }
+          if (v.dampAt > 0 && v.age >= v.dampAt) { if (v.kd === 1 || v.dampC < v.kd) v.kd = v.dampC; v.dampAt = 0; }
           fn(this, v, this.bL[v.bus], this.bR[v.bus], v.off, n);
           v.off = 0;
         }
@@ -2731,6 +2777,7 @@
       if (job.reverb) core.command({ type: 'reverb', rt60: job.reverb.rt60, damp: job.reverb.damp, taps: job.reverb.taps });
       core.command({ type: 'plan', events: job.events, count: job.count, sections: job.sections, nSec: job.nSec,
         total: job.total, bpm: job.bpm, passes: job.passes, auto: job.auto || null, loop: job.loop || null });
+      if (job.inst) core.command({ type: 'inst', inst: job.inst });
       core.command({ type: 'levels', levels: job.levels || {}, snap: true });
       core.command(Object.assign({ type: 'params' }, job.params || {}));
       if (job.master) core.command({ type: 'master', p: job.master.p, trim: job.master.trim, sec: job.master.sec, snap: true });
@@ -2783,6 +2830,9 @@
       VERSION, BLOCK, TLEN, TLEN1, TIERS, NT, CELL, H, UPPER, FX, FY, NCELL,
       KIND, BUS, BUS_NAMES, BUS_DEFAULT, EV, STRIDE, PA, PSTRIDE, DEFAULT_PATCH,
       AU, ASTRIDE, LANES, autoPass, autoCurve, autoApply, autoTrend, hash01, passSpan, beatsOf, locate,
+      NINST, IST, registerVoice,
+      // what an engine in another file needs of this one (sigil-voices.js)
+      kit: Object.freeze({ sinAt, tabAt, svfSet, decayOf, coefOf, envStart, common, sat, clamp, NZ, TAU, BLOCK, TLEN, PA, PSTRIDE, EV, KIND, BUS }),
       MA, MSTRIDE, MASTER_REST, BAND_EDGES, NBAND, kWeight, kSum, truePeak, probeHop, planSig,
       Core, Limiter, MasterChain: Master, Probe, buildTables, buildCell, renderRange, probeRange,
     });

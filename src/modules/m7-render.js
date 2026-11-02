@@ -654,6 +654,11 @@ const Render = (() => {
       lock(b);
     }
     lock(ui.cardMix); lock(ui.cardStems);
+    {
+      const res = typeof Palette !== 'undefined' && app.sigil && app.song && typeof Sound !== 'undefined' && Sound.state().P ? Palette.resolve(app.sigil, app.song.cfg, Sound.state().P) : null;
+      ui.played.hidden = !res;
+      if (res) ui.playedTxt.textContent = res.classic ? 'Played by the cube’s own voices.' : `Played by ${Palette.describe(res)}.`;
+    }
 
     // how long
     options(ui.passSel.input, PASSES.map((n) => [String(n), `${n} pass${n === 1 ? '' : 'es'}${fc.song ? ` · ${clock(fc.lengthOf(n))}` : ''}${n === 1 ? ' · as written' : ''}`]), S.passes);
@@ -669,7 +674,7 @@ const Render = (() => {
     ui.evNote.textContent = S.passes === 1
       ? 'One pass is the rite as written: nothing has evolved yet. Two or more, and each pass is further on.'
       : E === 0 ? 'Evolution is at zero, so every pass is the first again.'
-      : `Pass 1 is the rite as written. Each pass after it is further evolved (the bars): the movers lean, turn and wander, and the arpeggio, the choir and the drone gather, as they do when the rite goes round on the stage.${fc.loop ? ' The passes flow: the opening is heard once, at the start, and the ending once, at the end; between them the body comes round again, with nothing fading.' : ''}`;
+      : `Pass 1 is the rite as written. Each pass after it is further evolved (the bars): the movers lean, turn and wander, and the arpeggio, the choir and the drone gather, as they do when the rite goes round on the stage.${fc.loop ? ' The passes flow: the opening is heard once, at the start, and the ending once, at the end; between them the body comes round again, with nothing fading, and the kit’s last bar of each pass turns into the next with a fill.' : ''}`;
 
     // where to
     for (const d of Deliver.DESTINATIONS) { ui.destBtn[d.id].setAttribute('aria-pressed', String(dest === d.id)); lock(ui.destBtn[d.id]); }
@@ -743,6 +748,9 @@ const Render = (() => {
       .rx-chip{padding:5px 10px;font-size:10px;letter-spacing:.14em}
       .rx-dim{opacity:.45}
       .rx-note{font-size:12px;opacity:.55;font-style:italic;line-height:1.5;margin:5px 0 8px}
+      .rx-played{font-size:12px;opacity:.6;font-style:italic;line-height:1.5;margin:6px 0 2px}
+      .rx-link{all:unset;cursor:pointer;text-decoration:underline dotted;opacity:.85;pointer-events:auto}.rx-link:hover,.rx-link:focus-visible{color:rgb(var(--accent));opacity:1}
+      .rx-played[hidden]{display:none}
       .rx-strip{display:flex;gap:4px;margin:10px 0 2px}
       .rx-pass{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
       .rx-pass>div{display:flex;align-items:flex-end;height:34px;border-bottom:1px solid rgba(var(--line),.3)}
@@ -867,6 +875,11 @@ const Render = (() => {
         save(); refresh(); UI.announce('Render settings reset.');
       }, { title: 'Everything on this panel back to how it began (your title and artist are kept)' })));
 
+    /* who plays it (M23): what the render will be played by, and a way to change it */
+    ui.playedTxt = h('span', {});
+    ui.played = h('div', { class: 'rx-played', hidden: true }, ui.playedTxt, ' ',
+      h('button', { type: 'button', class: 'rx-link', onclick: () => UI.open('palette'), title: 'Choose another company of instruments, or any part’s instrument' }, 'Change'));
+
     /* the bar: summary, button, progress */
     ui.sumA = h('b'); ui.sumB = h('span'); ui.sumC = h('span');
     ui.sum = h('div', { class: 'rx-sum' }, ui.sumA, ui.sumB, ui.sumC);
@@ -889,7 +902,7 @@ const Render = (() => {
 
     el.append(
       UI.note('Render the whole rite, or each of its parts, faster than real time, exactly as the stage performs it: your mix, your tempo and lens, and every mover moving as it does live. The track leaves through the master, by the same plan.'),
-      h('div', { class: 'rx-h' }, 'What'), h('div', { class: 'rx-two' }, cardMix, cardStems), ui.parts,
+      h('div', { class: 'rx-h' }, 'What'), h('div', { class: 'rx-two' }, cardMix, cardStems), ui.parts, ui.played,
       h('div', { class: 'rx-h' }, 'How long'), ui.passSel, ui.strip, ui.evolveRow, ui.evNote,
       h('div', { class: 'rx-h' }, 'Where it is going'), h('div', { class: 'rx-two' }, dests), ui.destNote, ui.loud, ui.ceil, ui.loudNote,
       h('div', { class: 'rx-h' }, 'In what'), ui.fmtRow, ui.bitsSel, ui.kbpsSel, ui.rateSel, ui.fmtNote,

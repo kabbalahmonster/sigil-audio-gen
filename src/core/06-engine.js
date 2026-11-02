@@ -174,7 +174,7 @@ class Engine {
   load(song, sigil = app.sigil) {
     this.song = song; this.spb = song.spb; this.events = song.events; this.sigil = sigil;
     this.region = null;
-    this.space = SigilPlan.spaceOf(song);
+    this.space = SigilPlan.spaceOf(song, sigil);
     this.buses = this._makeBuses(song.levels);
     Hooks.emit('buses', this.buses, this);       // M2 records _base and applies user levels
     this.revReturn.gain.value = this.revReturn.gain.value;   // the hall's return, by the listener's Space and the song's own
@@ -271,7 +271,7 @@ class Engine {
 
   /* ── live playing & ritual sounds ── */
   noteOn({ midi, deg = 0, vel = 0.8, timbre = 'glass' }) {
-    const id = ++this._noteId, row = SigilPlan.liveNote(midi, deg, vel, timbre);
+    const id = ++this._noteId, row = SigilPlan.liveNote(midi, deg, vel, timbre, this.pal);
     this.post({ type: 'noteOn', id, row }, [row.buffer]);
     let done = false;
     return { id, release: () => { if (!done) { done = true; this.post({ type: 'noteOff', id }); } } };

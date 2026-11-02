@@ -291,6 +291,24 @@ The rules that keep every combination coherent:
 - **Swing is applied to the whole score as one**, and to the pen's own timetable, so a
   shuffle swings the lead, the bass, the kit and the drawing together.
 
+### Who plays it: the palette
+
+The sigil writes the notes; a **palette** decides who plays them (`05j-palette.js`, `sigil-voices.js`, M23).
+
+- **Eight engines**, each a different *kind* of sound-making rather than another setting of the same one: **pluck** (a string: a Karplus–Strong loop with dispersion, a pick position, a body, a second string, a buzzing bridge), **modal** (a bank of resonators: the partials of a bar, a bowl, a bell, a skin, a gong, struck, rubbed or ratcheted), **analog** (band-limited saws, pulses and syncs, stacked and detuned, through a 24 dB filter), **organ** (nine drawbars and a rotating speaker, or a pipe with its chiff), **FM** (four operators, eight algorithms), **breath** (a blown pipe with its air, scoop and vibrato), **fold** (a west-coast sine, folded and gated by a vactrol) and **cloud** (grains). None of them uses a sample.
+- **More than a hundred instruments** (115, and the cube's own eight), each one of those engines with its own numbers: a harp, a koto, a sitar, a kalimba, a tubular bell, a bowed singing bowl, a conga, a Moog bass, a reese, a tonewheel organ, an electric piano, a shakuhachi, a theremin, a shimmer of grains… and the cube's own eight, kept.
+- **Twenty worlds**: a company of instruments that belong in one room, and the room (how big, how dark, how much of it): the **Temple** (bowls, bells, frame drums, a long drone), the **Glasshouse** (glass and tines, a wash of shimmer), the **Foundry** (a reese under a sync lead, an anvil), the **Meadow** (a nylon string, a flute, a shaker), **Neon**, **Tundra**, **Ember**, **Bazaar**, **Cathedral**, **Abyss**, **Toybox**, **Gamelan**, **Velvet**, **Storm**, **Dream**, **Tide**, **Circuit**, **Smoke**, **Hollow**, and the **Cube** itself. A song is in *one* world, so that it is one thing. A world also finishes the mix in its own colour, as offsets on the patch's own knobs (the Smoke's tape and dust, the Circuit's 8-bit crunch, the Dream's haze and echo), under any knob you set yourself.
+- **What decides the world** is the sigil's own lot, leaned on by what the song asks for: a Dirge is not cast in the Toybox by accident, nor a Hymn in the Foundry, and Folk finds the Meadow. The listener has the last word: another deal (`◀ palette ▶`), any part's instrument by name, or the cube's own voices.
+- **Two players in one world.** Every instrument's numbers are nudged by the sigil, within what that instrument can bear: a harp a little brighter, a bowl a little longer.
+- **It moves.** The engines read the same section row the cube's voices do (brightness, wave position, width, sweep, drift, sub, breath, throat, ring, chorus), so every mover of Motion animates every instrument, and a render moves as the stage does.
+- **Each part is as loud as the voice it replaces** (`tools/calibrate-voices.mjs` measured them, K-weighted, in real songs), so the mixer, the master and the faders still mean what they meant.
+
+### Fills
+
+At the end of a phrase the kit does something. Where the music is going (a rise, a fall, a turn, a dissolve), how loud the section is, the idiom of the kit and the style choose *which* of a dozen figures (`05k-fills.js`): **recite** (the sigil's name, said on the kit: still the most likely single choice), **cascade**, **roll**, **flams**, **stutter**, **tumble** (a Euclidean figure over the toms and hand-drums, ending on a stroke), **stop-time**, **hat sweep**, **clave**, **gallop**, **claps**, **flutter**; and, two steps wide, a pair of toms, a flam, kick–snare, hand-drums, side-sticks or an open hat. The choice is stateless noise keyed by where the bar falls, so it is the same every render, and the Fills slider (a threshold on the *width* of a fill) never re-deals the ones that stay. Hand-drums are a kind of stroke of their own (`perc`), played by the world's percussion instrument, or as high toms by the cube's kit.
+
+**The turnaround.** A pass that is followed by another does not end at the body's end, it *turns*: the kit's last bar is a fill into the body's start (and a crash lands on it, if the body comes round to something bigger), where the last pass, which ends, keeps the ending's own bar. The rows are marked in the plan and the core plays the right ones on each pass, on the stage and in every render alike.
+
 With None and Aether chosen, none of this runs and the song is, event for event, what it
 was. **Cast lots** (`Y`) draws a mood, a style and an element at random (it leaves the
 rite alone; with Shift held it draws a rite as well); the link then says which: `#KRSTVM~dirge.trap.water`, or with a rite,
@@ -303,6 +321,8 @@ rite alone; with Shift held it draws a rite as well); the link then says which: 
 ### Core
 - Deterministic sigil + song from any text (SHA-256 avalanche: one letter changes everything)
 - Live Web Audio synthesis — **no samples**; three lead timbres (glass FM bell, reed, plucked koto), choir, pad, saturated bass, arpeggio, drone, synthesised drum kit, generated convolution reverb, tempo-synced dotted-eighth delay
+- **A palette of instruments**: the sigil is not sung by one instrument any more. Each is dealt a *world* (one of twenty: the Temple, the Glasshouse, the Foundry, the Meadow …) and an instrument for every part of the song, from more than a hundred: plucked strings, struck bars and bowls, analog and FM synthesisers, organs, blown pipes, folded waves, clouds of grains, hand-drums. Two sigils in one world are still two players. The wavetable cube is one more of them, and "the cube's own voices" is a switch
+- **Fills with a vocabulary**: a drummer's dozen instead of one trick (the sigil's name said on the kit is one of them): tom cascades, accelerating rolls, flams, double-kick runs, hand-drum tumbles, stop-time, hat sweeps, claves, gallops, claps, ghost flutters. Which is chosen follows where the music is going. When a performance goes round its body, the last bar of every pass turns into the next
 - **Nineteen rites**: the Sevenfold and eighteen other forms, from four phrases to nineteen, each taken from a ritual formula (Spare's sigil working, the pentagram ritual, I·A·O, the Goetia's conjurations, the seven gates…) and each built from the sigil's own symmetries
 - **Mastered output**: every rite is listened to, then levelled, de-noised, toned and set to a loudness target under a true-peak ceiling, identically on the stage and in a render
 - **Render & Export**: the full track and each of its stems, in WAV, FLAC, MP3, AAC or Opus, delivered for where it is going (streaming, a PA, a club, broadcast), measured, tagged and checked
@@ -325,6 +345,7 @@ rite alone; with Shift held it draws a rite as well); the link then says which: 
 | **M9 Live Lens** | Drag the wheel to transpose, double-tap to mirror — in real time, affecting melody, harmony, bass and arpeggios, and propagating to MIDI/audio export |
 | **M10 Hours & Moon** | Planetary hours (true sunrise equation if you share location), moon phase, optional attunement of mode/timbre/tempo/palette to the hour, and timed charging sessions |
 | **M19 Motion** | The movers, shown and steered. A row per mover (its letter, what it moves and how, a live meter, a switch to hold it still); `◀ motion ▶` for another deal; **Motion** 0–200 % and **Evolution** 0–100 %, which governs the live loop and the passes of a render alike. In Sound & Patch each moved knob wears its letter, a band for the span it travels and a bead that travels it; on the wheel a ray grows at each moving letter |
+| **M23 Palette** | Who plays the sigil: the world it was dealt and a chooser for the instrument of each part (lead, second voice, choir, bell, bass, arpeggio, pad, drone, chords, percussion), each with a button that plays its phrase in the song's key; `◀ palette ▶` for another deal; "the cube's own voices only" to go back to how a sigil always sounded. All of it is patch state: it is saved with the sound, carried in a shared link and rendered exactly as it is heard |
 | **M22 Rites** | Eighteen rites beside the Sevenfold (see *Rites* above): a **Rite** tab in the chooser, with where each form is from and how long it is; **By the sigil** lets the sigil draw its own. The rite travels in the link and the Grimoire as the fourth word of the working; the Form panel and the screen-reader description name it. Changing the rite during a performance begins it again (the form is what changed) |
 | **M21 Style & Element** | Nineteen styles and four elements laid over the mood (see *Mood × Style × Element* above), in one chooser on the invocation screen and in Tools: three tabs (M22 adds a fourth, the Rite), a line saying what the combination is, and **Cast lots** for a random three (with Shift held, a rite as well). The working travels in the link and the Grimoire as one word (`mood.style.element`, and `.rite` if it is not the Sevenfold); an element also recolours the wheel |
 | **M20 Master** | The rite is listened to, then finished (see *Mastering* above). **Loudness** (−16 / −14 / −12 / −10 LUFS), **Balance** (how far the parts are drawn to the house balance), **Noise** (how much of the crusher's grain is let through: cleaner ↔ rawer ↔ exactly as composed), **Dynamics** (how far the quiet sections sit under the loud), `◀ finish ▶` for another deal of the chain's character and **Character** for how strongly it colours. Live meters (loudness now and so far, true peak against the ceiling, gain held back) and a plain account of what the plan did: each part's trim, each section's ride and grain, the EQ. One switch turns it all off, for comparing |
@@ -408,7 +429,7 @@ Press **?** for the in-app sheet.
 - The URL fragment contains the reduced consonants and, optionally, the working: what
   the rite is dressed in (a mood, a style, an element) and which rite it is:
   `#KRSTVM+MNLP~ambient`, `#KRSTVM~dirge.trap.water`, `#KRSTVM~ritual.none.aether.iao`.
-  That is the *sigil*, not the desire behind it.
+  That is the *sigil*, not the desire behind it. A tuned sound (`#KRSTVM!…`) also carries who plays it: another deal of the palette, or the instruments you chose for each part (by id, which is why an instrument's id is for ever). A plain link is played by the palette the sigil is dealt.
 - The Grimoire stores consonant keys only, in `localStorage`, under the `sigil.*`
   namespace. **Forget** deletes the entry.
 
@@ -422,8 +443,10 @@ index.html
 └── src/core/00-utils → 08-app      (load in order; they define globals)
 └── src/export/codecs.js             (the bytes of a file: WAV, FLAC, MP3, M4A, Opus, ZIP)
 └── src/ui/ui-kit.js                 (defines UI)
-└── src/modules/m1 … m22             (self-registering IIFEs)
+└── src/dsp/sigil-dsp.js, sigil-voices.js   (the core, and the palette's eight engines)
+└── src/modules/m1 … m23             (self-registering IIFEs)
 └── src/vendor/lame.min.js           (optional, for offline MP3)
+└── tools/voice-lab.mjs, calibrate-voices.mjs   (the palette, heard by a program: one note, a part of a song; and the gains that make every instrument as loud as the voice it replaces)
 ```
 
 | File | Section | Responsibility |
@@ -441,6 +464,9 @@ index.html
 | `05e-master.js` | §5e | `Mastering`: the master plan. `character` (the letters' finish), `solveA` / `solveB` (from the Probe's measurements to trims, caps, rides, EQ and gains), loudness arithmetic (`lufs`, `range`, `measure`), and the job plumbing the listening needs. Pure; loaded after the DSP core, whose tables it reads |
 | `05h-deliver.js` | §5h | `Deliver`: what happens to a finished mix on its way into a file. Destinations, formats, the lossy margin, the end of a render (`tidy`), measurement (`analyse`, `judge`) and landing on a loudness (`land`), seeded dither (`quantise`), file names. Pure; loaded after the master, whose meter it uses |
 | `export/codecs.js` | | `Codecs`: WAV, FLAC (written here: fixed predictors, Rice-coded, stereo decorrelated, MD5-signed), MP3 (LAME, in a worker), AAC in M4A and Opus in Ogg (the browser's encoders through WebCodecs, muxed here), ZIP, and the tags of each |
+| `05j-palette.js` | §5j | `Palette`: the instruments (ids are for ever), the worlds, what a mood, a style and an element ask of them (`deal`), the listener's word over it (`cast`), and the core's table (`pack`, `resolve`). Pure |
+| `05k-fills.js` | §5k | `Fills`: the figures of a fill, and which is chosen where (`choose`, `write`). Pure; called by the two kit writers (05c, 05f) and by `Flow.turn` |
+| `dsp/sigil-voices.js` | | The palette's eight engines, registered with the core (`SigilDSP.registerVoice`): pluck, modal, analog, organ, DX, breath, fold, cloud |
 | `05i-flow.js` | §5i | `Flow`: where the body of a rite is (`loop`: its opening heard once, its ending once, what the passes go round). Pure. What each pass then plays is the DSP core's (`SigilDSP.passSpan`) |
 | `06-engine.js` | §6 | `Engine`: buses, FX, voices, lookahead scheduler, transport, ritual sounds |
 | `07-renderer.js` | §7 | `Renderer`: frame composition, wheel, rhythm polygons, pen, particles, burn |
@@ -543,6 +569,10 @@ const Example = (() => {
 Add the `<script src="src/modules/m11-example.js"></script>` **after** any module it
 depends on.
 
+### Adding an instrument, a world, a figure
+
+An **instrument** is a line in `05j-palette.js`: `def(id, 'key', 'Name', engine, { numbers }, { roles, tags })`. The numbers are the ones its engine has (the names are in `Palette.PARAMS`, the meanings beside the engine in `sigil-voices.js`); `roles` are the parts it can play; `tags` how it feels (bright, warm, organic, fierce, dreamy, sacred, eerie, playful), which is how a song's mood, idiom and element find it. **Take the next id and never change one that was used.** Then `npm run calibrate -- --only=key --write` to set its gain in each part (and `-- --verify` to see it is right), `npm run voices -- --only=key` to hear it in every part at every end of its range, and add it to the cast lists of the worlds it belongs in (at the end of a list if it should be rare, nearer the front if it should be common). A **world** is a `world(…)` line: its tags, who plays each part, and its room (`hall`, `space`, `finish`). A **figure** of a fill is a function in `05k-fills.js` that writes hits on a grid of sixteenths, and a weight for when it is wanted; both kit writers (and the turnaround) get it at once. A new **engine** is a `register(KIND.X, init, render)` in `sigil-voices.js` and a kind number appended in `sigil-dsp.js`: keep every bit of its state in the voice (the voices spec checks that the sound does not depend on where the 128-sample blocks fall), and allocate nothing per sample.
+
 ### UI kit cheat-sheet
 
 ```js
@@ -630,8 +660,19 @@ This is the most important rule in the project.
     file, byte for byte**. What a render hears is decided once (the job is compiled once for a whole run), and its loudness
     is measured on the file itself.
 
+12. And the palette. `Palette.deal` draws from `stream(hash, 'palette')` (or `'palette:<n>'`) in a frozen order, and `Palette.pack` from
+    `stream(hash, 'palette:<part>:<id>')`, one draw per number of an instrument whether it is nudged or not. Nothing touches the composer's `R` or
+    the cube's stream, and with the palette off, or told not to (`compile(…, { palette: false })`), every row is the row it was. **Ids are for
+    ever**: a link names an instrument by its id, and a world by its position. Add instruments and worlds at the end; never renumber or remove one.
+    A note's variation is a function of where it falls in the music, not of a clock, and every engine's noise is an integer xorshift seeded from the
+    event, so a note sounds the same wherever it is rendered from. The engines allocate nothing on the audio thread after a voice has been used once.
+
+13. And fills. Which figure fills a bar is `Fills.choose` on stateless noise keyed by the bar and a channel of its own; nothing is drawn from a stream
+    at all. The turnaround is a function of the song (`Flow.turn`), and the core picks the rows of each pass by flags in the plan, never by anything it
+    has heard.
+
 `npm run golden` pins all of the above. `npm run drums`, `npm run motion`,
-`npm run style`, `npm run rite`, `npm run master`, `npm run flow` and `npm run deliver` check the invariants, and that with the kit's FX bypassed, Motion and
+`npm run style`, `npm run rite`, `npm run master`, `npm run flow`, `npm run deliver` and `npm run voices` check the invariants, and that with the kit's FX bypassed, Motion and
 Evolution at zero and no master plan the engine is, to the sample, the engine before
 any of this existed. `npm run master` also holds the meter to BS.1770 reference tones,
 the limiter to its ceiling, and a finished render to the loudness it was asked for. `npm run deliver` checks the
@@ -639,7 +680,7 @@ last stretch: that every writer writes what a reader reads (FLAC decoded here, f
 M4A, Ogg and ID3 parsed back, and ffmpeg asked to agree where it is installed), that dither is seeded, flat or shaped as
 asked and silent where the signal is, that landing reaches the loudness without passing the ceiling, and that the
 stems' common gain and the master's listening over all the passes of a render are what they say.
-`npm run style` composes every mood × style and style × element, checks that each idiom
+`npm run calibrate` measures every instrument in every part it can play against the cube's own voice of that part in real songs, K-weighted, and `-- --write` writes the gains into `05j-palette.js` (`--verify` measures again, `--refine` corrects what is there). `npm run voices` deals the palette to hundreds of sigils (every world is reached; a Dirge is not in the Toybox), checks that every instrument can play every part it is cast in, then **plays every instrument in every such part at both ends of the part's range and in the middle** (finite, bounded, not silent, ended, no click, the same twice, in tune where it is tonal), and a few against the cube's own voice in a real song; it also checks every figure of the fills, that a fill stays in its bar, and that the core plays the turnaround on the passes that turn and not on the last. `npm run style` composes every mood × style and style × element, checks that each idiom
 is what it says (the strokes that make a style that style are where they should be) and
 that the mood's contour survives every style. `npm run rite` composes every rite × mood
 and rite × style, checks that each rite is the shape it says, that what is sung in every

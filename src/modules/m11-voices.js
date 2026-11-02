@@ -81,6 +81,7 @@ const Sound = (() => {
     sBody: 1, sSnap: 1, sTone: 1,
     hTone: 1, hDecay: 1,
     take: 0,                       // which groove the kit plays (05c); 0 is the sigil's own
+    pal: 0, palOff: 0,             // who plays the sigil (05j): which deal of instruments, and whether the cube's own voices are wanted instead
     motion: 1, evolve: 0.5, mVar: 0, mMute: 0,   // the movers (05d): depth, change per pass, which deal, which are held
   };
 
@@ -88,7 +89,9 @@ const Sound = (() => {
     const derived = SD.derive(sig.hash, variant);
     // The kit's FX (the D· knobs) are dealt from their own stream, so derive() stays as it was.
     // Then the song dresses the patch: a style's signature, a mood's values, an element's lean (SD.shape).
-    const base = SD.shape({ ...DEFAULTS, ...derived, ...SD.drumFx(sig.hash, variant) }, app.song && app.song.cfg);
+    let base = SD.shape({ ...DEFAULTS, ...derived, ...SD.drumFx(sig.hash, variant) }, app.song && app.song.cfg);
+    // the world the sigil is dealt colours the base (a tape's warmth, an 8-bit crunch, a dream's haze); the knobs the listener has set are laid over it
+    if (typeof Palette !== 'undefined') base = Palette.dress(base, Palette.finish(sig, app.song && app.song.cfg, { ...overrides }), SD.FIELDS);
     return { base, P: { ...base, ...overrides }, tables: SD.tables(sig, variant) };
   }
 

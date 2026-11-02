@@ -165,13 +165,16 @@
     <script src="src/core/04-theory.js"  onerror="SIGIL_FAIL(this)"></script>
     <script src="src/core/05-composer.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/core/05b-timbre.js" onerror="SIGIL_FAIL(this)"></script>
+    <script src="src/core/05k-fills.js" onerror="SIGIL_FAIL(this)"></script>       <!-- the fills: a dozen figures, not one -->
     <script src="src/core/05c-groove.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/core/05d-motion.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/dsp/sigil-dsp.js"   onerror="SIGIL_FAIL(this)"></script>      <!-- MOVED here -->
+    <script src="src/dsp/sigil-voices.js" onerror="SIGIL_FAIL(this)"></script>      <!-- the other engines: strings, modes, analog, organ, FM, breath, fold, grains -->
     <script src="src/core/05e-master.js" onerror="SIGIL_FAIL(this)"></script>      <!-- reads SigilDSP's tables -->
     <script src="src/core/05f-style.js"  onerror="SIGIL_FAIL(this)"></script>      <!-- styles and elements; needs 05c -->
     <script src="src/core/05g-rite.js"   onerror="SIGIL_FAIL(this)"></script>      <!-- the rites (forms); needs 05's makePlan -->
     <script src="src/core/05i-flow.js"   onerror="SIGIL_FAIL(this)"></script>      <!-- the passes of a rite go round its body, not the whole -->
+    <script src="src/core/05j-palette.js" onerror="SIGIL_FAIL(this)"></script>     <!-- who plays the sigil: worlds, instruments, their numbers -->
     <script src="src/core/05h-deliver.js" onerror="SIGIL_FAIL(this)"></script>     <!-- delivery: the end of a render, its loudness, its bits; needs 05e -->
     
     <!-- Core: runtime layer -->
@@ -212,6 +215,7 @@
     <script src="src/modules/m20-master.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m21-styles.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/modules/m22-rites.js" onerror="SIGIL_FAIL(this)"></script>    <!-- after m21: adds its tab to the chooser -->
+    <script src="src/modules/m23-palette.js" onerror="SIGIL_FAIL(this)"></script>  <!-- who plays the sigil: worlds, instruments, a deal of them -->
     
     <!-- ═══════════════════════════════════════════════════════════════════════
          PREFLIGHT. Runs after everything above, even if some of it threw.
@@ -231,13 +235,16 @@
         ['src/core/04-theory.js',    ['MODES', 'MODE_NAMES', 'MODE_WEIGHTS', 'NOTE_NAMES', 'mtof', 'degToMidi', 'fold', 'euclid']],
         ['src/core/05-composer.js',  ['makePlan', 'allocate', 'buildPhrase', 'addPassing', 'harmonize', 'validChords', 'lastStroke', 'composeSong', 'sectionIndexAt', 'phraseIndexAt', 'penProgress', 'pulse', 'displayTransform']],
         ['src/core/05b-timbre.js',          ['SoundDesign']],
+        ['src/core/05k-fills.js',    ['Fills']],
         ['src/core/05c-groove.js',   ['Groove']],
         ['src/core/05d-motion.js',   ['Motion']],
         ['src/dsp/sigil-dsp.js',     ['SigilDSP']],
+        ['src/dsp/sigil-voices.js',  ['SigilVoices']],
         ['src/core/05e-master.js',   ['Mastering']],
         ['src/core/05f-style.js',    ['Style']],
         ['src/core/05g-rite.js',     ['Rite']],
         ['src/core/05i-flow.js',     ['Flow']],
+        ['src/core/05j-palette.js',  ['Palette']],
         ['src/core/05h-deliver.js',  ['Deliver']],
         ['src/core/06-engine.js',    ['Engine', 'TransportClock']],
         ['src/core/06b-compiler.js', ['SigilPlan']],
@@ -267,6 +274,7 @@
         ['src/modules/m20-master.js', ['Master']],
         ['src/modules/m21-styles.js', ['Styles']],
         ['src/modules/m22-rites.js', ['Rites']],
+        ['src/modules/m23-palette.js', ['PalettePanel']],
         
       ];
     

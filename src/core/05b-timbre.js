@@ -73,14 +73,21 @@ const SoundDesign = (() => {
     // the finish (05e): which deal of the master chain's character (0 = the sigil's own), and how
     // strongly it colours the chain (0 = the house's own, uncoloured).
     finish: ['fn', 0, 99], fAmt: ['fa', 0, 1.5],
+    // the palette (05j): which deal of instruments (0 = the sigil's own), whether to play the cube's own voices instead
+    // (1), and an instrument, by id, for each part (0 = the one dealt). ids are for ever.
+    pal: ['pv', 0, 99], palOff: ['po', 0, 1],
+    iLead: ['xl', 0, 255], iAlt: ['xa', 0, 255], iHarm: ['xh', 0, 255], iBell: ['xb', 0, 255], iBass: ['xs', 0, 255],
+    iArp: ['xr', 0, 255], iPad: ['xp', 0, 255], iDrone: ['xd', 0, 255], iComp: ['xc', 0, 255], iPerc: ['xk', 0, 255],
   };
-  const INTEGER_FIELDS = new Set(['vowel', 'bits', 'hold', 'dBits', 'dHold', 'dTime', 'take', 'mVar', 'mMute', 'finish']);
+  const INTEGER_FIELDS = new Set(['vowel', 'bits', 'hold', 'dBits', 'dHold', 'dTime', 'take', 'mVar', 'mMute', 'finish',
+    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc']);
   /**
    * Fields Mutate leaves alone: switches and indices, where a nudge is a different thing entirely;
    * and the kit's filter, which is a performance control (a nudge off centre takes the kick's sub away).
    */
   const FIXED_FIELDS = new Set(['bits', 'hold', 'voice', 'dBits', 'dHold', 'dTime', 'dFilter', 'take',
-    'motion', 'evolve', 'mVar', 'mMute', 'finish', 'fAmt']);
+    'motion', 'evolve', 'mVar', 'mMute', 'finish', 'fAmt',
+    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc']);
   const VOICES = ['auto', 'vox', 'wave'];
   const clampTo = (x, a, b) => Math.min(b, Math.max(a, x));
 

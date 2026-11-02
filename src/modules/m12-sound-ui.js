@@ -501,6 +501,8 @@ const SoundUI = (() => {
 
     el.append(
       UI.note('The sigil is a cube: across is the path drawn letter by letter, up is its spectral character, and every note travels through it.'),
+      ...(typeof Palette === 'undefined' ? [] : [h('p', { class: 'tool-note' }, 'These knobs shape whoever plays: the cube’s voices, and every instrument of the ',
+        h('button', { type: 'button', class: 'rx-link', onclick: () => UI.open('palette') }, 'Palette'), ' too (brightness, width, air, body, sub, motion).')]),
       scope,
       cube,
       grid,

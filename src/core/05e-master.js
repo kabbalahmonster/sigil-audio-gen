@@ -598,7 +598,7 @@ const Mastering = (() => {
       for (let i = Math.max(0, u.length - 64); i < u.length; i++) h = Math.imul(h ^ u[i], 16777619);
     };
     const text = (s) => { for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); };
-    bytes(job.events ? job.events.subarray(0, job.count * D.STRIDE) : null); bytes(job.sections); bytes(job.spectra);
+    bytes(job.events ? job.events.subarray(0, job.count * D.STRIDE) : null); bytes(job.sections); bytes(job.spectra); bytes(job.inst);
     if (job.auto) { bytes(job.auto.lanes); bytes(job.auto.curves); text(`${job.auto.n}|${job.auto.step}|${job.auto.len}`); }
     if (job.reverb) { bytes(job.reverb.taps); text(`${job.reverb.rt60}|${job.reverb.damp}`); }
     const P = job.params || {};

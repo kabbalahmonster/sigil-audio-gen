@@ -127,6 +127,21 @@ function ritesFingerprint(reduced) {
   return toHex(hashStr(Object.keys(Rite.RITES).filter((id) => id !== Rite.DEFAULT).map((id) => `${id}=${riteForm(riteSong(reduced, id))}`).join('#'))).slice(0, 32);
 }
 
+/**
+ * Who plays a sigil (05j): the world it is dealt, the instrument of every part, and every number of each instrument as it is packed
+ * for this sigil (the gains, which are measured and may be measured again, are left out). ⚠ Instruments' ids and numbers are for ever:
+ * a shared link names them. A change here means someone's link plays another instrument.
+ */
+function paletteFingerprint(reduced, cfg, variant) {
+  const s = buildSigil(reduced);
+  Palette.useMeasured(false);
+  try {
+    const r = Palette.resolve(s, cfg, { pal: variant });
+    const rows = Palette.ROLES.map((role) => `${role}=${r.roles[role] ? r.roles[role].id : 0}`).join(',');
+    return toHex(hashStr([r.world, rows, Array.from(r.table, (x) => Math.round(x * 1e4)).join(','), JSON.stringify(r.hall), r.space].join('#'))).slice(0, 32);
+  } finally { Palette.useMeasured(true); }
+}
+
 /** Everything the CI compares, as a flat object of name → value. */
 function computeAll() {
   const out = {};
@@ -150,8 +165,14 @@ function computeAll() {
   });
   out['rites:forms'] = ritesFingerprint(GOLDEN_INPUTS[0]);
   out['rites:own'] = GOLDEN_INPUTS.map((w) => Rite.own(buildSigil(w))).join(',');   // the rite each sigil draws for itself
+  // Who plays: four sigils in four moods, styles and elements, and one other deal of each.
+  [[{ mood: 'ritual' }, 0], [{ mood: 'dirge', element: 'water' }, 0], [{ mood: 'mischief', style: 'chiptune' }, 2], [{ mood: 'hymn', style: 'folk', element: 'earth' }, 5]].forEach(([cfg, v], i) => {
+    out[`palette:${GOLDEN_INPUTS[i]}:${cfg.mood}.${v}`] = paletteFingerprint(GOLDEN_INPUTS[i], cfg, v);
+    out[`palette:${GOLDEN_INPUTS[(i + 1) % 4]}:${cfg.mood}.deal${v + 1}`] = paletteFingerprint(GOLDEN_INPUTS[(i + 1) % 4], cfg, v + 1);
+  });
   const patch = { wave: 2.5, voice: 'vox', grit: 0.4 };
   out['codec:encode'] = SoundDesign.encodePatch(patch, 3);
   out['codec:roundtrip'] = JSON.stringify(SoundDesign.decodePatch(SoundDesign.encodePatch(patch, 3)));
+  out['codec:palette'] = JSON.stringify(SoundDesign.decodePatch(SoundDesign.encodePatch({ pal: 4, palOff: 0, iLead: 10, iPerc: 51 }, 0)));
   return out;
 }

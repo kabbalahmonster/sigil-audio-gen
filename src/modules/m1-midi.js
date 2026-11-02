@@ -23,6 +23,8 @@ const MidiExport = (() => {
   const DRUM = { kick: 36, snare: 38, hat: 42, open: 46, shaker: 70, crash: 49, rim: 37, clap: 39, ride: 51 };
   /** The three toms of the drum engine's fills (m15 / 05c): floor, low, high-mid. */
   const TOMS = [41, 45, 48];
+  /** The hand-drums of the fills (05k): bongos and a conga, for the chord's three pitches. */
+  const PERC = [60, 61, 64];
 
   /** [internal id, track name, channel]. Channel 9 is GM percussion. */
   const TRACKS = [
@@ -101,6 +103,9 @@ const MidiExport = (() => {
       tracks[trk].notes.push({ s, e: Math.max(s + 1, tick(b + dur)), midi, vel: v, prog });
     };
     const vTrack = (p) => (p === 1 ? 'v2' : 'v3');
+    // who plays the song (M23): the program of the instrument each part was dealt, where it has one near in General MIDI
+    const pal = typeof Palette !== 'undefined' && typeof Sound !== 'undefined' && Sound.state().P && !Sound.state().P.palOff ? Palette.resolve(sigil, song.cfg, Sound.state().P) : null;
+    const prog = (role, fallback) => { const d = pal && pal.roles[role]; return d && Palette.GM[d.key] != null ? Palette.GM[d.key] : fallback; };
 
     const cond = [];   // the conductor track (track 0)
 
@@ -110,18 +115,19 @@ const MidiExport = (() => {
       for (const raw of song.events) {
         const ev = mapEv(raw), b = o + ev.beat;
         switch (ev.type) {
-          case 'lead':  note(ev.part ? vTrack(ev.part) : 'lead', ev.midi, b, ev.dur, vel(ev.vel), GM[ev.timbre]); break;
-          case 'bell':  note(ev.part ? vTrack(ev.part) : 'bell', ev.midi, b, Math.max(ev.dur, 1), vel(ev.vel), GM.bell); break;
-          case 'harm':  note('harm', ev.midi, b, ev.dur, vel(ev.vel), GM.choir); break;
-          case 'pad':   for (const m of ev.midis) note('pad', m, b, ev.dur, vel(ev.vel * 0.7), GM.pad); break;
-          case 'bass':  note('bass', ev.midi, b, ev.dur, vel(ev.vel), GM.bass); break;
-          case 'arp':   note('arp', ev.midi, b, ev.dur, vel(ev.vel * 0.8), GM.arp); break;
-          case 'comp':  note('arp', ev.midi, b, ev.dur, vel(ev.vel * 0.8), GM.arp); break;   // a style's chords (05f) share the arpeggio's track
-          case 'drone': note('drone', ev.midi, b, ev.dur, 60, GM.drone);
-                        note('drone', ev.midi + 7, b, ev.dur, 50, GM.drone); break;
+          case 'lead':  note(ev.part ? vTrack(ev.part) : 'lead', ev.midi, b, ev.dur, vel(ev.vel), ev.part ? prog('alt', GM[ev.timbre]) : prog('lead', GM[ev.timbre])); break;
+          case 'bell':  note(ev.part ? vTrack(ev.part) : 'bell', ev.midi, b, Math.max(ev.dur, 1), vel(ev.vel), prog('bell', GM.bell)); break;
+          case 'harm':  note('harm', ev.midi, b, ev.dur, vel(ev.vel), prog('harm', GM.choir)); break;
+          case 'pad':   for (const m of ev.midis) note('pad', m, b, ev.dur, vel(ev.vel * 0.7), prog('pad', GM.pad)); break;
+          case 'bass':  note('bass', ev.midi, b, ev.dur, vel(ev.vel), prog('bass', GM.bass)); break;
+          case 'arp':   note('arp', ev.midi, b, ev.dur, vel(ev.vel * 0.8), prog('arp', GM.arp)); break;
+          case 'comp':  note('arp', ev.midi, b, ev.dur, vel(ev.vel * 0.8), prog('comp', GM.arp)); break;   // a style's chords (05f) share the arpeggio's track
+          case 'drone': note('drone', ev.midi, b, ev.dur, 60, prog('drone', GM.drone));
+                        note('drone', ev.midi + 7, b, ev.dur, 50, prog('drone', GM.drone)); break;
           case 'kick': case 'snare': case 'shaker': case 'crash': case 'rim': case 'clap': case 'ride':
                         note('drums', DRUM[ev.type], b, 0.25, vel(ev.vel * 1.1), null); break;
           case 'tom':   note('drums', TOMS[clamp(ev.tom | 0, 0, 2)], b, 0.25, vel(ev.vel * 1.1), null); break;
+          case 'perc':  note('drums', PERC[clamp(ev.pi | 0, 0, 2)], b, 0.25, vel(ev.vel * 1.1), null); break;
           case 'hat':   note('drums', ev.open ? DRUM.open : DRUM.hat, b, 0.25, vel(ev.vel), null); break;
         }
       }

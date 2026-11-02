@@ -1,7 +1,7 @@
 /* sigil-render.worker.js: renders, or listens to, one time range of a job with the same core.
      { type: 'render', job, from, to, keep }        → { type: 'done', L, R }
      { type: 'probe',  job, from, to, keep, mode }  → { type: 'heard', r }   the Probe's measurements (for a master plan) */
-     importScripts('sigil-dsp.js');
+     importScripts('sigil-dsp.js', 'sigil-voices.js');
 
      self.onmessage = (e) => {
        const d = e.data;

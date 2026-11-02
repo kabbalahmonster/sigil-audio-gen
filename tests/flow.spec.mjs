@@ -24,8 +24,8 @@
    
    const root = join(dirname(fileURLToPath(import.meta.url)), '..');
    const FILES = ['src/core/00-utils.js', 'src/core/01-crypto.js', 'src/core/02-reduction.js', 'src/core/03-geometry.js',
-     'src/core/04-theory.js', 'src/core/05-composer.js', 'src/core/05b-timbre.js', 'src/core/05c-groove.js', 'src/core/05d-motion.js',
-     'src/dsp/sigil-dsp.js', 'src/core/05e-master.js', 'src/core/05f-style.js', 'src/core/05g-rite.js', 'src/core/05i-flow.js', 'src/core/06b-compiler.js'];
+     'src/core/04-theory.js', 'src/core/05-composer.js', 'src/core/05b-timbre.js', 'src/core/05k-fills.js', 'src/core/05c-groove.js', 'src/core/05d-motion.js',
+     'src/dsp/sigil-dsp.js', 'src/dsp/sigil-voices.js', 'src/core/05e-master.js', 'src/core/05f-style.js', 'src/core/05g-rite.js', 'src/core/05i-flow.js', 'src/core/05j-palette.js', 'src/core/06b-compiler.js'];
    const QUICK = process.argv.includes('--quick');
    
    function fresh() {

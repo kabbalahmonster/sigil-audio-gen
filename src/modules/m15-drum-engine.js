@@ -471,7 +471,7 @@ const DrumEngine = (() => {
   const amounts = {};
   const AMOUNTS = [
     ['variation', 'Variation', 'How much each bar answers the one before: extra kicks, flams, side-stick, the shaker’s whispers'],
-    ['fills', 'Fills', 'How much the kit says at the end of a phrase and of a section. At zero it never fills'],
+    ['fills', 'Fills', 'How much the kit does at the end of a phrase and of a section: the sigil’s name said on the kit, a tom cascade, a roll, flams, a double-kick run, hand-drums, stop-time, claves, claps… chosen by where the music is going. At zero it never fills'],
     ['ghosts', 'Ghosts', 'Ghost notes on the snare, between the backbeats'],
     ['human', 'Humanise', 'A drummer’s hand: small differences of timing and force, and a backbeat that sits behind the beat'],
     ['dynamics', 'Dynamics', 'How much a stroke’s force changes its sound, not only its level'],

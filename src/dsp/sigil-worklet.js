@@ -5,6 +5,7 @@
    transport segments (for sync) and ~25 Hz ticks (meters, stats).
    ══════════════════════════════════════════════════════════════════════════ */
    import './sigil-dsp.js';
+   import './sigil-voices.js';
 
    class SigilEngineProcessor extends AudioWorkletProcessor {
      constructor(options) {

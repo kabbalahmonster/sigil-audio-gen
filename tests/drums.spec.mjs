@@ -23,7 +23,7 @@
    
    const root = join(dirname(fileURLToPath(import.meta.url)), '..');
    const FILES = ['src/core/00-utils.js', 'src/core/01-crypto.js', 'src/core/02-reduction.js', 'src/core/03-geometry.js',
-     'src/core/04-theory.js', 'src/core/05-composer.js', 'src/core/05b-timbre.js', 'src/core/05c-groove.js', 'src/core/05d-motion.js',
+     'src/core/04-theory.js', 'src/core/05-composer.js', 'src/core/05b-timbre.js', 'src/core/05k-fills.js', 'src/core/05c-groove.js', 'src/core/05d-motion.js',
      'src/dsp/sigil-dsp.js', 'src/core/06b-compiler.js'];
    const QUICK = process.argv.includes('--quick');
    
@@ -221,8 +221,8 @@
      ok(run(`part('KRSTVM', { ghosts: 0 }).filter((e) => e.type === 'snare' && !e.fill && e.vel < 0.25).length === 0`), 'Ghosts at zero: none');
      ok(run(`(() => { const grid = (D) => D.every((e) => Math.abs(e.beat * 4 - Math.round(e.beat * 4)) < 1e-9 || e.beat * 8 % 1 < 1e-9 || true);
        const s = buildSigil('BCD'), song = composeSong(s); song.P.swing = 0; Groove.apply(song, s, { human: 0, variation: 0 });
-       return song.events.filter((e) => Groove.TYPES.has(e.type)).every((e) => Math.abs(e.beat * 8 - Math.round(e.beat * 8)) < 1e-9); })()`),
-        'Humanise at zero (and no swing): every stroke is on the grid');
+       return song.events.filter((e) => Groove.TYPES.has(e.type) && !e.grace).every((e) => Math.abs(e.beat * 8 - Math.round(e.beat * 8)) < 1e-9); })()`),
+        'Humanise at zero (and no swing): every stroke is on the grid (a grace note is meant to be off it)');
      ok(run(`(() => { const a = part('KRSTVM', { human: 0 }), b = part('KRSTVM', { human: 1 });
        return a.length === b.length && a.every((e, i) => true) && b.filter((e) => e.type === 'kick').every((e) => true)
            && part('KRSTVM', { human: 1 }).filter((e) => e.type === 'kick' && !e.fill && Math.abs(e.beat - Math.round(e.beat / 4) * 4) < 0.01).every((e) => e.beat === Math.round(e.beat)); })()`),
@@ -248,9 +248,9 @@
      ok(run(`(() => { const s = buildSigil('MNJLRWY'), song = Groove.apply(composeSong(s), s, {});
        const p = SigilPlan.compile(song, s, { spec: SigilPlan.defaultSpec(s, song), lens: false });
        const toms = rows(p).filter((r) => r[D.EV.KIND] === D.KIND.TOM);
-       return toms.length === song.events.filter((e) => e.type === 'tom').length && toms.length > 10
-           && toms.every((r) => r[D.EV.F] > 60 && r[D.EV.F] < 420 && r[D.EV.BUS] === D.BUS.drums && r[D.EV.P2] > 0.03); })()`),
-        'toms compile to TOM rows on the drum bus, between 60 and 420 Hz');
+       return toms.length === song.events.filter((e) => e.type === 'tom' || e.type === 'perc').length && toms.length > 10
+           && toms.every((r) => r[D.EV.F] > 60 && r[D.EV.F] < 500 && r[D.EV.BUS] === D.BUS.drums && r[D.EV.P2] > 0.03); })()`),
+        'toms (and the fills’ hand-drums, which the cube’s kit plays as high toms) compile to TOM rows on the drum bus, between 60 and 500 Hz');
      ok(run(`(() => { const s = buildSigil('MNJLRWY'), song = Groove.apply(composeSong(s), s, {});
        const p = SigilPlan.compile(song, s, { spec: SigilPlan.defaultSpec(s, song), lens: false });
        // each tom is a chord tone: root, fifth or octave above the lowest tom sounding on that chord

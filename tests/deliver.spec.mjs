@@ -28,7 +28,7 @@
    
    const root = join(dirname(fileURLToPath(import.meta.url)), '..');
    const FILES = ['src/core/00-utils.js', 'src/core/01-crypto.js', 'src/core/02-reduction.js', 'src/core/03-geometry.js',
-     'src/core/04-theory.js', 'src/core/05-composer.js', 'src/core/05b-timbre.js', 'src/core/05c-groove.js', 'src/core/05d-motion.js',
+     'src/core/04-theory.js', 'src/core/05-composer.js', 'src/core/05b-timbre.js', 'src/core/05k-fills.js', 'src/core/05c-groove.js', 'src/core/05d-motion.js',
      'src/dsp/sigil-dsp.js', 'src/core/05e-master.js', 'src/core/05h-deliver.js', 'src/export/codecs.js'];
    const QUICK = process.argv.includes('--quick');
    const HAVE_FFMPEG = !QUICK && spawnSync('ffmpeg', ['-version']).status === 0;

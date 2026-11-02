@@ -19,12 +19,13 @@ const DspEngine = (() => {
   };
 
   /* ── Sound patch → engine ───────────────────────────────────────────── */
-  const PLAN_KEYS = ['drumX', 'drumY', 'kSub', 'kPunch', 'kDecay', 'kTone', 'sBody', 'sSnap', 'sTone', 'hTone', 'hDecay'];
+  const PLAN_KEYS = ['drumX', 'drumY', 'kSub', 'kPunch', 'kDecay', 'kTone', 'sBody', 'sSnap', 'sTone', 'hTone', 'hDecay',
+    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc'];     // (the palette's choices are baked into the rows)
   const planNow = () => {
     const st = Sound.state();
     return st.P ? PLAN_KEYS.map((k) => st.P[k]).join(',') + `|${Sound.vowelMemoryOn}|${st.variant}` : '';
   };
-  const verbNow = () => `${Sound.sigilVerbOn}|${Sound.state().variant}`;
+  const verbNow = () => { const P = Sound.state().P || {}; return `${Sound.sigilVerbOn}|${Sound.state().variant}|${P.pal | 0}|${P.palOff | 0}|${[P.iLead, P.iAlt, P.iHarm, P.iBell, P.iBass, P.iArp, P.iPad, P.iDrone, P.iComp, P.iPerc].join(',')}`; };
   let planSig = '', verbSig = '', planT = 0;
 
   function onSound() {

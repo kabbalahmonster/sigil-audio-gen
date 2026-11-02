@@ -43,7 +43,7 @@ const Groove = (() => {
   'use strict';
 
   /** Event types this file owns. Everything else in the score is left alone. */
-  const TYPES = new Set(['kick', 'snare', 'hat', 'shaker', 'crash', 'swell', 'tom', 'rim', 'clap', 'ride']);   // clap, ride: only a style (05f) writes them
+  const TYPES = new Set(['kick', 'snare', 'hat', 'shaker', 'crash', 'swell', 'tom', 'perc', 'rim', 'clap', 'ride']);   // clap, ride: a style (05f) or a fill (05k) writes them; perc: a fill
 
   /**
    * take: which groove (0 = the sigil's own). The amounts are 0…1.
@@ -223,7 +223,7 @@ const Groove = (() => {
     const flamBeats = (0.03 * (m.bpm || 90)) / 60;                 // a grace note ≈ 30 ms ahead, at any tempo
     const fast = (m.bpm || 90) > 112;                              // no thirty-seconds above this
     const ev = [], said = [];                                    // said: each letter the kit speaks, for §7 / m15 to light
-    let turnCursor = 0, fills = 0;
+    let turnCursor = 0, fills = 0, lastFig = null;
 
     /** Swing offset (beats) at a half-step position (0…31); thirty-seconds sit between their neighbours. */
     const swingAt = (p2) => {
@@ -267,7 +267,7 @@ const Groove = (() => {
            at the same moment make one stroke (the louder), never a double. */
         const hits = new Map();
         const put = (p2, type, vel, x) => {
-          const key = `${type}|${x && x.tom != null ? x.tom : ''}|${x && x.grace ? 'g' : ''}|${p2}`;
+          const key = `${type}|${x && x.tom != null ? x.tom : x && x.pi != null ? x.pi : ''}|${x && x.grace ? 'g' : ''}|${p2}`;
           const old = hits.get(key);
           if (old && old.vel >= vel) return;
           hits.set(key, { p2, type, vel, ...(x || {}) });
@@ -364,64 +364,82 @@ const Groove = (() => {
         /* ── FILL: the kit speaks the sigil ───────────────────────────── */
         if (W > 0) {
           fills++;
-          // Section ends say the name from its first letter; turns carry on from where the last one stopped.
-          let cur = sectionEnd ? 0 : turnCursor;
-          const slots = new Array(W).fill(true);
-          if (W > 2 && I === 2) {
-            const H = clamp(Math.round(W * (0.5 + 0.35 * f)), 2, W);
-            euclid(H, W, 0).forEach((on, j) => (slots[W - 1 - j] = on));   // a Euclidean figure that ENDS on a stroke
-          } else if (W > 2 && I === 1) {
-            slots.forEach((_, j) => (slots[j] = (W - 1 - j) % 2 === 0));    // eighths, ending on the last
-          }
-          if (kind === 'dissolve') slots[W - 1] = false;            // the last sixteenth is left to the silence
-
-          let last = null;
-          for (let j = 0; j < W; j++) {
-            if (!slots[j]) continue;
-            const s = from + j, nd = say.seq[cur++ % say.seq.length], lb = limb(nd, say.flip);
-            const pos = W > 1 ? j / (W - 1) : 1;
-            const shape = kind === 'rise' ? lerp(0.62, 1.08, pos) : kind === 'fall' ? lerp(1, 0.72, pos)
-                        : kind === 'dissolve' ? lerp(0.85, 0.42, pos) : lerp(0.78, 1, pos);
-            let type = lb.type, vel = lb.vel * shape * (1 + (lb.ring - 1) * 0.08);
-            const x = { fill: true };
-            if (type === 'tom') x.tom = lb.tom;
-            if (type === 'hat') { x.open = !!lb.open && j === W - 1; x.pan = (N(s, CH.hatPan) - 0.5) * 0.6; }
-            if (I === 1) {                                          // a quiet section fills quietly: sticks and skins
-              if (type === 'snare') { type = 'rim'; vel *= 0.62; }
-              else if (type === 'hat') { type = 'shaker'; vel *= 0.6; delete x.open; delete x.pan; }
-              else vel *= 0.78;
+          /* Which fill: the kit says the sigil's name, or it does something else (05k). Chosen by where the bar falls, so that
+             it is the same in every render and moving the Fills slider does not re-deal the ones that stay. */
+          const fig = Fills.choose({ W, from, I, kind, sectionEnd, f, fast, half, N, idiom: 'rock', style: null, recent: lastFig });
+          lastFig = fig;
+          if (fig !== 'recite') {
+            for (const h of Fills.write(fig, { W, from, I, kind, sectionEnd, f, fast, half, N, idiom: 'rock', style: null })) {
+              const x = { fill: true };
+              if (h.tom != null) x.tom = h.tom;
+              if (h.pi != null) x.pi = h.pi;
+              if (h.open) x.open = true;
+              if (h.pan != null) x.pan = h.pan;
+              if (h.grace) x.grace = true;
+              put(Math.round(h.s * 2), h.type, h.vel * (1 + (N(h.s, CH.fillVel) - 0.5) * 0.1), x);
             }
-            if (kind === 'dissolve' && type === 'snare') { type = 'rim'; vel *= 0.7; }
-            put(s * 2, type, clamp(vel * (1 + (N(s, CH.fillVel) - 0.5) * 0.1), 0.08, 1), x);
-            said.push({ beat: t0 + s * 0.25 + swingAt(s * 2), slot: nd.slot, ring: nd.ring });
-            last = { s, type };
-          }
-          if (!sectionEnd) turnCursor = cur;
-
-          if (kind === 'rise' && sectionEnd) {
-            /* The composer's own build, kept: a snare roll rising through the last beat, over a swell of noise. */
-            for (let j = 0; j < 4; j++) put((12 + j) * 2, 'snare', 0.3 + 0.15 * j, { fill: true });
-            if (!fast && f >= 0.8 && I >= 2) { put(29, 'snare', 0.52, { fill: true }); put(31, 'snare', 0.66, { fill: true }); }
-            if (W >= 8 && I >= 2) for (let s = from; s < STEPS; s += 4) put(s * 2, 'kick', 0.7, { fill: true });
-            if ((next && next.intensity >= 3) || struck(sec)) ev.push({ beat: t0, type: 'swell', dur: 4, vel: 0.8 });
-          } else if (sectionEnd && kind !== 'dissolve') {
-            if (W >= 8 && I >= 2 && from % 4 === 0) put(from * 2, 'kick', 0.7, { fill: true });   // the fill starts from a kick
-            // …and ends on something with a body, so that the next bar is arrived at, not stumbled into.
-            if (last && (last.type === 'hat' || last.type === 'shaker')) {
-              drop(last.s * 2, last.type);
-              put(last.s * 2, I === 1 ? 'rim' : 'snare', I === 1 ? 0.4 : 0.7, { fill: true });
+            if (kind === 'rise' && sectionEnd && ((next && next.intensity >= 3) || struck(sec))) ev.push({ beat: t0, type: 'swell', dur: 4, vel: 0.8 });
+            if (sectionEnd && W >= 8 && next && next.intensity === 2) ev.push({ beat: t0 + 4, type: 'crash', vel: 0.45 });
+          } else {
+            // Section ends say the name from its first letter; turns carry on from where the last one stopped.
+            let cur = sectionEnd ? 0 : turnCursor;
+            const slots = new Array(W).fill(true);
+            if (W > 2 && I === 2) {
+              const H = clamp(Math.round(W * (0.5 + 0.35 * f)), 2, W);
+              euclid(H, W, 0).forEach((on, j) => (slots[W - 1 - j] = on));   // a Euclidean figure that ENDS on a stroke
+            } else if (W > 2 && I === 1) {
+              slots.forEach((_, j) => (slots[j] = (W - 1 - j) % 2 === 0));    // eighths, ending on the last
             }
-          } else if (kind === 'dissolve' && sectionEnd) {
-            put(28, 'tom', 0.42, { tom: 0, fill: true });           // the last word is the floor tom, and then nothing
-            put(28, 'kick', 0.45, { fill: true });
+            if (kind === 'dissolve') slots[W - 1] = false;            // the last sixteenth is left to the silence
+
+            let last = null;
+            for (let j = 0; j < W; j++) {
+              if (!slots[j]) continue;
+              const s = from + j, nd = say.seq[cur++ % say.seq.length], lb = limb(nd, say.flip);
+              const pos = W > 1 ? j / (W - 1) : 1;
+              const shape = kind === 'rise' ? lerp(0.62, 1.08, pos) : kind === 'fall' ? lerp(1, 0.72, pos)
+                          : kind === 'dissolve' ? lerp(0.85, 0.42, pos) : lerp(0.78, 1, pos);
+              let type = lb.type, vel = lb.vel * shape * (1 + (lb.ring - 1) * 0.08);
+              const x = { fill: true };
+              if (type === 'tom') x.tom = lb.tom;
+              if (type === 'hat') { x.open = !!lb.open && j === W - 1; x.pan = (N(s, CH.hatPan) - 0.5) * 0.6; }
+              if (I === 1) {                                          // a quiet section fills quietly: sticks and skins
+                if (type === 'snare') { type = 'rim'; vel *= 0.62; }
+                else if (type === 'hat') { type = 'shaker'; vel *= 0.6; delete x.open; delete x.pan; }
+                else vel *= 0.78;
+              }
+              if (kind === 'dissolve' && type === 'snare') { type = 'rim'; vel *= 0.7; }
+              put(s * 2, type, clamp(vel * (1 + (N(s, CH.fillVel) - 0.5) * 0.1), 0.08, 1), x);
+              said.push({ beat: t0 + s * 0.25 + swingAt(s * 2), slot: nd.slot, ring: nd.ring });
+              last = { s, type };
+            }
+            if (!sectionEnd) turnCursor = cur;
+
+            if (kind === 'rise' && sectionEnd) {
+              /* The composer's own build, kept: a snare roll rising through the last beat, over a swell of noise. */
+              for (let j = 0; j < 4; j++) put((12 + j) * 2, 'snare', 0.3 + 0.15 * j, { fill: true });
+              if (!fast && f >= 0.8 && I >= 2) { put(29, 'snare', 0.52, { fill: true }); put(31, 'snare', 0.66, { fill: true }); }
+              if (W >= 8 && I >= 2) for (let s = from; s < STEPS; s += 4) put(s * 2, 'kick', 0.7, { fill: true });
+              if ((next && next.intensity >= 3) || struck(sec)) ev.push({ beat: t0, type: 'swell', dur: 4, vel: 0.8 });
+            } else if (sectionEnd && kind !== 'dissolve') {
+              if (W >= 8 && I >= 2 && from % 4 === 0) put(from * 2, 'kick', 0.7, { fill: true });   // the fill starts from a kick
+              // …and ends on something with a body, so that the next bar is arrived at, not stumbled into.
+              if (last && (last.type === 'hat' || last.type === 'shaker')) {
+                drop(last.s * 2, last.type);
+                put(last.s * 2, I === 1 ? 'rim' : 'snare', I === 1 ? 0.4 : 0.7, { fill: true });
+              }
+            } else if (kind === 'dissolve' && sectionEnd) {
+              put(28, 'tom', 0.42, { tom: 0, fill: true });           // the last word is the floor tom, and then nothing
+              put(28, 'kick', 0.45, { fill: true });
+            }
+            // A full-bar or half-bar fill into a section that is not announced by its own crash still lands on one.
+            if (sectionEnd && W >= 8 && next && next.intensity === 2) ev.push({ beat: t0 + 4, type: 'crash', vel: 0.45 });
           }
-          // A full-bar or half-bar fill into a section that is not announced by its own crash still lands on one.
-          if (sectionEnd && W >= 8 && next && next.intensity === 2) ev.push({ beat: t0 + 4, type: 'crash', vel: 0.45 });
         }
 
         /* ── Hits → events: swing, feel, and the drummer's hand ───────── */
         for (const h of hits.values()) {
-          const s = h.p2 >> 1, ch = h.type.charCodeAt(0) + (h.tom || 0);
+          const s = h.p2 >> 1, ch = h.type.charCodeAt(0) + (h.tom || h.pi || 0);
           let t = t0 + h.p2 * 0.125 + swingAt(h.p2), vel = h.vel;
           if (h.grace) t -= flamBeats;
           if (hu > 0 && !(h.type === 'kick' && h.p2 === 0)) {
@@ -432,8 +450,10 @@ const Groove = (() => {
           const e = { beat: Math.max(0, t), type: h.type, vel: clamp(vel, 0.05, 1) };
           if (h.type === 'hat') { e.open = !!h.open; e.pan = h.pan || 0; }
           if (h.type === 'tom') e.tom = h.tom | 0;
+          if (h.type === 'perc') { e.pi = h.pi | 0; if (h.pan != null) e.pan = h.pan; }
           if (h.type === 'shaker' && h.pan) e.pan = h.pan;
           if (h.fill) e.fill = true;
+          if (h.grace) e.grace = true;
           ev.push(e);
         }
       }

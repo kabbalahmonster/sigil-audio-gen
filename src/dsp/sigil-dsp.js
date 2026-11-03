@@ -91,7 +91,7 @@
      *   P0…P5 kind-specific (see the init functions)   SEED  int32 noise seed
      */
     /** The palette's pad and drone slots in the instrument table (05j Palette.SLOT): held parts, restarted after a seek. */
-    const SLOT_PAD = 6, SLOT_DRONE = 7;
+    const SLOT_BELL = 3, SLOT_ARP = 5, SLOT_PAD = 6, SLOT_DRONE = 7, SLOT_COMP = 8, SLOT_TOM = 9;
     const EV = Object.freeze({ BEAT: 0, KIND: 1, BUS: 2, F: 3, F0: 4, DUR: 5, VEL: 6, PAN: 7,
       AUX: 8, P0: 9, P1: 10, P2: 11, P3: 12, P4: 13, P5: 14, SEED: 15 });
     const STRIDE = 16;
@@ -331,6 +331,7 @@
         this.tab = null; this.tab1 = null; this.o0 = 0; this.o1 = 0; this.xf = 0; this.xfInc = 0;
         this.env = 0; this.stage = 0; this.aInc = 0; this.dC = 0; this.sus = 0; this.rC = 0; this.peak = 0;
         this.kf = 1; this.kd = 1; this.rng = 1; this.sub = 0; this.n = 0; this.mode = 0;
+        this.slot = -1;                        // the palette's part (its slot in the instrument table), for the voice that plays one
         this.dampAt = 0; this.dampC = 1;      // a note that is let go after this many samples, and damped at this rate (the palette's: row P3)
         this.vibA = 0; this.vibPh = 0; this.vibInc = 0; this.vibR = 0; this.vibRI = 0;
         this.cut = 0; this.cutT = 0; this.cutC = 0;
@@ -347,7 +348,7 @@
       clear() {
         this.q.fill(0);
         this.p.fill(0); this.ph.fill(0); this.inc.fill(0); this.lv.fill(0); this.dk.fill(0); this.fs.fill(0);
-        this.kf = 1; this.kd = 1; this.dampAt = 0; this.dampC = 1; this.glide = 1; this.xf = 0; this.xfInc = 0; this.vibA = 0; this.vibR = 0;
+        this.kf = 1; this.kd = 1; this.dampAt = 0; this.dampC = 1; this.slot = -1; this.glide = 1; this.xf = 0; this.xfInc = 0; this.vibA = 0; this.vibR = 0;
         this.sub = 0; this.tab1 = null; this.lvl = 1; this.t = 0; this.age = 0; this.n = 0; this.mode = 0;
         this.stage = 0; this.env = 0;
       }
@@ -1932,6 +1933,7 @@
         this.bL = []; this.bR = [];
         for (let b = 0; b < NBUS; b++) { this.bL.push(mk()); this.bR.push(mk()); }
         this.used = new Uint8Array(NBUS);
+        this.nans = 0;                   // voices let go for making what was not a number
         this.busG = Float64Array.from(BUS_DEFAULT); this.busT = Float64Array.from(BUS_DEFAULT);
         this.meters = new Float32Array(NBUS + 1);
         this.mL = mk(); this.mR = mk(); this.dL = mk(); this.dR = mk(); this.pL = mk(); this.pR = mk();
@@ -2070,7 +2072,13 @@
           if (!v.active) { if (free === null) free = v; continue; }
           active++;
           if (v.kd !== 1) continue;                          // already dying
-          const prio = v.live ? 4e9 : v.stage === 3 ? 0 : v.kind === KIND.DRONE ? 3e9 : v.kind === KIND.PAD ? 2e9 : 1e9;
+          /* Who goes first when there are too many: a voice that has been let go (it is only ringing out), then the ornaments (the arpeggio, the
+             chords, the bells, the kit's colour), then the parts that carry the music, and last the ones that hold it up (a pad, a drone).
+             The palette's instruments are told by their part (v.slot), as the cube's are by their kind. */
+          const sl = v.slot;
+          const prio = v.live ? 4e9 : v.stage === 3 ? 0
+            : v.kind === KIND.DRONE || sl === SLOT_DRONE ? 3e9 : v.kind === KIND.PAD || sl === SLOT_PAD ? 2e9
+            : sl === SLOT_ARP || sl === SLOT_COMP || sl === SLOT_BELL || sl >= SLOT_TOM ? 0.5e9 : 1e9;
           const score = prio + v.order;
           if (score < best) { best = score; victim = v; }
         }
@@ -2378,6 +2386,16 @@
           if (v.dampAt > 0 && v.age >= v.dampAt) { if (v.kd === 1 || v.dampC < v.kd) v.kd = v.dampC; v.dampAt = 0; }
           fn(this, v, this.bL[v.bus], this.bR[v.bus], v.off, n);
           v.off = 0;
+          /* A voice that has made a number that is not one would be carried by the bus's filters for ever (an IIR keeps what it is given): that
+             whole part would be silent from here on, and the drums, on their own bus, would play on. It is found where it is made, its
+             samples are put right, and it is let go. (Nothing is expected to come of this: it is here because nothing else is.) */
+          const bl = this.bL[v.bus], br = this.bR[v.bus];
+          let sum = 0;
+          for (let j = 0; j < n; j++) sum += bl[j] + br[j];
+          if (sum !== sum || sum === Infinity || sum === -Infinity) {
+            for (let j = 0; j < n; j++) { if (!(bl[j] > -64 && bl[j] < 64)) bl[j] = 0; if (!(br[j] > -64 && br[j] < 64)) br[j] = 0; }
+            v.active = false; this.nans++;
+          }
         }
         this.act = act;
         this.mixdown(outL, outR, n, postL, postR);
@@ -2751,7 +2769,7 @@
           M.kE = 0; M.kN = 0; G.fill(1); lim.gr = 1; lim.tp = 0;
         }
         return { type: 'tick', t, beat: this.beat, pass: this.pass + this.pass0, playing: this.playing, voices: this.act,
-          budget: this.budget, steals: this.steals, duck: this.duckG, load, meters, moved, master };
+          budget: this.budget, steals: this.steals, nans: this.nans, duck: this.duckG, load, meters, moved, master };
       }
       /** Run every voice kind briefly so the JIT compiles the hot loops before the first note. */
       warmup() {

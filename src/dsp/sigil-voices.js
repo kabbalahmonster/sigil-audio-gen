@@ -65,6 +65,7 @@
      */
     const register = (kind, init, render) => D.registerVoice(kind, (c, v, src, o, pb, el) => {
       init(c, v, src, o, pb, el);
+      v.slot = src[o + EV.P0] | 0;
       const t60 = src[o + EV.P3];
       if (t60 > 0 && src[o + EV.DUR] > 0) {
         const dur = Math.max(0.02, (src[o + EV.DUR] - el) * c.spb());
@@ -321,7 +322,7 @@
       const dur = common(c, v, src, o, el);
       v.kind = KIND.MODAL;
       const accent = clamp(src[o + EV.P1], 0, 1), vary = clamp(src[o + EV.P2], 0, 1);
-      if (!v.m) v.m = new Float64Array(MAXM * MS);
+      if (!v.m || v.m.length < M_SIZE) v.m = new Float64Array(M_SIZE);      // (one block of numbers serves the modal bank and the grains: whichever came first, it is the size of the larger)
       const m = v.m; m.fill(0);
       const set = MODAL_SETS[clamp(I[b + 2] | 0, 0, MODAL_SETS.length - 1)], [rat, amp, life] = set;
       const f = v.f, bright = clamp(S[pb + PA.BRIGHT], 0, 1), exc = I[b + 7] | 0;
@@ -356,7 +357,7 @@
         const pa = ((clamp(pn, -1, 1) + 1) * Math.PI) / 4;
         m[o8 + 5] = Math.cos(pa) * SQ2; m[o8 + 6] = Math.sin(pa) * SQ2;
         m[o8 + 7] = th;
-        endS = Math.max(endS, (tk / 6.9078) * Math.log(Math.max(1.0001, lv * 4e4)) * sr);
+        endS = Math.max(endS, (tk / 6.9078) * Math.log(Math.max(1.0001, lv * 4e3)) * sr);
         ampSum += lv;
         K++;
       }
@@ -622,7 +623,7 @@
         // the brightness: the upper drawbars are pulled out as it opens, the lowest let in as it closes
         const up = Math.log2(Math.max(0.5, r)) / 3;
         lv *= clamp(0.45 + 0.9 * bright + (0.5 - bright) * (-up) * 0.3 - up * (1 - bright) * 0.4, 0.1, 1.4);
-        if (reed > 0 && (r === 3 || r === 5 || r === 1)) lv += reed * 0.5 / r;
+        if (reed > 0 && (r === 3 || r === 5 || r === 1) && fk < sr * 0.45) lv += reed * 0.5 / r;      // (and never above the Nyquist: a phase that steps more than once round is off the table)
         v.q[k] = lv; tot += lv;                                // (the levels are kept in q)
         v.inc[k] = (fk / sr);
         v.ph[k] = frac(0.37 * k + vary * 0.2);
@@ -1017,6 +1018,7 @@
        ROW  P1 accent · P2 variation
        ═════════════════════════════════════════════════════════════════════════ */
     const GRAINS = 24, GS = 8;
+    const M_SIZE = Math.max(MAXM * MS, GRAINS * GS);     // (the voice's block of numbers for a mode bank or for grains)
   
     function initCloud(c, v, src, o, pb, el) {
       const sr = c.sr, S = c.sec, I = c.inst, b = slotOf(c, src, o), P = v.p, q = v.q;
@@ -1024,7 +1026,7 @@
       v.kind = KIND.CLOUD;
       const accent = clamp(src[o + EV.P1], 0, 1), vary = clamp(src[o + EV.P2], 0, 1), f = v.f, vel = v.vel;
       const bright = clamp(S[pb + PA.BRIGHT], 0, 1);
-      if (!v.m) v.m = new Float64Array(Math.max(MAXM * MS, GRAINS * GS));
+      if (!v.m || v.m.length < M_SIZE) v.m = new Float64Array(M_SIZE);
       v.m.fill(0);
       const srcK = I[b + 2] | 0;
       if (srcK === 2) { c.pickCells(pb, 0, false); v.tab = c.c0; v.o0 = c.tier(f * 2); }
@@ -1071,6 +1073,7 @@
             m[o8 + 1] = (f * ratio) / sr;                // increment
             m[o8 + 2] = len * (0.7 + 0.6 * u4);          // length in samples (> 0: the slot is in use)
             m[o8 + 3] = 0;                               // age
+            m[o8 + 7] = 1 / m[o8 + 2];                   // one over its length
             m[o8 + 4] = (1 - rnd * 0.6 * u4) * nrm;      // level
             m[o8 + 5] = Math.cos(pa) * SQ2; m[o8 + 6] = Math.sin(pa) * SQ2;
             q[24 + nAct++] = gk;
@@ -1079,13 +1082,12 @@
         } else if (acc >= 1) acc = 1;
         let yl = 0, yr = 0;
         for (let ai = 0; ai < nAct; ai++) {
-          const o8 = q[24 + ai] * GS, L8 = m[o8 + 2];
-          const age = m[o8 + 3], u = age / L8;
+          const o8 = q[24 + ai] * GS, age = m[o8 + 3], u = age * m[o8 + 7];            // (m[o8+7] is one over the grain's length: no division in the loop)
           if (u >= 1) { m[o8 + 2] = 0; q[24 + ai] = q[24 + --nAct]; ai--; continue; }
-          const w = sinAt(0.5 * u), win = w * w;
+          const w = u * (1 - u) * 4, win = w * w;                                      // a smooth window: zero at both ends, round on top
           let p = m[o8] + m[o8 + 1]; if (p >= 1) p -= 1; m[o8] = p;
           let x;
-          if (srcK === 0) x = sinAt(p) + bri * 0.25 * sinAt(frac(p * 2));
+          if (srcK === 0) x = sinAt(p) + bri * 0.25 * sinAt(p + p - (p >= 0.5 ? 1 : 0));
           else if (srcK === 1) x = 4 * Math.abs(p - 0.5) - 1;
           else if (srcK === 2) x = tabAt(t, o0, p) * 0.8;
           else x = sinAt(p) * 0.8 + sinAt(frac(p * 2.76)) * 0.22 * bri + sinAt(frac(p * 5.4)) * 0.08 * bri;

@@ -337,7 +337,7 @@ Engine.param = function (initial, onSet) {
   p.linearRampToValueAtTime = set; p.exponentialRampToValueAtTime = set;
   return p;
 };
-Engine.voiceBudget = () => Prefs.get('audio.voices', (navigator.hardwareConcurrency || 4) <= 2 ? 32 : 48);
+Engine.voiceBudget = () => Prefs.get('audio.voices', (navigator.hardwareConcurrency || 4) <= 2 ? 40 : 64);
 Engine._mt = new Float64Array(3);   // scratch for motionNow()
 Engine.sharedIR = () => null;
 

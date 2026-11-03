@@ -278,6 +278,43 @@
    });
    
    /* ═══════════════════════════════════════════════════════════════════════
+      4b · THE POOL: voices are handed from one engine to another
+      ═══════════════════════════════════════════════════════════════════════ */
+   group('§4b · a voice that played one engine is handed to another, and nothing it leaves behind is a number that is not one', () => {
+     const D = bootCore();
+     const list = J(`[...Palette.INST.values()].filter((d) => d.engine !== 'cube').map((d) => ({ id: d.id, key: d.key, role: d.roles[0] }))`);
+     const SL = J('Palette.SLOT'), BUSES = { lead: 'lead', alt: 'lead', harm: 'harm', bell: 'bell', bass: 'bass', arp: 'arp', pad: 'pad', drone: 'drone', comp: 'arp', tom: 'drums', perc: 'drums', rim: 'drums', shaker: 'drums' };
+     let seed = 0xBADC0DE; const rnd = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) / 4294967296; };
+     let notes = 0, bad = [], nans = 0;
+     for (let batch = 0; batch * 13 < list.length; batch++) {
+       const group13 = list.slice(batch * 13, batch * 13 + 13);
+       const table = new Float64Array(D.NINST * D.IST);
+       group13.forEach((d, i) => { const pk = packed(run, d.id, d.role); table.set(pk.table.subarray(SL[d.role] * 24, SL[d.role] * 24 + 24), i * 24); });
+       const E = new Float64Array(400 * D.STRIDE);
+       for (let k = 0; k < 400; k++) {
+         const i = Math.floor(rnd() * group13.length), d = group13[i], o = k * D.STRIDE, pk = packed(run, d.id, d.role);
+         E[o] = k * 0.2; E[o + D.EV.KIND] = pk.kind; E[o + D.EV.BUS] = D.BUS[BUSES[d.role]]; E[o + D.EV.F] = 440 * Math.pow(2, (24 + rnd() * 70 - 69) / 12);
+         E[o + D.EV.DUR] = rnd() < 0.2 ? 0.05 : 0.25 + rnd() * 6; E[o + D.EV.VEL] = 0.3 + rnd() * 0.7; E[o + D.EV.P0] = i; E[o + D.EV.P1] = rnd(); E[o + D.EV.P2] = rnd();
+         E[o + D.EV.P3] = rnd() < 0.5 ? 1 : 0; E[o + D.EV.SEED] = (rnd() * 2e9) | 0; E[o + D.EV.PAN] = rnd() * 2 - 1;
+       }
+       const sections = new Float64Array(D.PSTRIDE); sections.set(D.DEFAULT_PATCH);
+       const c = new D.Core(44100, { warm: false, voices: 8 });                 // (eight voices: every note is played by a voice that has just played something else)
+       c.command({ type: 'inst', inst: table });
+       c.command({ type: 'plan', events: E, count: 400, sections, nSec: 1, total: 200, bpm: 150, passes: 1 });
+       c.command({ type: 'levels', levels: {}, snap: true }); c.command({ type: 'params', reverb: 0 }); c.command({ type: 'play', beat: 0, pass: 0 }); c.snapFx();
+       const bl = new Float32Array(128), br = new Float32Array(128), n = 44100 * 34;
+       for (let p = 0; p < n; p += 128) {
+         c.blockTime = p / 44100; c.process(bl, br, 128);
+         let fin = true; for (let i = 0; i < 128; i++) if (!Number.isFinite(bl[i]) || !Number.isFinite(br[i])) { fin = false; break; }
+         if (!fin) { bad.push(`batch ${batch} at ${(p / 44100).toFixed(1)} s (${group13.map((x) => x.key).join(',')})`); break; }
+       }
+       nans += c.nans; notes += 400;
+     }
+     ok(bad.length === 0, `${notes} notes of every instrument, eight voices between them: the output is always a number`, bad.slice(0, 3).join('; '));
+     ok(nans === 0, 'and no voice ever had to be let go for making one that is not', `${nans}`);
+   });
+   
+   /* ═══════════════════════════════════════════════════════════════════════
       5 · HEARD
       ═══════════════════════════════════════════════════════════════════════ */
    if (!QUICK) {
@@ -373,6 +410,34 @@
        }
      });
    }
+   
+   if (!QUICK) group('§5d · whole songs, three passes, as the stage plays them: no part goes silent for good', () => {
+     const D = bootCore();
+     const cases = [['TSMYWLFNHBK', 0], ['NRPGH', 5], ['YBZPHKT', 5], ['PCNDQTVRMZ', 3], ['MFVLBRSJ', 2]];      // (the second and third fell silent, from a point on, before the pool was fixed)
+     for (const [w, pal] of cases) {
+       const job = realm(run(`(() => { const sg = buildSigil(${JSON.stringify(w)}), song = composeSong(sg), spec = SigilPlan.defaultSpec(sg, song); spec.P = { ...spec.P, pal: ${pal} };
+         return SigilPlan.renderJob(song, sg, { sr: 22050, spb: song.spb, passes: 3, flow: true, spec }); })()`));
+       const sr = 22050, c = new D.Core(sr, { warm: false, voices: 64 });
+       c.command({ type: 'cube', spectra: job.spectra, tilt: job.tilt, density: job.density }); c.command({ type: 'reverb', rt60: job.reverb.rt60, damp: job.reverb.damp, taps: job.reverb.taps });
+       c.command({ type: 'plan', events: job.events, count: job.count, sections: job.sections, nSec: job.nSec, total: job.total, bpm: job.bpm, passes: 3, auto: job.auto, loop: job.loop });
+       c.command({ type: 'inst', inst: job.inst }); c.command({ type: 'levels', levels: job.levels, snap: true }); c.command({ type: 'params', ...job.params }); c.command({ type: 'play', beat: 0, pass: 0 }); c.snapFx();
+       const bl = new Float32Array(128), br = new Float32Array(128), n = Math.round((D.beatsOf(job.total, job.loop, 3) * 60 / job.bpm) * sr);
+       let nan = 0, run_ = 0, longest = 0, musicDead = 0, lastMusic = 0;
+       for (let p = 0; p < n; p += 128) {
+         c.blockTime = p / sr; c.process(bl, br, 128);
+         let pk = 0; for (let i = 0; i < 128; i++) { const a = Math.abs(bl[i]); if (!(a === a)) nan++; else if (a > pk) pk = a; }
+         if (pk < 1e-5) { run_++; if (run_ > longest) longest = run_; } else run_ = 0;
+         // the music buses (everything but the kit) carry something, now and then, to the end
+         let m = 0; for (const b of [0, 1, 2, 3, 4, 5, 7]) { const B = c.bL[b]; for (let i = 0; i < 128; i++) m = Math.max(m, Math.abs(B[i])); }
+         if (m > 1e-4) lastMusic = p;
+       }
+       const tail = (n - lastMusic) / sr;
+       ok(nan === 0 && c.nans === 0, `${w} (palette deal ${pal}): ${Math.round(n / sr)} s in three passes, every sample a number, no voice let go for making one that is not`, `nan ${nan} voices ${c.nans}`);
+       ok(longest * 128 / sr < 1, '  and never silent for as much as a second', `${(longest * 128 / sr).toFixed(1)} s`);
+       ok(tail < 12, '  and the music plays to the end (not only the kit)', `the music stopped ${tail.toFixed(0)} s before the end`);
+       ok(c.steals < 40, `  and the pool (64 voices) is enough: ${c.steals} stolen`, String(c.steals));
+     }
+   });
    
    console.log(`\n${pass} passed, ${fail} failed`);
    process.exit(fail ? 1 : 0);

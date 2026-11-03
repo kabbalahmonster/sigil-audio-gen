@@ -356,7 +356,7 @@ const Palette = (() => {
     { roles: [AR, L, A, PD], tags: { eerie: 0.7, fierce: 0.4, dreamy: 0.4, organic: 0.3 } });
   def(132, 'glass-rain', 'Glass rain', 'cloud', { src: 3, rate: 16, len: 0.09, jitter: 160, oct: 0.2, fifth: 0.1, spread: 1, atk: 0.03, rel: 0.3, wander: 0.3, rnd: 0.5, soft: 0 },
     { roles: [AR, B, PD, L], tags: { bright: 0.8, dreamy: 0.8, playful: 0.4, eerie: 0.3 } });
-  def(133, 'fog', 'Fog', 'cloud', { src: 1, rate: 70, len: 0.4, jitter: 4, oct: 0.05, fifth: 0.05, spread: 1, atk: 1.6, rel: 2, wander: 0.6, rnd: 0.2, soft: 0.6 },
+  def(133, 'fog', 'Fog', 'cloud', { src: 1, rate: 30, len: 0.42, jitter: 4, oct: 0.05, fifth: 0.05, spread: 1, atk: 1.6, rel: 2, wander: 0.6, rnd: 0.2, soft: 0.6 },
     { roles: [DR, PD, H], tags: { dreamy: 0.9, eerie: 0.7, warm: 0.4, sacred: 0.3 } });
 
   /** Some instruments play a part a second time, in a world that wants them there. */
@@ -970,10 +970,10 @@ const Palette = (() => {
     '124:arp': 0.234,
     '124:bell': 0.439,
     '124:lead': 0.286,
-    '130:drone': 0.172,
-    '130:harm': 0.209,
-    '130:lead': 0.379,
-    '130:pad': 0.093,
+    '130:drone': 0.212,
+    '130:harm': 0.203,
+    '130:lead': 0.369,
+    '130:pad': 0.09,
     '131:alt': 0.464,
     '131:arp': 0.573,
     '131:lead': 0.485,
@@ -982,9 +982,9 @@ const Palette = (() => {
     '132:bell': 0.409,
     '132:lead': 0.296,
     '132:pad': 0.132,
-    '133:drone': 0.228,
-    '133:harm': 0.548,
-    '133:pad': 0.161,
+    '133:drone': 0.262,
+    '133:harm': 0.383,
+    '133:pad': 0.138,
     '140:alt': 0.254,
     '140:harm': 0.136,
     '140:lead': 0.289,

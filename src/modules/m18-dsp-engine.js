@@ -87,7 +87,7 @@ const DspEngine = (() => {
     const e = app.engine, c = e.ctx, s = Stage.stats();
     info.textContent =
       `engine   DSP worklet · ${c.sampleRate} Hz · ${c.state}\n` +
-      `voices   ${d.voices} / ${d.budget} · stolen ${d.steals}\n` +
+      `voices   ${d.voices} / ${d.budget} · stolen ${d.steals}${d.nans ? ` · ${d.nans} let go for a bad sample` : ''}\n` +
       `dsp      ${d.load >= 0 ? Math.round(d.load * 100) + ' % of the audio deadline' : 'load not reported by this browser'}\n` +
       `latency  base ${msOf(c.baseLatency)} · output ${msOf(c.outputLatency)}\n` +
       `visuals  ${s.label} · ${s.fps.toFixed(0)} fps · ${s.cost.toFixed(1)} ms JS/frame`;

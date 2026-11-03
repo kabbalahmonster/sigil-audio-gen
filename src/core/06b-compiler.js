@@ -247,13 +247,14 @@ const SigilPlan = (() => {
         case 'pad': {
           if (!(d = inst('pad'))) return false;
           /* a chord is one row a note, each a part of the sum: as loud, together, as the cube's pad is */
-          const ms = ev.midis.slice(0, d.engine === 'cloud' ? 3 : 5), k = 1.15 / Math.sqrt(ms.length);
+          const ms = ev.midis.slice(0, d.engine === 'cloud' ? 2 : 5), k = 1.15 / Math.sqrt(ms.length);
           ms.forEach((m, j) => { const o = stroke(ev, d, 'pad', BUS.pad, m, k); out[o + EV.PAN] = (j % 2 ? 1 : -1) * Math.min(0.4, 0.12 * j); });
           return true;
         }
         case 'drone': {
           if (!(d = inst('drone'))) return false;
           stroke(ev, d, 'drone', BUS.drone, ev.midi, 0.8);
+          if (d.engine === 'cloud') return true;                               // (a cloud of grains is a drone of its own)
           const o = stroke(ev, d, 'drone', BUS.drone, ev.midi + 7, 0.45);       // and the fifth over it, as the cube's drone has
           out[o + EV.PAN] = 0.15;
           return true;

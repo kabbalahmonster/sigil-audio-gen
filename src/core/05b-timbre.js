@@ -78,16 +78,20 @@ const SoundDesign = (() => {
     pal: ['pv', 0, 99], palOff: ['po', 0, 1],
     iLead: ['xl', 0, 255], iAlt: ['xa', 0, 255], iHarm: ['xh', 0, 255], iBell: ['xb', 0, 255], iBass: ['xs', 0, 255],
     iArp: ['xr', 0, 255], iPad: ['xp', 0, 255], iDrone: ['xd', 0, 255], iComp: ['xc', 0, 255], iPerc: ['xk', 0, 255],
+    // the sound engine (0 the cube, 1 the arcade, 05l) and the arcade's macros, shared by its four channels
+    engine: ['eg', 0, 1],
+    aDensity: ['as', 0, 1], aComplex: ['ac', 0, 1], aSwing: ['aw', 0, 1], aBright: ['ab', 0, 1], aFm: ['af', 0, 1],
+    aPw: ['ap', 0.05, 0.5], aDrive: ['av', 0, 1], aDrums: ['ak', 0, 1], aDecay: ['ay', 0.25, 2], aArp: ['ar', 0, 6], aSpace: ['aq', 0, 1],
   };
   const INTEGER_FIELDS = new Set(['vowel', 'bits', 'hold', 'dBits', 'dHold', 'dTime', 'take', 'mVar', 'mMute', 'finish',
-    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc']);
+    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc', 'engine', 'aArp']);
   /**
    * Fields Mutate leaves alone: switches and indices, where a nudge is a different thing entirely;
    * and the kit's filter, which is a performance control (a nudge off centre takes the kick's sub away).
    */
   const FIXED_FIELDS = new Set(['bits', 'hold', 'voice', 'dBits', 'dHold', 'dTime', 'dFilter', 'take',
     'motion', 'evolve', 'mVar', 'mMute', 'finish', 'fAmt',
-    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc']);
+    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc', 'engine']);
   const VOICES = ['auto', 'vox', 'wave'];
   const clampTo = (x, a, b) => Math.min(b, Math.max(a, x));
 

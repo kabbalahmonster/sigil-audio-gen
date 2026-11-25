@@ -68,7 +68,9 @@
       DRONE: 8, KICK: 9, SNARE: 10, HAT: 11, NOISE: 12, FIRE: 13, TOM: 14,
       // The palette's engines (sigil-voices.js). Their parameters are not in the event row but in the INSTRUMENT TABLE
       // (see IN): a row names its instrument in P0. ⚠ APPEND ONLY: an id is in every link that has ever used it.
-      PLUCK: 15, MODAL: 16, ANALOG: 17, ORGAN: 18, DX: 19, BREATH: 20, FOLD: 21, CLOUD: 22 });
+      PLUCK: 15, MODAL: 16, ANALOG: 17, ORGAN: 18, DX: 19, BREATH: 20, FOLD: 21, CLOUD: 22,
+      // The arcade engine's four channels (sigil-arcade.js): every number they need is in the row itself, no instrument table.
+      ARC_FM: 23, ARC_PULSE: 24, ARC_NOISE: 25, ARC_ARP: 26 });
   
     /** Buses. 'fx' = live keys and ritual sounds; 'post' bypasses the master chain and the banish filter. */
     const BUS_NAMES = Object.freeze(['lead', 'harm', 'bell', 'pad', 'bass', 'arp', 'drums', 'drone', 'fx', 'post']);
@@ -1046,9 +1048,10 @@
       if ((t > Math.max(2, dur) && cl < 1e-4) || kf < 1e-3) v.active = false;
     }
   
-    /** Engines registered by sigil-voices.js: kind → init(c, v, src, o, pb, el), and its render is RENDER[kind]. */
-    const EXT_INIT = [];
-    function registerVoice(kind, init, render) { EXT_INIT[kind] = init; RENDER[kind] = render; }
+    /** Engines registered by sigil-voices.js: kind → init(c, v, src, o, pb, el), and its render is RENDER[kind].
+        `own`: the engine reads nothing but its row and the section row (the arcade's), so it plays with no instrument table. */
+    const EXT_INIT = [], EXT_OWN = [];
+    function registerVoice(kind, init, render, own) { EXT_INIT[kind] = init; RENDER[kind] = render; EXT_OWN[kind] = !!own; }
     const RENDER = [];
     RENDER[KIND.LEAD] = rWave; RENDER[KIND.WAVE] = rWave; RENDER[KIND.VOX] = rVox; RENDER[KIND.FM] = rFm;
     RENDER[KIND.BOW] = rBow; RENDER[KIND.BELL] = rBell; RENDER[KIND.PAD] = rPad; RENDER[KIND.DRONE] = rDrone;
@@ -2143,8 +2146,8 @@
           case KIND.FIRE: initFire(this, v, src, o); break;
           case KIND.TOM: initTom(this, v, src, o, pb); break;
           default: {
-            const init = EXT_INIT[(src[o + EV.KIND] | 0) & 255];
-            if (!init || !this.inst) { v.active = false; this.sec = plan; return; }    // an engine nobody has registered, or no instruments dealt
+            const ek = (src[o + EV.KIND] | 0) & 255, init = EXT_INIT[ek];
+            if (!init || (!this.inst && !EXT_OWN[ek])) { v.active = false; this.sec = plan; return; }    // an engine nobody has registered, or no instruments dealt
             init(this, v, src, o, pb, el);
           }
         }
@@ -2157,7 +2160,10 @@
         for (let i = this.lower(beat - 512); i < this.ptr; i++) {
           const o = i * STRIDE, k = E[o + EV.KIND] & 255;
           // a held part: the cube's pad and drone, or a palette instrument in the pad's or the drone's slot
-          if (k !== KIND.PAD && k !== KIND.DRONE && !(k >= KIND.PLUCK && ((E[o + EV.P0] | 0) === SLOT_PAD || (E[o + EV.P0] | 0) === SLOT_DRONE))) continue;
+          // (an arcade row says it is held in AUX: its P0 is a ratio or a frequency, not a slot)
+          const arc = k >= KIND.ARC_FM && k <= KIND.ARC_ARP;
+          if (k !== KIND.PAD && k !== KIND.DRONE && !(arc ? E[o + EV.AUX] === 1
+            : k >= KIND.PLUCK && ((E[o + EV.P0] | 0) === SLOT_PAD || (E[o + EV.P0] | 0) === SLOT_DRONE))) continue;
           if (E[o] + E[o + EV.DUR] > beat + 0.25) this.spawn(E, o, 0, beat - E[o], 0);
         }
       }
@@ -2780,6 +2786,7 @@
           KIND.KICK, KIND.SNARE, KIND.HAT, KIND.NOISE, KIND.FIRE, KIND.TOM];
         for (let rep = 0; rep < 3; rep++) {
           for (const k of kinds) { row[EV.KIND] = k; row[EV.BUS] = k >= KIND.KICK ? B_DRUMS : 0; this.spawn(row, 0, 0, 0, 0); }
+          for (let k = 0; k < EXT_OWN.length; k++) if (EXT_OWN[k]) { row[EV.KIND] = k; row[EV.BUS] = 0; this.spawn(row, 0, 0, 0, 0); }
           for (let b = 0; b < 16; b++) this.process(sL, sR, BLOCK);
         }
         this.panic();

@@ -71,9 +71,13 @@ const SigilPlan = (() => {
   const variantOf = (tb) => parseInt(String(tb.key).split(':').pop(), 10) || 0;
 
   /* ── Inputs from optional modules (all soft dependencies) ───────────── */
+  /** The arcade's macros as the sigil deals them (05l), or nothing where the module is not here. */
+  const arcadeOwn = (sigil) => (typeof Arcade !== 'undefined' ? { ...Arcade.DEFAULTS, ...Arcade.derive(sigil.hash) } : {});
+  /** The arcade's macros in force, or null: the cube plays. Only where its engines are (a host without sigil-arcade.js keeps the cube). */
+  const arcadeOf = (spec) => (typeof Arcade !== 'undefined' && typeof SigilArcade !== 'undefined' && spec && Arcade.on(spec.P) ? Arcade.params(spec.P) : null);
   function defaultSpec(sigil, song) {
     // The sigil's own patch, dressed by the song: a style's signature, a mood's values, an element's lean (SD.shape).
-    let P = SD.shape({ ...DEFAULTS, ...SD.derive(sigil.hash, 0), ...SD.drumFx(sigil.hash, 0) }, song && song.cfg);
+    let P = SD.shape({ ...DEFAULTS, ...SD.derive(sigil.hash, 0), ...SD.drumFx(sigil.hash, 0), ...arcadeOwn(sigil) }, song && song.cfg);
     if (typeof Palette !== 'undefined') P = Palette.dress(P, Palette.finish(sigil, song && song.cfg, P), SD.FIELDS);   // the world's own colour (M11 does the same for the stage)
     return { P, cube: SD.tables(sigil, 0),
       variant: 0, arc: true, frozen: false, verb: true, vowels: null };
@@ -107,9 +111,9 @@ const SigilPlan = (() => {
     const n = song.sections.length;
     return song.sections.map((sec, si) => (spec.arc ? { ...spec.P, ...SD.arc(spec.P, sec, si, n) } : spec.P));
   }
-  function sectionsTable(song, sigil, spec, Ps, DS) {
+  function sectionsTable(song, sigil, spec, Ps, DS, arc) {
     const out = new Float64Array(Ps.length * PSTRIDE);
-    const fxOn = DS.fx !== false;                    // the panel's bypass: every D* column at rest
+    const fxOn = DS.fx !== false && !arc;            // the panel's bypass: every D* column at rest (and the arcade has no use for the cube's kit chain)
     Ps.forEach((P, si) => {
       const o = si * PSTRIDE, sec = song.sections[si];
       const set = (k, v, d) => { out[o + PA[k]] = num(v, d); };
@@ -142,6 +146,14 @@ const SigilPlan = (() => {
         out[o + PA.DSIZE] = clamp(num(P.drumX, 0.5), 0, 1);          // a bigger kit sits in a bigger room
         out[o + PA.DECHO] = clamp(num(P.dEcho, 0), 0, 1);
         out[o + PA.DTIME] = SD.ECHO_BEATS[clamp(Math.round(num(P.dTime, 2)), 0, SD.ECHO_BEATS.length - 1)];
+      }
+      if (arc) {
+        /* The arcade is dry and clean: none of the cube's chorus, crusher, fold or drive. Its lead brightness is the BRIGHT column
+           (so the movers animate it), leaning as the rite's sound arc leans the cube's; its space is the echo. */
+        out[o + PA.BRIGHT] = clamp(arc.bright + (num(P.bright, 0.6) - num(spec.P.bright, 0.6)) * 0.6, 0, 1);
+        out[o + PA.CHORUS] = 0; out[o + PA.GRIT] = 0; out[o + PA.BITS] = 16; out[o + PA.HOLD] = 1;
+        out[o + PA.FOLD] = 0; out[o + PA.DRIVE] = 0;
+        out[o + PA.ECHO] = Arcade.space(spec.P).echo;
       }
     });
     return out;
@@ -457,8 +469,11 @@ const SigilPlan = (() => {
         }
       }
     }
-    /* The core finds its place in the table by bisection and walks it forwards: it must be in order. A clap is four rows a hundredth of a beat apart,
-       a swung or grace-noted stroke can come before the one that was written before it; a row out of place is a row that is never played. */
+    return inOrder(out, n);
+  }
+  /* The core finds its place in the table by bisection and walks it forwards: it must be in order. A clap is four rows a hundredth of a beat apart,
+     a swung or grace-noted stroke can come before the one that was written before it; a row out of place is a row that is never played. */
+  function inOrder(out, n) {
     let ordered = true;
     for (let i = 1; i < n; i++) if (out[i * STRIDE] < out[(i - 1) * STRIDE]) { ordered = false; break; }
     if (!ordered) {
@@ -468,6 +483,138 @@ const SigilPlan = (() => {
     }
     return { events: out.slice(0, n * STRIDE), count: n };
   }
+
+  /* ── The arcade (05l, sigil-arcade.js) ──────────────────────────────── */
+  /**
+   * Every part as one of the machine's four channels:
+   *   FM      lead, second voice, choir, bells (and the machine's echo of the lead)
+   *   PULSE   bass, drone
+   *   NOISE   every stroke of the kit, the crash and the swell
+   *   ARP     the arpeggio's notes, and every chord (pad, a style's strums and stabs) stepped through at the arpeggio rate
+   * The score is first re-arranged by the macros (Arcade.arrange: the notes it may use, how much is played, the swing).
+   */
+  function compileArcade(song, sigil, spec, Ps, lens, DS, A) {
+    const src = song.events, N = src.length;
+    const evs = [];
+    for (let i = 0; i < N; i++) {
+      const raw = src[i];
+      let ev = lens ? LiveLens.map(raw, song) : raw;
+      if (raw.when && ev.when !== raw.when) ev = { ...ev, when: raw.when };
+      evs.push(ev);
+    }
+    const list = Arcade.arrange(evs, song, sigil, spec.P);
+    let out = new Float64Array((list.length + 8) * STRIDE), n = 0, flag = 0;
+    const put = (ev, kind, bus, f) => {
+      if ((n + 1) * STRIDE > out.length) { const g = new Float64Array(Math.ceil(out.length * 1.5 / STRIDE) * STRIDE + STRIDE); g.set(out); out = g; }
+      const o = n++ * STRIDE;
+      out[o] = ev.beat; out[o + EV.KIND] = kind + flag; out[o + EV.BUS] = bus; out[o + EV.F] = f;
+      out[o + EV.VEL] = ev.vel ?? 0.8; out[o + EV.DUR] = ev.dur || 0.25; out[o + EV.SEED] = seedOf(ev);
+      return o;
+    };
+    const idx = 0.06 + 0.84 * A.fm, fb = 0.1 + 0.55 * A.fm, vib = 8 + 22 * A.complex, pattern = A.complex > 0.65 ? 1 : 0;
+    const fm = (ev, bus, midi, o) => {
+      const r = put(ev, KIND.ARC_FM, bus, mtof(midi));
+      out[r + EV.F0] = ev.from != null && !ev.echo ? mtof(ev.from) : 0;
+      out[r + EV.P0] = o.ratio; out[r + EV.P1] = idx * o.idx; out[r + EV.P2] = o.idec;
+      out[r + EV.P3] = o.dec; out[r + EV.P4] = o.sus; out[r + EV.P5] = fb * (o.fb ?? 1);
+      out[r + EV.AUX] = o.vib ?? 0; out[r + EV.PAN] = o.pan || 0;
+      if (o.vel != null) out[r + EV.VEL] = o.vel;
+      return r;
+    };
+    const pulse = (ev, bus, midi, o) => {
+      const r = put(ev, KIND.ARC_PULSE, bus, mtof(midi));
+      out[r + EV.F0] = ev.from != null ? mtof(ev.from) : 0;
+      out[r + EV.P0] = o.pw; out[r + EV.P1] = o.drive; out[r + EV.P2] = o.dec; out[r + EV.P3] = o.sus;
+      out[r + EV.P4] = o.pwm; out[r + EV.P5] = o.rel; out[r + EV.AUX] = o.held ? 1 : 0;
+      if (o.vel != null) out[r + EV.VEL] = o.vel;
+      return r;
+    };
+    const chord = (ev, bus, midis, o) => {
+      const ms = [...new Set(midis)].sort((a, b) => a - b);
+      const pick = ms.length <= 4 ? ms : [ms[0], ms[1], ms[2], ms[ms.length - 1]];
+      if (pick.length === 3 && A.complex > 0.75) pick.push(pick[0] + 12);    // a richer machine takes the octave too
+      const r = put(ev, KIND.ARC_ARP, bus, mtof(pick[0]));
+      for (let j = 1; j < 4; j++) out[r + EV.P0 + j - 1] = j < pick.length ? mtof(pick[j]) : 0;
+      out[r + EV.P3] = o.rate ?? A.rate; out[r + EV.P4] = o.pw ?? A.pw; out[r + EV.P5] = pick.length > 1 ? (o.pattern ?? pattern) : 2;
+      out[r + EV.F0] = o.dec || 0; out[r + EV.AUX] = o.held ? 1 : 0; out[r + EV.PAN] = o.pan || 0;
+      if (o.vel != null) out[r + EV.VEL] = o.vel;
+      return r;
+    };
+    const D = A.decay;
+    const noise = (ev, clk, o) => {
+      const r = put(ev, KIND.ARC_NOISE, o.bus ?? BUS.drums, clk);
+      out[r + EV.F0] = o.atk || 0; out[r + EV.P0] = o.mode || 0; out[r + EV.P1] = o.dec * D; out[r + EV.P2] = o.sweep || 0;
+      out[r + EV.P3] = o.body || 0; out[r + EV.P4] = o.b0 || 0; out[r + EV.P5] = o.b1 || 0; out[r + EV.AUX] = (o.bdec || 0.1) * (0.7 + 0.3 * D);
+      out[r + EV.PAN] = o.pan || 0;
+      if (o.vel != null) out[r + EV.VEL] = o.vel;
+      return r;
+    };
+
+    // a style's chords are written a note a row (a strum is spread over a few hundredths of a beat): the machine plays each strum as one chord
+    const comps = list.filter((e) => e.type === 'comp').sort((a, b) => a.beat - b.beat);
+    const groups = [];
+    for (const e of comps) {
+      const g = groups[groups.length - 1];
+      if (g && e.beat - g.beat < 0.2 && g.notes.length < 6 && (e.bus || 'arp') === g.bus) { g.notes.push(e.midi); g.dur = Math.max(g.dur, e.dur || 0.25); g.vel = Math.max(g.vel, e.vel ?? 0.6); }
+      else groups.push({ beat: e.beat, type: 'comp', dur: e.dur || 0.25, vel: e.vel ?? 0.6, notes: [e.midi], bus: e.bus || 'arp', voice: e.voice, when: e.when, pan: e.pan || 0 });
+    }
+    for (const g of groups) {
+      flag = g.when ? WHEN[g.when] | 0 : 0;
+      chord(g, BUS[g.bus] ?? BUS.arp, g.notes, { vel: g.vel * 0.85, dec: g.voice === 'bell' ? 0.45 : 0, pan: g.pan * 0.5 });
+    }
+
+    for (const ev of list) {
+      flag = ev.when ? WHEN[ev.when] | 0 : 0;
+      switch (ev.type) {
+        case 'lead': {
+          const side = ev.part === 1 ? -0.35 : ev.part === 2 ? 0.35 : 0;
+          if (ev.echo) fm(ev, BUS.lead, ev.midi, { ratio: 1, idx: 0.7, idec: 0.15, dec: 0.25, sus: 0.4, pan: 0.4 });
+          else if (ev.part) fm(ev, BUS.lead, ev.midi, { ratio: 2, idx: 0.75, idec: 0.3, dec: 0.5, sus: 0.7, pan: side, vib: vib * 0.6 });
+          else fm(ev, BUS.lead, ev.midi, { ratio: 1, idx: 1, idec: 0.28, dec: 0.45, sus: 0.82, vib });
+          break;
+        }
+        case 'harm': fm(ev, BUS.harm, ev.midi, { ratio: 1, idx: 0.45, idec: 0.5, dec: 0.8, sus: 0.75, fb: 0.4, pan: ev.part === 1 ? -0.3 : 0.3, vel: (ev.vel ?? 0.6) * 1.1 }); break;
+        case 'bell': fm(ev, BUS.bell, ev.midi, { ratio: 3.5, idx: 0.8, idec: 0.12, dec: 0.35 * D, sus: 0, fb: 0.2, vel: (ev.vel ?? 0.6) * 5 }); break;
+        case 'bass': pulse(ev, BUS.bass, ev.midi, { pw: A.pw, drive: A.drive, dec: 0.22, sus: 0.72, pwm: 0.04, rel: 0.035 }); break;
+        case 'drone': pulse(ev, BUS.drone, ev.midi, { pw: 0.5, drive: 0, dec: 1.5, sus: 0.85, pwm: 0.12, rel: 0.6, held: true, vel: (ev.vel ?? 0.8) * 0.6 }); break;
+        case 'arp': chord(ev, BUS.arp, [ev.midi], { dec: 0.18, pan: (ev.pan || 0) * 0.6 }); break;
+        case 'pad': chord(ev, BUS.pad, ev.midis || [], { held: (ev.dur || 0) > 2, vel: (ev.vel ?? 0.7) * 0.52 }); break;
+        case 'swell': noise(ev, 2500, { bus: BUS.bell, atk: Math.max(0.2, (ev.dur || 4) * spbOf(song) * 0.9), dec: 0.25, sweep: 12, vel: (ev.vel ?? 0.8) * 0.18 }); break;
+        case 'kick': {
+          const root = fold(rootAt(song, ev.beat, DS), 28, 40), v = ev.vel ?? 0.9;
+          noise(ev, 3000, { dec: 0.012, body: 1.3, b0: 190 + 60 * v, b1: mtof(root), bdec: 0.32, vel: v * 0.95 });
+          break;
+        }
+        case 'snare': {
+          const ghost = (ev.vel ?? 0.8) < 0.3;
+          noise(ev, ghost ? 7000 : 9500, { dec: ghost ? 0.04 : 0.17, sweep: 0.7, body: ghost ? 0 : 0.8, b0: 240, b1: 170, bdec: 0.07 });
+          break;
+        }
+        case 'clap': {
+          for (let j = 0; j < 3; j++) noise({ ...ev, beat: ev.beat + j * (0.011 * song.bpm) / 60, midi: j }, 11000, { dec: j === 2 ? 0.1 : 0.012, vel: (ev.vel ?? 0.7) * (j === 2 ? 0.9 : 0.6) });
+          break;
+        }
+        case 'rim': noise(ev, 20000, { mode: 1, dec: 0.02, body: 0.4, b0: 900, b1: 800, bdec: 0.015, pan: ev.pan || 0 }); break;
+        case 'hat': {
+          const v = (ev.vel ?? 0.7) * (ev.tick ? 0.8 : 1);
+          noise(ev, 38000, { dec: ev.open ? 0.22 : ev.tick ? 0.018 : 0.03, vel: v * 0.55, pan: ev.pan || (ev.tick ? 0.2 : 0) });
+          break;
+        }
+        case 'ride': noise(ev, 26000, { mode: 1, dec: 0.3, vel: (ev.vel ?? 0.6) * 0.28, pan: ev.pan || 0 }); break;
+        case 'shaker': noise(ev, 30000, { dec: 0.025, vel: (ev.vel ?? 0.5) * 0.3, pan: ev.pan || 0 }); break;
+        case 'crash': noise(ev, 30000, { bus: BUS.bell, dec: 0.85, sweep: 0.6, vel: (ev.vel ?? 0.7) * 0.55 }); break;
+        case 'tom': case 'perc': {
+          const root = rootAt(song, ev.beat, DS), k = clamp((ev.type === 'tom' ? ev.tom : ev.pi) | 0, 0, 2);
+          const m = (ev.type === 'tom' ? fold(root + 12, 41, 52) : fold(root + 24, 52, 64)) + (k === 2 ? 12 : k === 1 ? 7 : 0), f = mtof(m);
+          noise(ev, 6000, { dec: 0.02, body: 1.3, b0: f * 1.6, b1: f, bdec: ev.type === 'tom' ? 0.16 : 0.07, pan: ev.pan ?? TOM_PAN[k] });
+          break;
+        }
+      }
+    }
+    return inOrder(out, n);
+  }
+  const spbOf = (song) => num(song.spb, 60 / num(song.bpm, 90));
+
 
   /* ── Motion ─────────────────────────────────────────────────────────── */
   /**
@@ -509,30 +656,36 @@ const SigilPlan = (() => {
   function paletteOf(song, sigil, spec, on) {
     // (and only where the engines are: a host that has the palette but not sigil-voices.js would be given parts that make no sound)
     if (typeof Palette === 'undefined' || typeof SigilVoices === 'undefined' || on === false || !sigil || !spec) return null;
+    if (arcadeOf(spec)) return null;                  // the arcade plays every part: no palette is dealt
     return Palette.resolve(sigil, song && song.cfg, spec.P);
   }
-  /** The hall a song and its palette ask for together: the element's size and damping, and the world's on top. */
-  function hallWith(song, pal) {
+  /** The hall a song and its palette ask for together: the element's size and damping, and the world's on top (or the arcade's Space). */
+  function hallWith(song, pal, spec) {
     const h = hallOf(song), w = pal && !pal.classic ? pal.hall : null;
+    if (arcadeOf(spec)) return { size: num(h && h.size, 1) * Arcade.space(spec.P).size, damp: num(h && h.damp, 0) + 0.1 };
     if (!w) return h;
     return { size: num(h && h.size, 1) * num(w.size, 1), damp: num(h && h.damp, 0) + num(w.damp, 0) };
   }
-  const spaceWith = (song, pal) => clamp(spaceOf(song) * (pal && !pal.classic ? num(pal.space, 1) : 1), 0, 3);
+  const spaceWith = (song, pal, spec) => clamp(spaceOf(song) * (arcadeOf(spec) ? Arcade.space(spec.P).send : pal && !pal.classic ? num(pal.space, 1) : 1), 0, 3);
 
   /** Compile a song. opts: { spec, lens, events:false (sections only), drums (settings override), flow (the passes go round the body), palette (false: the cube's voices only) } */
   function compile(song, sigil, opts = {}) {
-    const spec = opts.spec || soundSpec(sigil, song);
+    const spec0 = opts.spec || soundSpec(sigil, song);
+    // (opts.arcade false: the cube, whatever the patch says; tests that pin the cube's rows)
+    const spec = opts.arcade === false && spec0.P && spec0.P.engine ? { ...spec0, P: { ...spec0.P, engine: 0 } } : spec0;
+    const arc = arcadeOf(spec);
     const Ps = patches(song, spec), DS = drumSettings(opts.drums), pal = paletteOf(song, sigil, spec, opts.palette);
     const loop = loopOf(song, opts.flow);
     // a pass that is followed by another turns: a fill into the body's start (05i). Played from a copy of the score.
     const score = loop && opts.turn !== false && typeof Flow !== 'undefined' && Flow.turnSong ? Flow.turnSong(song, sigil, loop) : song;
-    const p = { spec, Ps, sections: sectionsTable(song, sigil, spec, Ps, DS), nSec: Ps.length, total: song.total,
-      auto: motionTable(song, sigil, spec, DS),
+    const p = { spec, Ps, sections: sectionsTable(song, sigil, spec, Ps, DS, arc), nSec: Ps.length, total: song.total,
+      auto: motionTable(song, sigil, spec, arc ? { ...DS, fx: false } : DS),
       motion: clamp(num(spec.P.motion, 1), 0, 2), evolve: clamp(num(spec.P.evolve, 0.5), 0, 1), loop,
-      pal, inst: pal && !pal.classic ? pal.table : null };
+      pal, inst: pal && !pal.classic ? pal.table : null, arcade: arc };
     if (opts.events !== false) {
       const lens = opts.lens ?? (typeof LiveLens !== 'undefined' && LiveLens.active());
-      Object.assign(p, compileEvents(score, sigil, spec, Ps, lens, DS, pal && !pal.classic ? pal : null));
+      Object.assign(p, arc ? compileArcade(score, sigil, spec, Ps, lens, DS, arc)
+        : compileEvents(score, sigil, spec, Ps, lens, DS, pal && !pal.classic ? pal : null));
     }
     return p;
   }
@@ -602,8 +755,8 @@ const SigilPlan = (() => {
   const spaceOf = (song) => clamp(num(song && song.cfg && song.cfg.space, 1), 0, 3);
   function sendReverb(eng, sigil = hasApp() ? app.sigil : null) {
     const spec = sigil ? soundSpec(sigil, eng.song) : null, pal = paletteOf(eng.song, sigil, spec);
-    const rv = reverbSpec(sigil, spec, hallWith(eng.song, pal));
-    const space = spaceWith(eng.song, pal);
+    const rv = reverbSpec(sigil, spec, hallWith(eng.song, pal, spec));
+    const space = spaceWith(eng.song, pal, spec);
     if (eng.space !== space) { eng.space = space; if (eng.revReturn) eng.revReturn.gain.value = eng.revReturn.gain.value; }   // the world's room, in the listener's Space
     eng.post({ type: 'reverb', rt60: rv.rt60, damp: rv.damp, taps: rv.taps }, rv.taps ? [rv.taps.buffer] : []);
   }
@@ -625,6 +778,7 @@ const SigilPlan = (() => {
     const p = compile(song, sigil);
     eng.auto = null;                                  // a new song: its table is always sent
     eng.pal = p.pal && !p.pal.classic ? p.pal : null;   // who plays it (05j): for the notes played by hand
+    eng.arcade = p.arcade;                              // or the arcade's macros, when it is the arcade that plays
     motionSync(eng, p);
     eng.post({ type: 'plan', events: p.events, count: p.count, sections: p.sections, nSec: p.nSec,
       total: p.total, bpm: 60 / eng.spb, passes: 0, keep: false, auto: autoMsg(p.auto), loop: p.loop, inst: p.inst }, [p.events.buffer, p.sections.buffer]);
@@ -639,7 +793,7 @@ const SigilPlan = (() => {
     if (!eng || !eng.song || !hasApp() || !app.sigil) return;
     const p = compile(eng.song, app.sigil), msg = { type: 'plan', events: p.events, count: p.count, sections: p.sections,
       nSec: p.nSec, total: p.total, keep: true, loop: p.loop, inst: p.inst };
-    eng.pal = p.pal && !p.pal.classic ? p.pal : null;
+    eng.pal = p.pal && !p.pal.classic ? p.pal : null; eng.arcade = p.arcade;
     if (motionSync(eng, p)) msg.auto = autoMsg(p.auto);
     eng.post(msg, [p.events.buffer, p.sections.buffer]);
     sendTables(eng, p.spec, p.Ps);
@@ -676,7 +830,10 @@ const SigilPlan = (() => {
     return r;
   }
   /** A played note (the keys, a click on a letter): the lead's instrument, when the palette has dealt one. */
-  function liveNote(midi, deg, vel, timbre, pal) {
+  function liveNote(midi, deg, vel, timbre, pal, arc) {
+    if (arc && typeof SigilArcade !== 'undefined') {
+      return row({ kind: 'ARC_FM', bus: 'fx', f: mtof(midi), dur: 0, vel, aux: 8 + 22 * arc.complex, p: [1, 0.06 + 0.84 * arc.fm, 0.28, 0.45, 0.82, 0.1 + 0.55 * arc.fm] });
+    }
     const d = pal && pal.roles && pal.roles.lead;
     if (d && d.engine !== 'cube') return palRow(d, 'lead', 'fx', midi, vel);
     return row({ kind: 'LEAD', bus: 'fx', f: mtof(midi), dur: 0, vel, aux: deg, p: [TIMBRE[timbre] ?? 0, -1, CONS.nasal, 1] });
@@ -752,17 +909,17 @@ const SigilPlan = (() => {
    *      hold lasts as long in time) }
    */
   function renderJob(song, sigil, o) {
-    const p = compile(song, sigil, { lens: !!o.lens, spec: o.spec, drums: o.drums, flow: o.flow, palette: o.palette });
+    const p = compile(song, sigil, { lens: !!o.lens, spec: o.spec, drums: o.drums, flow: o.flow, palette: o.palette, arcade: o.arcade });
     const eng = hasApp() ? app.engine : null;
     return {
       sr: o.sr, bpm: 60 / o.spb, passes: Math.max(1, o.passes | 0), voices: 80,
       events: p.events, count: p.count, sections: p.sections, nSec: p.nSec, total: p.total, loop: p.loop,
       spectra: spectra(p.spec.cube), tilt: num(p.spec.P.tilt, 0), density: num(p.spec.P.density, 1),
-      reverb: reverbSpec(sigil, p.spec, hallWith(song, p.pal)), inst: p.inst, levels: o.levels || currentLevels(song),
+      reverb: reverbSpec(sigil, p.spec, hallWith(song, p.pal, p.spec)), inst: p.inst, levels: o.levels || currentLevels(song),
       // The live engine's own lane table and amounts: a render, whole or stem, moves as the stage does.
       // pass0 starts the evolution further on (a render begins at pass 0, the rite as written).
       auto: autoMsg(p.auto),
-      params: { reverb: eng && eng.params && eng.song === song ? eng.params.reverb : 0.85 * spaceWith(song, p.pal), waveOff: waveOffset(),
+      params: { reverb: eng && eng.params && eng.song === song ? eng.params.reverb : 0.85 * spaceWith(song, p.pal, p.spec), waveOff: waveOffset(),
         motion: p.motion, evolve: p.evolve, pass0: Math.max(0, o.pass0 | 0),
         holdK: o.holdK > 0 ? o.holdK : 1 },
       // How the song asks to be finished, and (if the caller has one) the plan that finishes it.
@@ -773,7 +930,7 @@ const SigilPlan = (() => {
   return {
     compile, sendSong, replan, refreshSections, sendTables, sendReverb,
     soundSpec, defaultSpec, waveOffset, row, liveNote, auditionRows, renderJob, spectra, mixInfo, paletteOf, hallWith,
-    spaceOf: (song, sigil) => (sigil ? spaceWith(song, paletteOf(song, sigil, soundSpec(sigil, song))) : spaceOf(song)),
-    KIND, BUS, LANE_COL,
+    spaceOf: (song, sigil) => { if (!sigil) return spaceOf(song); const sp = soundSpec(sigil, song); return spaceWith(song, paletteOf(song, sigil, sp), sp); },
+    arcadeOf, KIND, BUS, LANE_COL,
   };
 })();

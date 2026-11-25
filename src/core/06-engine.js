@@ -271,7 +271,7 @@ class Engine {
 
   /* ── live playing & ritual sounds ── */
   noteOn({ midi, deg = 0, vel = 0.8, timbre = 'glass' }) {
-    const id = ++this._noteId, row = SigilPlan.liveNote(midi, deg, vel, timbre, this.pal);
+    const id = ++this._noteId, row = SigilPlan.liveNote(midi, deg, vel, timbre, this.pal, this.arcade);
     this.post({ type: 'noteOn', id, row }, [row.buffer]);
     let done = false;
     return { id, release: () => { if (!done) { done = true; this.post({ type: 'noteOff', id }); } } };

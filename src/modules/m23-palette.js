@@ -32,8 +32,9 @@ const PalettePanel = (() => {
   const rows = new Map();    // role → { sel, play }
 
   /** What the compiler will play with, for the song that is loaded. */
+  const arcadeOn = () => hasSound && Sound.engine === 1;
   function current() {
-    if (!app.sigil || !app.song || typeof Palette === 'undefined') return null;
+    if (!app.sigil || !app.song || typeof Palette === 'undefined' || arcadeOn()) return null;
     const P = patch();
     return P ? Palette.resolve(app.sigil, app.song.cfg, P) : null;
   }
@@ -105,6 +106,7 @@ const PalettePanel = (() => {
 
   function refresh() {
     if (!listEl) return;
+    if (det) det.hidden = arcadeOn();                         // the palette is the cube's: in the arcade every part is the machine's
     deal = current();
     const P = P0(), on = !!deal;
     for (const el of [listEl.parentElement]) el.classList.toggle('pl-idle', !on);
@@ -208,6 +210,11 @@ const PalettePanel = (() => {
   if (hasSound) Sound.subscribe(() => refresh());
   // the HUD's line names who plays, where it used to name the lead's timbre
   Hooks.on('meta', (parts) => {
+    if (arcadeOn() && app.song) {
+      const i = parts.indexOf(TIMBRE_NAMES[app.song.leadTimbre]);
+      if (i >= 0) parts[i] = 'Arcade · four channels'; else parts.splice(Math.min(2, parts.length), 0, 'Arcade · four channels');
+      return parts;
+    }
     const res = current();
     if (!res || res.classic || !app.song) return parts;
     const i = parts.indexOf(TIMBRE_NAMES[app.song.leadTimbre]);

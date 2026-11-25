@@ -40,6 +40,8 @@ const Sound = (() => {
   const subs = new Set();
   const notify = () => subs.forEach((fn) => { try { fn(); } catch (e) { console.error('[sound:ui]', e); } });
   const keyOf = (sig) => sig.fusionKey || sig.reduced;
+  const ARCADE_KEYS = new Set(typeof Arcade !== 'undefined' ? Arcade.KEYS.filter((k) => k !== 'engine') : []);
+  const isArcadeKey = (k) => ARCADE_KEYS.has(k);
   const lite = () => prefs.lite;
 
   /* ── Voice budget ────────────────────────────────────────────────────── */
@@ -89,7 +91,9 @@ const Sound = (() => {
     const derived = SD.derive(sig.hash, variant);
     // The kit's FX (the D· knobs) are dealt from their own stream, so derive() stays as it was.
     // Then the song dresses the patch: a style's signature, a mood's values, an element's lean (SD.shape).
-    let base = SD.shape({ ...DEFAULTS, ...derived, ...SD.drumFx(sig.hash, variant) }, app.song && app.song.cfg);
+    // (and the arcade's macros, 05l: dealt from a stream of their own, so nothing above moves)
+    const arcade = typeof Arcade !== 'undefined' ? { ...Arcade.DEFAULTS, ...Arcade.derive(sig.hash) } : {};
+    let base = SD.shape({ ...DEFAULTS, ...derived, ...SD.drumFx(sig.hash, variant), ...arcade }, app.song && app.song.cfg);
     // the world the sigil is dealt colours the base (a tape's warmth, an 8-bit crunch, a dream's haze); the knobs the listener has set are laid over it
     if (typeof Palette !== 'undefined') base = Palette.dress(base, Palette.finish(sig, app.song && app.song.cfg, { ...overrides }), SD.FIELDS);
     return { base, P: { ...base, ...overrides }, tables: SD.tables(sig, variant) };
@@ -113,6 +117,8 @@ const Sound = (() => {
       cur.variant = e.variant | 0;
       cur.o = { ...(e.o || {}) };
       cur.mut = 0;
+      // a sigil this device has never tuned opens in the engine last chosen (a shared link's own patch, below, still wins)
+      if (!bank[key] && Prefs.get('sound.engine', 0) === 1) cur.o.engine = 1;
     }
     if (pending && pending.key === key) {
       cur.variant = pending.variant; cur.o = { ...pending.o };
@@ -1074,17 +1080,36 @@ const Sound = (() => {
       }
       notify();
     },
+    /** The sound engine: 0 the cube, 1 the arcade (05l). A patch field, so it is saved per sigil and carried in a link. */
+    get engine() { return cur.P && cur.P.engine === 1 ? 1 : 0; },
+    setEngine(id) {
+      const v = id === 1 || id === 'arcade' ? 1 : 0;
+      Prefs.set('sound.engine', v);
+      if (!app.sigil) { notify(); return; }
+      if (v) cur.o.engine = 1; else delete cur.o.engine;
+      persist(); recompute(); refreshEngine(); notify();
+    },
     toggleKeys(force) { prefs.keys = force ?? !prefs.keys; notify(); return prefs.keys; },
     toggleFreeze(force) { frozen = force ?? !frozen; notify(); return frozen; },
 
     set(name, v) { if (!app.sigil) return; cur.o[name] = v; persist(); recompute(); refreshEngine(); notify(); },
     /** Return one knob to this sigil's own value (and drop it from the patch code). */
     unset(name) { if (!app.sigil) return; delete cur.o[name]; persist(); recompute(); refreshEngine(); notify(); },
-    reset() { cur.o = {}; cur.mut = 0; persist(); recompute(); refreshEngine(); notify(); },
-    mutate() {
+    /** Back to the sigil's own sound. `arcade` true: the arcade's macros only; otherwise everything but them (and the engine chosen). */
+    reset(arcade) {
+      const keep = {};
+      for (const k of Object.keys(cur.o)) if (isArcadeKey(k) !== !!arcade && k !== 'engine') keep[k] = cur.o[k];
+      if (cur.o.engine) keep.engine = cur.o.engine;
+      cur.o = keep; if (!arcade) cur.mut = 0;
+      persist(); recompute(); refreshEngine(); notify();
+    },
+    /** Nudge the sound. `arcade` true: the arcade's macros only; otherwise the cube's knobs only. */
+    mutate(arcade) {
       if (!app.sigil) return;
       cur.mut++;
-      cur.o = SD.mutate(app.sigil.hash, cur.mut, cur.base, cur.o);
+      const m = SD.mutate(app.sigil.hash, cur.mut, cur.base, cur.o), o = { ...cur.o };
+      for (const k of Object.keys(m)) if (k !== 'engine' && isArcadeKey(k) === !!arcade) o[k] = m[k];
+      cur.o = o;
       persist(); recompute(); refreshEngine(); notify();
     },
     dream(delta) {

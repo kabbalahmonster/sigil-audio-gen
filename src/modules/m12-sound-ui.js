@@ -84,16 +84,53 @@ const SoundUI = (() => {
     { name: 'dTime',   label: 'D·Time',   min: 0,  max: 3,  step: 1,    fmt: (v) => ECHO_NAMES[clamp(Math.round(v), 0, 3)], wheel: 1, hint: 'the echo’s note value' },
   ];
 
+  /* ── The arcade's macros (05l): one set of controls shared by its four channels ── */
+  const hasArcade = typeof Arcade !== 'undefined';
+  const pct = (v) => `${Math.round(v * 100)}%`;
+  const DENSITY_NAMES = { 2: 'root · 5th', 3: 'triad', 4: '4 notes', 5: 'pentatonic', 6: '6 notes', 7: 'full mode' };
+  const nativeBpm = () => (app.song ? app.song.bpm : 90);
+  const bpmNow = () => (app.engine && app.song && app.engine.song === app.song && app.engine.spb ? 60 / app.engine.spb : nativeBpm());
+  function setBpm(v) {
+    if (typeof Mixer !== 'undefined' && Mixer.setBpm) {
+      Mixer.setBpm(v);
+      clearTimeout(setBpm.t); setBpm.t = setTimeout(() => Mixer.sync && Mixer.sync(), 120);   // the Mixer's own slider, once the engine has the tempo
+    } else if (app.engine && app.engine.song) app.engine.setTempo(v);
+  }
+  const ARCADE_GROUPS = [
+    ['Song', [
+      { name: 'tempo',    label: 'Tempo',    min: 40, max: 240, step: 1, fmt: (v) => `${Math.round(v)} bpm`, wheel: 1,
+        onSet: setBpm, reset: nativeBpm, hint: 'the transport’s tempo, shared with Mixer & Tempo; double-click for the sigil’s own' },
+      { name: 'aDensity', label: 'Scale',    min: 0, max: 1, step: 0.01, fmt: (v) => DENSITY_NAMES[Math.round(2 + v * 5)], hint: 'scale density: how many of the mode’s notes the machine may use' },
+      { name: 'aComplex', label: 'Complex',  min: 0, max: 1, step: 0.01, fmt: pct, hint: 'complexity: left thins the ornaments, right adds echoes, octave bass and richer arpeggios' },
+      { name: 'aSwing',   label: 'Swing',    min: 0, max: 1, step: 0.01, fmt: (v) => (v < 0.005 ? 'straight' : pct(v)), hint: 'how late the off-beat eighths fall, up to a triplet shuffle' },
+    ]],
+    ['Channels', [
+      { name: 'aBright',  label: 'Bright',   min: 0, max: 1, step: 0.01, fmt: pct, hint: 'lead brightness: the FM lead’s index and filter' },
+      { name: 'aFm',      label: 'FM depth', min: 0, max: 1, step: 0.01, fmt: pct, hint: 'how hard the modulator bends the carrier (and its feedback)' },
+      { name: 'aPw',      label: 'Pulse W',  min: 0.05, max: 0.5, step: 0.005, fmt: (v) => `${(v * 100).toFixed(v < 0.1 ? 1 : 0)}%`, hint: 'pulse width of the bass and the chord channel: 50% is square, narrow is nasal' },
+      { name: 'aDrive',   label: 'Drive',    min: 0, max: 1, step: 0.01, fmt: pct, hint: 'bass drive: saturation, a brighter filter, and at the top a crusher' },
+    ]],
+    ['Rhythm & space', [
+      { name: 'aDrums',   label: 'Drums',    min: 0, max: 1, step: 0.01, fmt: (v) => (Math.abs(v - 0.7) < 0.005 ? 'as written' : pct(v)), hint: 'drum density: left thins the kit to its backbone, right fills the empty sixteenths' },
+      { name: 'aDecay',   label: 'N·Decay',  min: 0.25, max: 2, step: 0.01, fmt: (v) => `×${v.toFixed(2)}`, hint: 'noise decay: how long every stroke of the noise channel rings' },
+      { name: 'aArp',     label: 'Arp rate', min: 0, max: 6, step: 1, fmt: (v) => (hasArcade ? Arcade.ARP_NAMES[clamp(Math.round(v), 0, 6)] : String(v)), wheel: 1, hint: 'how fast the chord channel steps through each chord' },
+      { name: 'aSpace',   label: 'Space',    min: 0, max: 1, step: 0.01, fmt: pct, hint: 'the hall and the echo around all four channels' },
+    ]],
+  ];
+  const ARCADE_KNOBS = ARCADE_GROUPS.flatMap(([, list]) => list);
+
   const KEYMAP = { a: 0, s: 1, d: 2, f: 3, h: 4, j: 5, k: 6, ';': 7, q: 8, w: 9, e: 10, r: 11, u: 12, i: 13, o: 14, p: 15 };
 
   const knobs = {};
   const held = new Map();
   let scope, cube, voiceSel, modeSel, liteBox, lensBox, vowBox, arcBox, verbBox, dreamLbl, keyBtn, freezeBtn, libList;
+  let engBtns = [], cubeBox, arcadeBox, chip;
 
   /* ── Knob ───────────────────────────────────────────────────────────── */
 
   function knob(def) {
     const { name, label, min, max, step, fmt, hint, wheel = 4 } = def;
+    const send = def.onSet || ((v) => Sound.set(name, v));
     let val = min, drag = null;
     const unit = Math.max(step, (max - min) / 80);
 
@@ -158,7 +195,7 @@ const SoundUI = (() => {
       const nv = snap(v);
       if (nv === val) return;
       val = nv; paint();
-      Sound.set(name, val);
+      send(val);
     };
 
     el.addEventListener('pointerdown', (e) => { drag = { y: e.clientY, v: val }; el.setPointerCapture(e.pointerId); el.focus({ preventScroll: true }); });
@@ -170,7 +207,7 @@ const SoundUI = (() => {
     el.addEventListener('pointerup', endDrag);
     el.addEventListener('pointercancel', endDrag);
     el.addEventListener('wheel', (e) => { e.preventDefault(); commit(val - Math.sign(e.deltaY) * unit * (e.shiftKey ? 1 : wheel)); }, { passive: false });
-    el.addEventListener('dblclick', () => { const b = Sound.state().base; commit(b ? b[name] : min); });
+    el.addEventListener('dblclick', () => { if (def.reset) return commit(def.reset()); const b = Sound.state().base; commit(b ? b[name] : min); });
     el.addEventListener('keydown', (e) => {
       const dir = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[e.key];
       if (!dir) return;
@@ -364,6 +401,60 @@ const SoundUI = (() => {
     g.fillText(SoundDesign.LAYER_NAMES[Math.round(y0)] || '', 6, 10);
   }
 
+  /* ── The arcade's channels, drawn: what each of the four is making now ── */
+
+  /**
+   * Four lanes, one per channel, each a picture of its own wave as the macros set it:
+   *   FM      a cycle of the lead, bent by its depth and opened by its brightness
+   *   PULSE   the bass's pulse at its width, rounded off and pushed by its drive
+   *   NOISE   a stroke of the shift register, its stepped volume dying as Noise decay says
+   *   ARP     a chord stepped through at the arpeggio rate, over one beat
+   */
+  function paintChip() {
+    if (!chip || !hasArcade) return;
+    const st = Sound.state(), g = chip.getContext('2d'), W = chip.width, H = chip.height;
+    g.clearRect(0, 0, W, H);
+    if (!st.P) return;
+    const A = Arcade.params(st.P), L = renderer.pal.line, Ac = renderer.pal.accent;
+    const lanes = ['FM lead', 'pulse bass', 'noise', 'arpeggio'], lh = H / 4, x0 = 64, w = W - x0 - 6, N = 140;
+    g.font = `10px ${SERIF}`; g.textAlign = 'left';
+    lanes.forEach((name, k) => {
+      const mid = lh * k + lh / 2, amp = lh * 0.36;
+      g.fillStyle = rgba(L, 0.55); g.fillText(`${k + 1} · ${name}`, 4, mid + 3);
+      g.strokeStyle = rgba(L, 0.1); g.beginPath(); g.moveTo(x0, mid); g.lineTo(x0 + w, mid); g.stroke();
+      const ys = new Float32Array(N);
+      if (k === 0) {
+        const I = (0.06 + 0.84 * A.fm) * (0.35 + 1.3 * A.bright) * 6.28;
+        for (let i = 0; i < N; i++) { const t = (i / N) * 2; ys[i] = Math.sin(TAU * t + I * Math.sin(TAU * t)); }
+      } else if (k === 1) {
+        const pre = 0.6 + 4.4 * A.drive;
+        for (let i = 0; i < N; i++) { const t = ((i / N) * 3) % 1; ys[i] = Math.tanh((t < A.pw ? 1 : -1) * pre) / Math.tanh(pre); }
+      } else if (k === 2) {
+        let r = 0x5a5a, out = 1;
+        const tau = 0.25 * A.decay;
+        for (let i = 0; i < N; i++) {
+          if (i % 2 === 0) { const bit = (r ^ (r >> 1)) & 1; r = (r >> 1) | (bit << 14); out = r & 1 ? 1 : -1; }
+          const e = Math.floor(Math.exp(-(i / N) / tau) * 15 + 0.5) / 15;
+          ys[i] = out * e;
+        }
+      } else {
+        const steps = A.rate, seq = [0, 0.45, 0.8, 0.45];
+        for (let i = 0; i < N; i++) { const j = Math.floor((i / N) * steps); ys[i] = (seq[j % (A.complex > 0.65 ? 4 : 3)] * 2 - 0.8) * 0.9; }
+      }
+      g.beginPath();
+      for (let i = 0; i < N; i++) { const x = x0 + (i / (N - 1)) * w, y = mid - ys[i] * amp; i ? g.lineTo(x, y) : g.moveTo(x, y); }
+      g.strokeStyle = rgba(Ac, 0.9); g.lineWidth = 1.3; g.stroke();
+    });
+  }
+
+  /** Show the controls of the engine that is playing, and only those. */
+  function showEngine() {
+    const arc = hasArcade && Sound.engine === 1;
+    if (cubeBox) cubeBox.hidden = arc;
+    if (arcadeBox) arcadeBox.hidden = !arc;
+    engBtns.forEach((b, i) => { const onIt = (i === 1) === arc; b.setAttribute('aria-pressed', String(onIt)); b.classList.toggle('on', onIt); });
+  }
+
   /* ── Refresh ─────────────────────────────────────────────────────────── */
 
   let raf = 0;
@@ -397,9 +488,12 @@ const SoundUI = (() => {
     raf = requestAnimationFrame(() => {
       if (!voiceSel) return;
       const st = Sound.state();
-      for (const d of KNOBS.concat(DRUM_KNOBS, DRUM_FX_KNOBS)) {
+      for (const d of KNOBS.concat(DRUM_KNOBS, DRUM_FX_KNOBS, ARCADE_KNOBS)) {
+        if (d.name === 'tempo') continue;
         if (knobs[d.name]) knobs[d.name].set(st.P && st.P[d.name] != null ? st.P[d.name] : d.idle ?? d.min);
       }
+      if (knobs.tempo) knobs.tempo.set(bpmNow());
+      showEngine();
       voiceSel.input.value = st.P ? st.P.voice : 'auto';
       modeSel.input.value = Sound.mode;
       liteBox.input.checked = Sound.lite;
@@ -413,7 +507,7 @@ const SoundUI = (() => {
       dreamLbl.textContent = app.sigil && st.tables
         ? `dream ${st.variant} · ${st.tables.D.mult}×+${st.tables.D.off}`
         : 'cast to dream';
-      paintScope(); paintCube();
+      if (Sound.engine === 1) paintChip(); else { paintScope(); paintCube(); }
     });
   }
 
@@ -468,10 +562,29 @@ const SoundUI = (() => {
     .dream-lbl{font-style:italic;opacity:.7;font-size:12.5px;min-width:8em;text-align:center}
     .lib-row{display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid rgba(var(--line),.06)}
     .lib-name{flex:1;font-style:italic}
-    .snd-h{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;opacity:.6;margin:16px 0 4px}`);
+    .snd-h{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;opacity:.6;margin:16px 0 4px}
+    .snd-eng{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:2px 0 8px}
+    .snd-eng button{padding:7px 0;letter-spacing:.12em;text-transform:uppercase;font-size:11px}
+    .snd-eng button.on{border-color:rgb(var(--accent));color:rgb(var(--accent));box-shadow:inset 0 0 0 1px rgba(var(--accent),.35)}
+    .snd-chip{width:100%;height:120px;display:block;margin:6px 0 2px}`);
 
   UI.section({ id: 'sound', title: 'Sound & Patch', order: 12, build(el) {
     const mk = (list) => h('div', { class: 'kb-grid' }, list.map((d) => { const k = knob(d); knobs[d.name] = k; return k.el; }));
+    engBtns = (hasArcade ? Arcade.ENGINES : [['cube', 'Cube']]).map(([id, name], i) => UI.button(name, () => {
+      if (!app.sigil) { toast('Cast a sigil first', true); return; }
+      Sound.setEngine(i);
+      if (typeof renderMeta === 'function' && app.song) renderMeta();
+      toast(i ? 'Arcade: four channels play every part' : 'Cube: the sigil’s own wavetable voices', true);
+      UI.announce(`${name} sound engine`);
+    }, { 'aria-pressed': 'false', title: i ? 'A four-channel retro machine: FM lead, pulse bass, noise percussion, arpeggiated chords' : 'The sigil’s wavetable cube, its voices and the palette' }));
+    chip = h('canvas', { class: 'snd-chip', width: 280, height: 120, 'aria-hidden': 'true' });
+    arcadeBox = h('div', { class: 'snd-arcade', hidden: true },
+      UI.note('A four-channel machine plays every part, the kit included: an FM lead (lead, second voice, choir, bells), a pulse bass (bass, drone), a noise channel (every drum) and a chord channel that arpeggiates each chord. These macros are shared by all four.'),
+      chip,
+      ...ARCADE_GROUPS.flatMap(([title, list]) => [h('div', { class: 'snd-h' }, title), mk(list)]),
+      h('div', { class: 'sgrow' },
+        UI.button('Shuffle', () => Sound.mutate(true), { title: 'Nudge the arcade’s macros' }),
+        UI.button('Reset macros', () => Sound.reset(true), { title: 'Back to this sigil’s own arcade sound' })));
     const grid = mk(KNOBS);
     const drumGrid = mk(DRUM_KNOBS);
     const drumFxGrid = mk(DRUM_FX_KNOBS);
@@ -499,7 +612,7 @@ const SoundUI = (() => {
     libList = h('div', { class: 'lib' });
     const fileIn = h('input', { type: 'file', accept: 'application/json,.json', style: 'display:none', onchange: () => importFile(fileIn) });
 
-    el.append(
+    cubeBox = h('div', { class: 'snd-cube-box' },
       UI.note('The sigil is a cube: across is the path drawn letter by letter, up is its spectral character, and every note travels through it.'),
       ...(typeof Palette === 'undefined' ? [] : [h('p', { class: 'tool-note' }, 'These knobs shape whoever plays: the cube’s voices, and every instrument of the ',
         h('button', { type: 'button', class: 'rx-link', onclick: () => UI.open('palette') }, 'Palette'), ' too (brightness, width, air, body, sub, motion).')]),
@@ -516,7 +629,12 @@ const SoundUI = (() => {
         UI.button('◀ dream', () => Sound.dream(-1)), dreamLbl, UI.button('dream ▶', () => Sound.dream(1))),
       h('div', { class: 'sgrow' },
         UI.button('Mutate', () => Sound.mutate()), freezeBtn, UI.button('Reset knobs', () => Sound.reset())),
-      modeSel, voiceSel, liteBox, lensBox, vowBox,      modeSel, voiceSel, liteBox, lensBox, vowBox, arcBox, verbBox,
+      modeSel, voiceSel, liteBox, lensBox, vowBox, arcBox, verbBox);
+
+    el.append(
+      h('div', { class: 'snd-h', style: 'margin-top:4px' }, 'Sound engine'),
+      h('div', { class: 'snd-eng', role: 'group', 'aria-label': 'Sound engine' }, engBtns),
+      cubeBox, arcadeBox,
       h('div', { class: 'sgrow' }, keyBtn, UI.button('Copy patch code', () => copy(Sound.code()))),
       h('div', { class: 'snd-h' }, 'Patch library'),
       h('div', { class: 'sgrow' },
@@ -546,6 +664,8 @@ const SoundUI = (() => {
   Sound.subscribe(refresh);
   Hooks.on('cast', refresh);
   Hooks.on('song', refresh);
+  // the transport's tempo can be moved elsewhere (Mixer & Tempo, tap): the HUD's line is redrawn when it is, and so is the Tempo knob
+  Hooks.on('meta', () => { if (knobs.tempo && arcadeBox && !arcadeBox.hidden) knobs.tempo.set(bpmNow()); });
   UI.whenReady(refresh);
 
   /* ── Keyboard ───────────────────────────────────────────────────────── */

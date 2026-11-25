@@ -304,6 +304,26 @@ The sigil writes the notes; a **palette** decides who plays them (`05j-palette.j
 - **The pool is looked after.** A voice that makes a number that is not one (it would be carried by its bus's filters for ever, and that whole part would be silent from then on, while the kit, on its own bus, played on) is found where it is made, put right and let go (the Engine panel counts them). When there are more notes than voices, the ones that go first are the tails that are only ringing out, then the ornaments (arpeggio, chords, bells, the kit's colour), then the lead parts; pads and drones, which hold the music up, go last. The stage's default is 64 voices (40 on a machine with two cores).
 - **Each part is as loud as the voice it replaces** (`tools/calibrate-voices.mjs` measured them, K-weighted, in real songs), so the mixer, the master and the faders still mean what they meant.
 
+### Two sound engines: the cube and the arcade
+
+**Sound & Patch** opens on a switch between two engines, and shows only the controls of the one that is playing.
+
+- **Cube** is the engine described above: the sigil's wavetable cube, its voices and the palette.
+- **Arcade** (`05l-arcade.js`, `sigil-arcade.js`) is a four-channel retro machine, and in it *every* part is the machine's,
+  the kit included: an **FM lead** (two operators with feedback: lead, second voice, choir, bells), a **pulse bass**
+  (band-limited, its width breathing, driven into a crusher at the top: bass and drone), a **noise channel** (a 15-bit LFSR,
+  long or metallic, a four-bit stepped volume and a swept triangle body: every stroke of the kit, the crash and the swell) and an
+  **arpeggiated chord channel** (one pulse voice stepping through each chord, in time). Its twelve macros are shared by all
+  four: **tempo** (the transport's, the same as Mixer & Tempo), **scale density** (from tonic and fifth, through the mode's
+  own pentatonic, to the whole mode), **complexity** (fewer ornaments ↔ the machine's echo, octave bass, richer arpeggios),
+  **swing**, **lead brightness**, **FM depth**, **pulse width**, **bass drive**, **drum density** (the backbone ↔ every empty
+  sixteenth ticked), **noise decay**, **arpeggio rate** (1/8 to 1/64) and **space**.
+
+The engine and the macros are patch fields: saved per sigil, carried in a shared link and a patch code, rendered and mastered
+exactly as heard. A sigil this device has never tuned opens in the engine last chosen. The rearrangement is stateless noise
+keyed by where a note falls (more complexity adds notes, it never re-deals the ones that stay), and with the cube chosen the
+rows are, to the sample, what they were before the arcade existed (`npm run arcade`).
+
 ### Fills
 
 At the end of a phrase the kit does something. Where the music is going (a rise, a fall, a turn, a dissolve), how loud the section is, the idiom of the kit and the style choose *which* of a dozen figures (`05k-fills.js`): **recite** (the sigil's name, said on the kit: still the most likely single choice), **cascade**, **roll**, **flams**, **stutter**, **tumble** (a Euclidean figure over the toms and hand-drums, ending on a stroke), **stop-time**, **hat sweep**, **clave**, **gallop**, **claps**, **flutter**; and, two steps wide, a pair of toms, a flam, kick–snare, hand-drums, side-sticks or an open hat. The choice is stateless noise keyed by where the bar falls, so it is the same every render, and the Fills slider (a threshold on the *width* of a fill) never re-deals the ones that stay. Hand-drums are a kind of stroke of their own (`perc`), played by the world's percussion instrument, or as high toms by the cube's kit.
@@ -466,6 +486,8 @@ index.html
 | `05h-deliver.js` | §5h | `Deliver`: what happens to a finished mix on its way into a file. Destinations, formats, the lossy margin, the end of a render (`tidy`), measurement (`analyse`, `judge`) and landing on a loudness (`land`), seeded dither (`quantise`), file names. Pure; loaded after the master, whose meter it uses |
 | `export/codecs.js` | | `Codecs`: WAV, FLAC (written here: fixed predictors, Rice-coded, stereo decorrelated, MD5-signed), MP3 (LAME, in a worker), AAC in M4A and Opus in Ogg (the browser's encoders through WebCodecs, muxed here), ZIP, and the tags of each |
 | `05j-palette.js` | §5j | `Palette`: the instruments (ids are for ever), the worlds, what a mood, a style and an element ask of them (`deal`), the listener's word over it (`cast`), and the core's table (`pack`, `resolve`). Pure |
+| `05l-arcade.js` | §5l | `Arcade`: the second sound engine's macros (`params`, the sigil's own `derive`) and how it re-arranges a score for its four channels (`arrange`: scale density, complexity, drum density, swing). Pure. The compiler (`06b`) writes every part as one of the channels |
+| `dsp/sigil-arcade.js` | | The arcade's four channels, registered with the core: FM lead, pulse bass, LFSR noise, arpeggiated chords. They read only their row and the section row, so they need no instrument table |
 | `05k-fills.js` | §5k | `Fills`: the figures of a fill, and which is chosen where (`choose`, `write`). Pure; called by the two kit writers (05c, 05f) and by `Flow.turn` |
 | `dsp/sigil-voices.js` | | The palette's eight engines, registered with the core (`SigilDSP.registerVoice`): pluck, modal, analog, organ, DX, breath, fold, cloud |
 | `05i-flow.js` | §5i | `Flow`: where the body of a rite is (`loop`: its opening heard once, its ending once, what the passes go round). Pure. What each pass then plays is the DSP core's (`SigilDSP.passSpan`) |

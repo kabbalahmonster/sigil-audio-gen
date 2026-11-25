@@ -6,6 +6,7 @@
    ══════════════════════════════════════════════════════════════════════════ */
    import './sigil-dsp.js';
    import './sigil-voices.js';
+   import './sigil-arcade.js';
 
    class SigilEngineProcessor extends AudioWorkletProcessor {
      constructor(options) {

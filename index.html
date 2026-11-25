@@ -170,12 +170,14 @@
     <script src="src/core/05d-motion.js" onerror="SIGIL_FAIL(this)"></script>
     <script src="src/dsp/sigil-dsp.js"   onerror="SIGIL_FAIL(this)"></script>      <!-- MOVED here -->
     <script src="src/dsp/sigil-voices.js" onerror="SIGIL_FAIL(this)"></script>      <!-- the other engines: strings, modes, analog, organ, FM, breath, fold, grains -->
+    <script src="src/dsp/sigil-arcade.js" onerror="SIGIL_FAIL(this)"></script>      <!-- the arcade engine's four channels: FM lead, pulse bass, noise, arpeggio -->
     <script src="src/core/05e-master.js" onerror="SIGIL_FAIL(this)"></script>      <!-- reads SigilDSP's tables -->
     <script src="src/core/05f-style.js"  onerror="SIGIL_FAIL(this)"></script>      <!-- styles and elements; needs 05c -->
     <script src="src/core/05g-rite.js"   onerror="SIGIL_FAIL(this)"></script>      <!-- the rites (forms); needs 05's makePlan -->
     <script src="src/core/05i-flow.js"   onerror="SIGIL_FAIL(this)"></script>      <!-- the passes of a rite go round its body, not the whole -->
     <script src="src/core/05j-palette.js" onerror="SIGIL_FAIL(this)"></script>     <!-- who plays the sigil: worlds, instruments, their numbers -->
     <script src="src/core/05h-deliver.js" onerror="SIGIL_FAIL(this)"></script>     <!-- delivery: the end of a render, its loudness, its bits; needs 05e -->
+    <script src="src/core/05l-arcade.js" onerror="SIGIL_FAIL(this)"></script>      <!-- the arcade engine: its macros, and how it arranges a score -->
     
     <!-- Core: runtime layer -->
     <script src="src/core/06-engine.js"   onerror="SIGIL_FAIL(this)"></script>
@@ -240,12 +242,14 @@
         ['src/core/05d-motion.js',   ['Motion']],
         ['src/dsp/sigil-dsp.js',     ['SigilDSP']],
         ['src/dsp/sigil-voices.js',  ['SigilVoices']],
+        ['src/dsp/sigil-arcade.js',  ['SigilArcade']],
         ['src/core/05e-master.js',   ['Mastering']],
         ['src/core/05f-style.js',    ['Style']],
         ['src/core/05g-rite.js',     ['Rite']],
         ['src/core/05i-flow.js',     ['Flow']],
         ['src/core/05j-palette.js',  ['Palette']],
         ['src/core/05h-deliver.js',  ['Deliver']],
+        ['src/core/05l-arcade.js',   ['Arcade']],
         ['src/core/06-engine.js',    ['Engine', 'TransportClock']],
         ['src/core/06b-compiler.js', ['SigilPlan']],
         ['src/core/06c-stage.js',    ['Stage']],

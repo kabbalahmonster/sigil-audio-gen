@@ -235,5 +235,5 @@ const Mixer = (() => {
 
   UI.key('b', 'Tap tempo', tap, { group: 'Performance', display: 'B' });
 
-  return { apply, setBpm, state: S };
+  return { apply, setBpm, sync: () => syncTempo(true), state: S };
 })();

@@ -270,6 +270,7 @@ const MotionPanel = (() => {
   }
 
   function refresh() {
+    if (det) det.hidden = hasSound && Sound.engine === 'arcade';
     if (!motionRow) return;
     const P = patch();
     motionRow.set(P ? P.motion ?? 1 : 1);

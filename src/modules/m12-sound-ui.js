@@ -84,11 +84,28 @@ const SoundUI = (() => {
     { name: 'dTime',   label: 'D·Time',   min: 0,  max: 3,  step: 1,    fmt: (v) => ECHO_NAMES[clamp(Math.round(v), 0, 3)], wheel: 1, hint: 'the echo’s note value' },
   ];
 
+  const fmtPct = (v) => `${Math.round(v * 100)}%`;
+  const ARCADE_KNOBS = [
+    { name: 'aTempo',   label: 'Tempo',           min: 60,   max: 220,  step: 1,    idle: 128,  fmt: (v) => `${Math.round(v)} bpm`, hint: 'shared arcade tempo' },
+    { name: 'aScale',   label: 'Scale density',   min: 0,    max: 1,    step: 0.01, idle: 0.55, fmt: fmtPct, hint: 'pentatonic core to dense scalar runs' },
+    { name: 'aComplex', label: 'Complexity',      min: 0,    max: 1,    step: 0.01, idle: 0.5,  fmt: fmtPct, hint: '4-channel melodic, bass and rhythmic intricacy' },
+    { name: 'aSwing',   label: 'Swing',           min: 0,    max: 0.65, step: 0.01, idle: 0.08, fmt: fmtPct, hint: 'shared off-beat swing across all 4 channels' },
+    { name: 'aBright',  label: 'Lead brightness', min: 0,    max: 1,    step: 0.01, idle: 0.65, fmt: fmtPct, hint: 'FM lead harmonic brightness and filter openness' },
+    { name: 'aFm',      label: 'FM depth',        min: 0,    max: 1,    step: 0.01, idle: 0.5,  fmt: fmtPct, hint: 'FM modulation index and metallic bite' },
+    { name: 'aPw',      label: 'Pulse width',     min: 0.1,  max: 0.9,  step: 0.01, idle: 0.25, fmt: fmtPct, hint: 'pulse bass and chord duty cycle' },
+    { name: 'aDrive',   label: 'Bass drive',      min: 0,    max: 1,    step: 0.01, idle: 0.35, fmt: fmtPct, hint: 'pulse bass saturation and punch' },
+    { name: 'aDrum',    label: 'Drum density',    min: 0,    max: 1,    step: 0.01, idle: 0.6,  fmt: fmtPct, hint: 'noise percussion activity and retro fills' },
+    { name: 'aDecay',   label: 'Noise decay',     min: 0.15, max: 2,    step: 0.01, idle: 0.7,  fmt: fmtPct, hint: 'LFSR noise percussion envelope length' },
+    { name: 'aArp',     label: 'Arpeggio rate',   min: 0,    max: 1,    step: 0.01, idle: 0.5,  fmt: (v) => (typeof Arcade !== 'undefined' ? Arcade.arpRateLabel(v) : fmtPct(v)), hint: 'arpeggiated chord speed from 1/8 to VBI chip-chords' },
+    { name: 'aSpace',   label: 'Space',           min: 0,    max: 1,    step: 0.01, idle: 0.3,  fmt: fmtPct, hint: 'shared stereo echo and hall depth' },
+  ];
+
   const KEYMAP = { a: 0, s: 1, d: 2, f: 3, h: 4, j: 5, k: 6, ';': 7, q: 8, w: 9, e: 10, r: 11, u: 12, i: 13, o: 14, p: 15 };
 
   const knobs = {};
   const held = new Map();
-  let scope, cube, voiceSel, modeSel, liteBox, lensBox, vowBox, arcBox, verbBox, dreamLbl, keyBtn, freezeBtn, libList;
+  const engBtns = [];
+  let scope, cube, arcScope, cubePane, arcadePane, voiceSel, modeSel, liteBox, lensBox, vowBox, arcBox, verbBox, dreamLbl, keyBtn, freezeBtn, libList;
 
   /* ── Knob ───────────────────────────────────────────────────────────── */
 
@@ -392,16 +409,85 @@ const SoundUI = (() => {
     c.addEventListener('pointercancel', up);
   }
 
+  function paintArcadeScope() {
+    if (!arcScope || typeof Arcade === 'undefined') return;
+    const st = Sound.state(), g = arcScope.getContext('2d');
+    const W = arcScope.width, H = arcScope.height;
+    g.clearRect(0, 0, W, H);
+    if (!st.P) return;
+    const L = renderer.pal.line, A = renderer.pal.accent;
+    const waves = Arcade.wavePreview(st.P, W - 76);
+    const lanes = [
+      ['1 · FM LEAD', waves.lead, true],
+      ['2 · PULSE BASS', waves.bass, false],
+      ['3 · NOISE PERC', waves.perc, false],
+      ['4 · ARP CHORD', waves.arp, true],
+    ];
+    const rowH = H / 4;
+    g.font = `9px ${SERIF}`;
+    g.textAlign = 'left';
+    lanes.forEach(([lbl, arr, hi], r) => {
+      const y0 = r * rowH + rowH * 0.5;
+      g.fillStyle = rgba(L, 0.55);
+      g.fillText(lbl, 4, y0 + 3);
+      g.strokeStyle = rgba(L, 0.1);
+      g.beginPath(); g.moveTo(74, y0); g.lineTo(W - 2, y0); g.stroke();
+      g.beginPath();
+      for (let i = 0; i < arr.length; i++) {
+        const x = 74 + i, y = y0 - arr[i] * (rowH * 0.36);
+        i ? g.lineTo(x, y) : g.moveTo(x, y);
+      }
+      g.strokeStyle = hi ? rgba(A, 0.92) : rgba(L, 0.72);
+      g.lineWidth = 1.25;
+      g.stroke();
+    });
+  }
+
+  function syncEngineVisibility() {
+    const eng = Sound.engine || 'cube';
+    const isArc = eng === 'arcade';
+    if (cubePane) cubePane.hidden = isArc;
+    if (arcadePane) arcadePane.hidden = !isArc;
+    if (modeSel) modeSel.input.value = eng;
+    for (const b of engBtns) b.setAttribute('aria-pressed', String(b.dataset.engine === eng));
+  }
+
+  function chooseEngine(eng) {
+    const next = eng === 'arcade' ? 'arcade' : 'cube';
+    Sound.setEngine(next);
+    syncEngineVisibility();
+    UI.announce(next === 'arcade' ? 'Arcade sound engine' : 'Cube sound engine');
+  }
+
+  function makeEngineSwitch(compact) {
+    const mkBtn = (id, label, title) => {
+      const b = UI.button(label, () => chooseEngine(id), {
+        class: compact ? 'sm eng-pill' : 'sm eng-btn',
+        'data-engine': id,
+        'aria-pressed': String((Sound.engine || 'cube') === id),
+        title,
+      });
+      engBtns.push(b);
+      return b;
+    };
+    return h('div', { class: compact ? 'eng-switch eng-top' : 'eng-switch', role: 'group', 'aria-label': 'Sound engine' },
+      compact ? null : h('span', { class: 'eng-lbl' }, 'Engine'),
+      mkBtn('cube', 'Cube', 'Cube sound engine: wavetable cube & palette'),
+      mkBtn('arcade', 'Arcade', 'Arcade sound engine: 4-channel retro synthesis'));
+  }
+
   function refresh() {
+    syncEngineVisibility();
     cancelAnimationFrame(raf);
     raf = requestAnimationFrame(() => {
+      syncEngineVisibility();
       if (!voiceSel) return;
       const st = Sound.state();
-      for (const d of KNOBS.concat(DRUM_KNOBS, DRUM_FX_KNOBS)) {
+      for (const d of KNOBS.concat(DRUM_KNOBS, DRUM_FX_KNOBS, ARCADE_KNOBS)) {
         if (knobs[d.name]) knobs[d.name].set(st.P && st.P[d.name] != null ? st.P[d.name] : d.idle ?? d.min);
       }
       voiceSel.input.value = st.P ? st.P.voice : 'auto';
-      modeSel.input.value = Sound.mode;
+      if (modeSel) modeSel.input.value = Sound.engine || 'cube';
       liteBox.input.checked = Sound.lite;
       lensBox.input.checked = Sound.lensWave;
       vowBox.input.checked = Sound.vowelMemoryOn;
@@ -413,7 +499,8 @@ const SoundUI = (() => {
       dreamLbl.textContent = app.sigil && st.tables
         ? `dream ${st.variant} · ${st.tables.D.mult}×+${st.tables.D.off}`
         : 'cast to dream';
-      paintScope(); paintCube();
+      if (Sound.engine === 'arcade') paintArcadeScope();
+      else { paintScope(); paintCube(); }
     });
   }
 
@@ -451,7 +538,7 @@ const SoundUI = (() => {
     .kb-ring{position:absolute;inset:0;border-radius:50%;-webkit-mask:radial-gradient(circle,transparent 60%,#000 63%);mask:radial-gradient(circle,transparent 60%,#000 63%)}
     .kb-cap{position:absolute;inset:8px;border-radius:50%;background:rgba(var(--line),.05);border:1px solid rgba(var(--line),.18)}
     .kb-cap i{position:absolute;left:50%;top:3px;width:1.5px;height:9px;margin-left:-.75px;background:rgb(var(--accent))}
-    .kb-label{opacity:.6;letter-spacing:.08em;text-transform:uppercase}
+    .kb-label{opacity:.6;letter-spacing:.06em;text-transform:uppercase;text-align:center;line-height:1.2}
     .kb-val{font-variant-numeric:tabular-nums;opacity:.55}
     .kb-span,.kb-bead{position:absolute;inset:-6px;border-radius:50%;pointer-events:none;display:none}
     .kb-span{-webkit-mask:radial-gradient(circle closest-side,transparent 85%,#000 88%,#000 96%,transparent 99%);mask:radial-gradient(circle closest-side,transparent 85%,#000 88%,#000 96%,transparent 99%)}
@@ -463,26 +550,37 @@ const SoundUI = (() => {
     .kb-wrap.kb-flash .kb{animation:kbflash 1.2s ease-out}
     @keyframes kbflash{0%{box-shadow:0 0 0 0 rgba(var(--accent),.9)}100%{box-shadow:0 0 0 14px rgba(var(--accent),0)}}
     .snd-scope{width:100%;height:168px;display:block;margin:6px 0 2px}
+    .snd-arc-scope{width:100%;height:124px;display:block;margin:6px 0 8px}
     .snd-cube{width:100%;height:84px;display:block;margin:0 0 6px;opacity:.9}
+    .eng-switch{display:flex;align-items:center;gap:6px;margin:4px 0 10px}
+    .eng-switch .eng-lbl{font-size:11px;letter-spacing:.2em;text-transform:uppercase;opacity:.6;margin-right:auto}
+    .eng-switch .eng-btn{flex:1;padding:7px 10px}
+    .eng-top{margin:0 6px 0 0;gap:3px}
+    .eng-top .eng-pill{padding:6px 9px;font-size:9px;letter-spacing:.2em}
     .dream{align-items:center}
     .dream-lbl{font-style:italic;opacity:.7;font-size:12.5px;min-width:8em;text-align:center}
     .lib-row{display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid rgba(var(--line),.06)}
     .lib-name{flex:1;font-style:italic}
     .snd-h{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;opacity:.6;margin:16px 0 4px}`);
 
+  const topRight = document.querySelector('.top-right');
+  if (topRight) topRight.prepend(makeEngineSwitch(true));
+
   UI.section({ id: 'sound', title: 'Sound & Patch', order: 12, build(el) {
     const mk = (list) => h('div', { class: 'kb-grid' }, list.map((d) => { const k = knob(d); knobs[d.name] = k; return k.el; }));
     const grid = mk(KNOBS);
     const drumGrid = mk(DRUM_KNOBS);
     const drumFxGrid = mk(DRUM_FX_KNOBS);
+    const arcadeGrid = mk(ARCADE_KNOBS);
     scope = h('canvas', { class: 'snd-scope', width: 280, height: 168, 'aria-hidden': 'true' });
     cube = h('canvas', { class: 'snd-cube', width: 280, height: 46, 'aria-hidden': 'true' });
+    arcScope = h('canvas', { class: 'snd-arc-scope', width: 280, height: 124, 'aria-hidden': 'true' });
 
     attachCube(cube);
 
-    modeSel = UI.select({ label: 'Engine', value: Sound.mode,
-      options: [['sigil', 'Sigil · cube & vox'], ['legacy', 'Legacy · original voices']],
-      onChange: (v) => Sound.setMode(v) });
+    modeSel = UI.select({ label: 'Sound engine', value: Sound.engine || 'cube',
+      options: [['cube', 'Cube · wavetable & palette'], ['arcade', 'Arcade · 4-channel retro']],
+      onChange: (v) => chooseEngine(v) });
     voiceSel = UI.select({ label: 'Lead voice', value: 'auto',
     options: [['auto', 'Auto · per timbre'], ['wave', 'Wavetable'], ['vox', 'Vox · formant'],
     ['fm', 'FM'], ['bow', 'Bow'], ['bell', 'Bell']],
@@ -499,7 +597,7 @@ const SoundUI = (() => {
     libList = h('div', { class: 'lib' });
     const fileIn = h('input', { type: 'file', accept: 'application/json,.json', style: 'display:none', onchange: () => importFile(fileIn) });
 
-    el.append(
+    cubePane = h('div', { class: 'snd-cube-pane' },
       UI.note('The sigil is a cube: across is the path drawn letter by letter, up is its spectral character, and every note travels through it.'),
       ...(typeof Palette === 'undefined' ? [] : [h('p', { class: 'tool-note' }, 'These knobs shape whoever plays: the cube’s voices, and every instrument of the ',
         h('button', { type: 'button', class: 'rx-link', onclick: () => UI.open('palette') }, 'Palette'), ' too (brightness, width, air, body, sub, motion).')]),
@@ -516,7 +614,21 @@ const SoundUI = (() => {
         UI.button('◀ dream', () => Sound.dream(-1)), dreamLbl, UI.button('dream ▶', () => Sound.dream(1))),
       h('div', { class: 'sgrow' },
         UI.button('Mutate', () => Sound.mutate()), freezeBtn, UI.button('Reset knobs', () => Sound.reset())),
-      modeSel, voiceSel, liteBox, lensBox, vowBox,      modeSel, voiceSel, liteBox, lensBox, vowBox, arcBox, verbBox,
+      voiceSel, liteBox, lensBox, vowBox, arcBox, verbBox);
+
+    arcadePane = h('div', { class: 'snd-arcade-pane', hidden: true },
+      UI.note('Four retro channels read the sigil together: FM-style lead, pulse bass, LFSR noise percussion, and an arpeggiated chord channel.'),
+      arcScope,
+      h('div', { class: 'snd-h' }, 'Shared macro controls'),
+      arcadeGrid,
+      h('div', { class: 'sgrow' },
+        UI.button('Mutate', () => Sound.mutate()),
+        UI.button('Reset controls', () => Sound.reset())));
+
+    el.append(
+      makeEngineSwitch(false),
+      cubePane,
+      arcadePane,
       h('div', { class: 'sgrow' }, keyBtn, UI.button('Copy patch code', () => copy(Sound.code()))),
       h('div', { class: 'snd-h' }, 'Patch library'),
       h('div', { class: 'sgrow' },
@@ -529,6 +641,7 @@ const SoundUI = (() => {
       libList, fileIn);
 
     renderLibrary();
+    syncEngineVisibility();
     refresh();
   } });
 

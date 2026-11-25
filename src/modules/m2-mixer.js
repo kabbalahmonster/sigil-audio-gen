@@ -20,6 +20,8 @@ const Mixer = (() => {
 
   const BUSES = [['lead', 'Lead'], ['harm', 'Choir'], ['bell', 'Bells'], ['pad', 'Pad'],
                  ['bass', 'Bass'], ['arp', 'Arpeggio'], ['drums', 'Drums'], ['drone', 'Drone']];
+  const ARC_BUS_LABELS = { lead: 'FM Lead', bass: 'Pulse Bass', arp: 'Arp Chords', drums: 'Noise Perc' };
+  const isArcade = () => typeof Sound !== 'undefined' && Sound.engine === 'arcade';
 
   const BPM_MIN = 40, BPM_MAX = 240;
   /** Above this tempo the form doubles its verses and choruses. */
@@ -48,12 +50,15 @@ const Mixer = (() => {
   function apply(eng = app.engine, instant = false) {
     if (!eng || !eng.buses) return;
     const now = eng.ctx.currentTime;
-    const anySolo = BUSES.some(([k]) => S.solo[k]);
+    const arc = isArcade();
+    const activeBuses = arc ? BUSES.filter(([k]) => ARC_BUS_LABELS[k]) : BUSES;
+    const anySolo = activeBuses.some(([k]) => S.solo[k]);
     const set = (param, v, tc = 0.05) => (instant ? param.setValueAtTime(v, now) : param.setTargetAtTime(v, now, tc));
 
     for (const [k] of BUSES) {
       const b = eng.buses[k];
       if (!b || b._base == null) continue;
+      if (arc && !ARC_BUS_LABELS[k]) { set(b.gain, 0); continue; }
       set(b.gain, b._base * S.level[k] * (S.mute[k] ? 0 : 1) * (anySolo && !S.solo[k] ? 0 : 1));
     }
     /* Volume. The engine's own output leaves headroom, so the fader may go past unity. Under the
@@ -63,10 +68,11 @@ const Mixer = (() => {
     set(eng.out.gain, eng.master ? Math.min(vol, 1) : vol);
     const boost = held ? 20 * Math.log10(vol) : 0;
     if (eng.setParams && (eng.params.boost || 0) !== boost) eng.setParams({ boost });
-    if (eng.revReturn) set(eng.revReturn.gain, 0.85 * S.space, 0.08);
+    if (eng.revReturn) set(eng.revReturn.gain, 0.85 * (arc ? 1 : S.space), 0.08);
   }
 
   Hooks.on('master', (eng) => apply(eng));
+  Hooks.on('engineMode', () => { syncEngineUI(); apply(); });
 
   // Record each bus's post-song-level gain as its baseline, then apply user levels.
   Hooks.on('buses', (buses, eng) => {
@@ -81,7 +87,7 @@ const Mixer = (() => {
     (app.engine && app.song && app.engine.song === app.song ? 60 / app.engine.spb : S.lock || 90);
 
   // Lock applies at composition time, AFTER moods and attunement, so it wins.
-  Hooks.on('compose', (cfg) => { if (S.lock) cfg.bpm = clamp(S.lock, BPM_MIN, BPM_MAX); }, 50);
+  Hooks.on('compose', (cfg) => { if (S.lock && cfg.soundEngine !== 'arcade') cfg.bpm = clamp(S.lock, BPM_MIN, BPM_MAX); }, 50);
 
   // Fast tempos: double the verses and choruses so the song keeps its length.
   Hooks.on('plan', (plan, cfg) => {
@@ -91,7 +97,7 @@ const Mixer = (() => {
   }, 50);
 
   Hooks.on('song', (sig, song) => {
-    if (!S.lock && S.tempo !== 1) app.engine.setTempo(clamp(song.bpm * S.tempo, BPM_MIN, BPM_MAX));
+    if (!isArcade() && !S.lock && S.tempo !== 1) app.engine.setTempo(clamp(song.bpm * S.tempo, BPM_MIN, BPM_MAX));
     renderMeta();
     syncTempo(true);
   });
@@ -100,15 +106,22 @@ const Mixer = (() => {
     if (!app.song) return;
     const i = parts.findIndex((p) => /bpm$/.test(p)), eff = Math.round(effective());
     if (i >= 0) {
-      parts[i] = `${eff} bpm${S.lock ? ' · locked'
+      if (isArcade()) parts[i] = `${eff} bpm`;
+      else parts[i] = `${eff} bpm${S.lock ? ' · locked'
                 : eff !== app.song.bpm ? ` (${Math.round((eff / app.song.bpm) * 100)}%)` : ''}`;
     }
   });
 
-  let raf = 0, pending = 0, tempoRow, lockBox, tempoInfo;
+  let raf = 0, pending = 0, tempoRow, lockBox, tempoInfo, tapRow, scenesRow;
 
   function setBpm(bpm) {
     bpm = clamp(Math.round(bpm), BPM_MIN, BPM_MAX);
+    if (isArcade() && typeof Sound !== 'undefined') {
+      Sound.set('aTempo', clamp(bpm, 60, 220));
+      if (app.engine && app.engine.song) app.engine.setTempo(clamp(bpm, 60, 220));
+      renderMeta();
+      return;
+    }
     if (S.lock) S.lock = bpm;
     else if (app.song) S.tempo = bpm / app.song.bpm;
 
@@ -170,6 +183,18 @@ const Mixer = (() => {
     }
   }
 
+  function syncEngineUI() {
+    if (!tempoRow) return;
+    const arc = isArcade();
+    for (const el of [tempoRow, lockBox, tapRow, tempoInfo, space, scenesRow]) if (el) el.hidden = arc;
+    for (const [k, label] of BUSES) {
+      const r = rows[k];
+      if (!r || !r.strip) continue;
+      r.strip.hidden = arc && !ARC_BUS_LABELS[k];
+      r.labelEl.textContent = arc ? (ARC_BUS_LABELS[k] || label) : label;
+    }
+  }
+
   UI.section({ id: 'mixer', title: 'Mixer & Tempo', order: 25, build(el) {
     UI.css(`.mx-strip{display:grid;grid-template-columns:64px 1fr 30px 30px;align-items:center;gap:8px;margin:4px 0;font-size:13px}
       .mx-strip>span{opacity:.72}.mx-strip button{padding:4px 0;font-size:10px;letter-spacing:.05em}`);
@@ -200,17 +225,17 @@ const Mixer = (() => {
     space  = UI.slider({ label: 'Space', min: 0, max: 2, step: 0.01, value: S.space, format: pct,
                          onInput: (v) => { S.space = v; apply(); save(); } });
 
-    el.append(tempoRow, lockBox,
-      h('div', { class: 'sgrow' },
-        UI.button('Tap', tap, { title: 'Tap tempo (B)' }),
-        UI.button('Native', () => {
-          S.lock = 0; S.tempo = 1;
-          if (app.engine && app.song) app.engine.setTempo(app.song.bpm);
-          pending = 0; save(); renderMeta(); syncTempo(true);
-        }, { title: 'Return to the sigil’s own tempo' })),
-      tempoInfo, master, space,
-      h('div', { class: 'sgrow' }, SCENES.map(([name, fn]) =>
-        UI.button(name, () => { fn(); syncLevels(); apply(); save(); UI.announce(`${name} mix`); }))));
+    tapRow = h('div', { class: 'sgrow' },
+      UI.button('Tap', tap, { title: 'Tap tempo (B)' }),
+      UI.button('Native', () => {
+        S.lock = 0; S.tempo = 1;
+        if (app.engine && app.song) app.engine.setTempo(app.song.bpm);
+        pending = 0; save(); renderMeta(); syncTempo(true);
+      }, { title: 'Return to the sigil’s own tempo' }));
+    scenesRow = h('div', { class: 'sgrow' }, SCENES.map(([name, fn]) =>
+      UI.button(name, () => { fn(); syncLevels(); apply(); save(); UI.announce(`${name} mix`); })));
+
+    el.append(tempoRow, lockBox, tapRow, tempoInfo, master, space, scenesRow);
 
     for (const [k, label] of BUSES) {
       const slider = UI.slider({ label, min: 0, max: 1.5, step: 0.01, value: S.level[k], format: pct,
@@ -219,18 +244,20 @@ const Mixer = (() => {
         { title: `Mute ${label}`, 'aria-label': `Mute ${label}`, 'aria-pressed': 'false' });
       const s = UI.button('S', () => { S.solo[k] = !S.solo[k]; syncLevels(); apply(); save(); },
         { title: `Solo ${label}`, 'aria-label': `Solo ${label}`, 'aria-pressed': 'false' });
-      rows[k] = { slider, m, s };
-      el.append(h('div', { class: 'mx-strip' }, h('span', {}, label), slider.input, m, s));
+      const labelEl = h('span', {}, label);
+      const strip = h('div', { class: 'mx-strip' }, labelEl, slider.input, m, s);
+      rows[k] = { slider, m, s, strip, labelEl };
+      el.append(strip);
     }
 
     el.append(h('div', { class: 'sgrow' }, UI.button('Reset all', () => {
       Object.assign(S, defaults());
       syncLevels(); apply();
-      if (app.engine && app.song) app.engine.setTempo(app.song.bpm);
+      if (!isArcade() && app.engine && app.song) app.engine.setTempo(app.song.bpm);
       pending = 0; save(); renderMeta(); syncTempo(true);
     })));
 
-    syncLevels(); syncTempo(true);
+    syncLevels(); syncTempo(true); syncEngineUI();
   } });
 
   UI.key('b', 'Tap tempo', tap, { group: 'Performance', display: 'B' });

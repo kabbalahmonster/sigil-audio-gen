@@ -68,7 +68,8 @@
       DRONE: 8, KICK: 9, SNARE: 10, HAT: 11, NOISE: 12, FIRE: 13, TOM: 14,
       // The palette's engines (sigil-voices.js). Their parameters are not in the event row but in the INSTRUMENT TABLE
       // (see IN): a row names its instrument in P0. ⚠ APPEND ONLY: an id is in every link that has ever used it.
-      PLUCK: 15, MODAL: 16, ANALOG: 17, ORGAN: 18, DX: 19, BREATH: 20, FOLD: 21, CLOUD: 22 });
+      PLUCK: 15, MODAL: 16, ANALOG: 17, ORGAN: 18, DX: 19, BREATH: 20, FOLD: 21, CLOUD: 22,
+      ARC_LEAD: 23, ARC_BASS: 24, ARC_PERC: 25, ARC_ARP: 26 });
   
     /** Buses. 'fx' = live keys and ritual sounds; 'post' bypasses the master chain and the banish filter. */
     const BUS_NAMES = Object.freeze(['lead', 'harm', 'bell', 'pad', 'bass', 'arp', 'drums', 'drone', 'fx', 'post']);
@@ -120,7 +121,8 @@
       SWEEP: 7, DRIFT: 8, VOWEL: 9, VOICE: 10, DRUMS: 11, HDECAY: 12, CHORUS: 13, ECHO: 14,
       GRIT: 15, BITS: 16, HOLD: 17, FOLD: 18, DRIVE: 19, DUCK: 20, INTENSITY: 21,
       DPUNCH: 22, DBODY: 23, DDRIVE: 24, DCRUSH: 25, DBITS: 26, DHOLD: 27, DFILTER: 28,
-      DSMASH: 29, DROOM: 30, DSIZE: 31, DECHO: 32, DTIME: 33 });
+      DSMASH: 29, DROOM: 30, DSIZE: 31, DECHO: 32, DTIME: 33,
+      ALEAD: 34, AFM: 35, APW: 36, ADRIVE: 37, ADECAY: 38, AARP: 39 });
     const PSTRIDE = 40;
     const DEFAULT_PATCH = new Float64Array(PSTRIDE);
     Object.entries({ BRIGHT: 0.6, SUB: 0.2, BREATH: 0.2, WAVE: 2, LAYER: 1, SWEEP: 0.5, DRIFT: 0.3,
@@ -1045,6 +1047,285 @@
       v.rng = r; v.kf = kf; v.age += n - from;
       if ((t > Math.max(2, dur) && cl < 1e-4) || kf < 1e-3) v.active = false;
     }
+
+    function initArcLead(c, v, src, o, pb, el) {
+      const sr = c.sr, S = c.sec, dur = common(c, v, src, o, el), P = v.p;
+      v.kind = KIND.ARC_LEAD;
+      const mode = src[o + EV.P0] | 0;
+      const bright = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.ALEAD], 0, 1) : 0.65;
+      const fm = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.AFM], 0, 1) : 0.5;
+      const r1 = src[o + EV.P1] > 0 ? src[o + EV.P1] : mode === 1 ? 3.5 : 2;
+      const r2 = src[o + EV.P2] > 0 ? src[o + EV.P2] : mode === 1 ? 7 : 3;
+      const nyq = clamp((sr * 0.42) / (v.f * Math.max(r1, 2)) - 0.8, 0.08, 1);
+      P[0] = r1; P[1] = r2; P[2] = nyq;
+      P[3] = 1; P[4] = decayOf(mode === 1 ? Math.max(0.18, dur * 0.45) : Math.max(0.05, Math.min(0.28, dur * 0.45)), sr);
+      P[5] = 1; P[6] = decayOf(mode === 1 ? 0.09 : 0.035, sr);
+      P[7] = bright; P[8] = fm; P[9] = 0; P[10] = mode;
+      v.glideC = coefOf(0.018, sr);
+      if (mode !== 1 && (v.gate < 0 || dur > 0.35)) {
+        v.vibA = 0.0048; v.vibInc = 5.8 / sr; v.vibRI = 1 / (0.28 * sr);
+      }
+      if (mode === 1) envStart(v, sr, 0.002, Math.max(0.16, dur * 0.55), 0.06, 0.28, v.vel * 0.34);
+      else envStart(v, sr, 0.0035, 0.13, mode === 2 ? 0.62 : 0.74, 0.055, v.vel * (mode === 2 ? 0.26 : 0.34));
+    }
+    function rArcLead(c, v, L, R, from, n) {
+      const sr = c.sr, P = v.p, pb = c.secBase(c.beat), S = c.sec;
+      const hasArc = S[pb + PA.APW] > 0;
+      const bright = hasArc ? clamp(S[pb + PA.ALEAD], 0, 1) : P[7];
+      const fm = hasArc ? clamp(S[pb + PA.AFM], 0, 1) : P[8];
+      const fc = Math.min(sr * 0.44, v.f * (2.4 + 20 * bright * bright + 3.6 * bright));
+      svfSet(v.cf, 0, sr, fc, 0.72 + 0.35 * bright);
+      const a1 = v.cf[0], a2 = v.cf[1], a3 = v.cf[2];
+      const r1 = P[0], r2 = P[1], nyq = P[2], mDec = P[4], tDec = P[6];
+      const fb = (0.03 + 0.28 * bright * (0.3 + 0.7 * fm)) * nyq;
+      const baseIdx = fm * (0.22 + 1.35 * fm) * (0.45 + 0.75 * bright) * nyq;
+      const tineIdx = fm * (0.1 + 0.7 * bright) * nyq;
+      const h2 = 0.16 * bright * (1 - 0.5 * fm);
+      const fs = v.f / sr, glC = v.glideC, vA = v.vibA, vI = v.vibInc, vRI = v.vibRI;
+      const aI = v.aInc, dC = v.dC, su = v.sus, rC = v.rC, pk = v.peak, kd = v.kd;
+      const gL = v.gl * v.lvl, gR = v.gr * v.lvl;
+      let s1 = v.fs[0], s2 = v.fs[1], ph = v.ph[0], m1p = v.ph[1], m2p = v.ph[2];
+      let gl = v.glide, vp = v.vibPh, vr = v.vibR, mEnv = P[3], tEnv = P[5], prevM = P[9];
+      let e = v.env, st = v.stage, gate = v.gate, kf = v.kf, i = from;
+      for (; i < n; i++) {
+        if (gl !== 1) { gl += (1 - gl) * glC; if (gl > 0.99995 && gl < 1.00005) gl = 1; }
+        let m = gl;
+        if (vA !== 0) { vp += vI; if (vp >= 1) vp -= 1; if (vr < 1) vr += vRI; m *= 1 + vA * vr * sinAt(vp); }
+        const inc = fs * m;
+        m1p += inc * r1; m1p -= Math.floor(m1p);
+        m2p += inc * r2; m2p -= Math.floor(m2p);
+        ph += inc; if (ph >= 1) ph -= 1;
+        let mp = m1p + fb * prevM; mp -= Math.floor(mp);
+        const mod1 = sinAt(mp); prevM = mod1;
+        const mod2 = sinAt(m2p) * tEnv;
+        mEnv = 0.35 + (mEnv - 0.35) * mDec;
+        tEnv *= tDec;
+        let cp = ph + baseIdx * mEnv * mod1 + tineIdx * mod2;
+        cp -= Math.floor(cp);
+        let y = sinAt(cp);
+        if (h2 > 0.002) { let p2 = ph * 2; if (p2 >= 1) p2 -= 1; y += sinAt(p2) * h2; }
+        const v3 = y - s2, v1 = a1 * s1 + a2 * v3, v2 = s2 + a2 * s1 + a3 * v3;
+        s1 = 2 * v1 - s1; s2 = 2 * v2 - s2;
+        if (st === 1) { e += aI; if (e >= pk) { e = pk; st = 2; } }
+        else if (st === 2) e += dC * (su - e);
+        else { e -= rC * e; if (e < 1e-5) { st = 0; break; } }
+        if (gate > 0 && --gate === 0) st = 3;
+        const out = v2 * e * kf; kf *= kd;
+        L[i] += out * gL; R[i] += out * gR;
+      }
+      v.fs[0] = s1; v.fs[1] = s2; v.ph[0] = ph; v.ph[1] = m1p; v.ph[2] = m2p;
+      v.glide = gl; v.vibPh = vp; v.vibR = vr; P[3] = mEnv; P[5] = tEnv; P[9] = prevM;
+      v.env = e; v.stage = st; v.gate = gate; v.kf = kf; v.age += i - from;
+      if (st === 0 || kf < 1e-3) v.active = false;
+    }
+
+    function initArcBass(c, v, src, o, pb, el) {
+      const sr = c.sr, S = c.sec, P = v.p;
+      common(c, v, src, o, el);
+      v.kind = KIND.ARC_BASS;
+      v.tab = c.saw;
+      v.o0 = c.tier(v.f * Math.max(1, v.glide) * 1.05);
+      v.glideC = coefOf(0.015, sr);
+      P[0] = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.APW], 0.08, 0.92) : 0.25;
+      P[1] = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.ADRIVE], 0, 1) : 0.35;
+      P[2] = 1; P[3] = 1 - Math.exp(-BLOCK / (0.09 * sr));
+      envStart(v, sr, 0.0025, 0.1, 0.72, 0.042, v.vel * 0.38);
+    }
+    function rArcBass(c, v, L, R, from, n) {
+      const sr = c.sr, P = v.p, saw = v.tab, o0 = v.o0, pb = c.secBase(c.beat), S = c.sec;
+      const hasArc = S[pb + PA.APW] > 0;
+      const pw = hasArc ? clamp(S[pb + PA.APW], 0.08, 0.92) : P[0];
+      const drive = hasArc ? clamp(S[pb + PA.ADRIVE], 0, 1) : P[1];
+      P[2] *= 1 - P[3];
+      const fc = Math.min(sr * 0.42, v.f * (2.8 + 8.5 * (0.25 + 0.75 * drive) + 6 * P[2]));
+      svfSet(v.cf, 0, sr, fc, 0.85 + 1.15 * drive);
+      const a1 = v.cf[0], a2 = v.cf[1], a3 = v.cf[2];
+      const drv = 1 + 6.5 * drive, nrm = 1 / sat(drv), subG = 0.28 + 0.16 * drive;
+      const fs = v.f / sr, glC = v.glideC;
+      const aI = v.aInc, dC = v.dC, su = v.sus, rC = v.rC, pk = v.peak, kd = v.kd;
+      const gL = v.gl * v.lvl, gR = v.gr * v.lvl;
+      let s1 = v.fs[0], s2 = v.fs[1], ph = v.ph[0], phs = v.ph[1], gl = v.glide;
+      let e = v.env, st = v.stage, gate = v.gate, kf = v.kf, i = from;
+      for (; i < n; i++) {
+        if (gl !== 1) { gl += (1 - gl) * glC; if (gl > 0.99995 && gl < 1.00005) gl = 1; }
+        const inc = fs * gl;
+        ph += inc; if (ph >= 1) ph -= 1;
+        let p2 = ph + pw; if (p2 >= 1) p2 -= 1;
+        const pulse = (tabAt(saw, o0, ph) - tabAt(saw, o0, p2)) * 0.52;
+        phs += inc * 0.5; if (phs >= 1) phs -= 1;
+        const raw = pulse + sinAt(phs) * subG;
+        const v3 = raw - s2, v1 = a1 * s1 + a2 * v3, v2 = s2 + a2 * s1 + a3 * v3;
+        s1 = 2 * v1 - s1; s2 = 2 * v2 - s2;
+        const y = sat(v2 * drv) * nrm;
+        if (st === 1) { e += aI; if (e >= pk) { e = pk; st = 2; } }
+        else if (st === 2) e += dC * (su - e);
+        else { e -= rC * e; if (e < 1e-5) { st = 0; break; } }
+        if (gate > 0 && --gate === 0) st = 3;
+        const out = y * e * kf; kf *= kd;
+        L[i] += out * gL; R[i] += out * gR;
+      }
+      v.fs[0] = s1; v.fs[1] = s2; v.ph[0] = ph; v.ph[1] = phs; v.glide = gl;
+      v.env = e; v.stage = st; v.gate = gate; v.kf = kf; v.age += i - from;
+      if (st === 0 || kf < 1e-3) v.active = false;
+    }
+
+    function initArcPerc(c, v, src, o, pb) {
+      const sr = c.sr, S = c.sec, P = v.p;
+      common(c, v, src, o, 0); v.gate = -1;
+      v.kind = KIND.ARC_PERC; v.stage = 2;
+      const nDec = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.ADECAY], 0.12, 2.5) : 0.7;
+      const sub = clamp(src[o + EV.P0] | 0, 0, 4);
+      const metal = (src[o + EV.P1] | 0) === 1 ? 6 : 1;
+      const lenM = src[o + EV.P2] > 0 ? src[o + EV.P2] : 1;
+      v.lvl = (v.bus === B_DRUMS ? S[pb + PA.DRUMS] : 1) * 0.92;
+      v.mode = sub;
+      const lfsr0 = ((v.rng & 0x7fff) || 0x45d9) & 0x7fff;
+      P[0] = metal; P[1] = lfsr0; P[2] = 1;
+      if (sub === 0) {
+        const f = clamp(v.f || 52, 32, 140);
+        v.inc[0] = f / sr; v.inc[1] = 7500 / sr;
+        P[3] = 3.2; P[4] = decayOf(0.022, sr);
+        v.lv[0] = 0.95; v.lv[1] = 0.38; v.lv[2] = 1;
+        v.dk[0] = decayOf(0.11 * (0.55 + 0.45 * nDec) * lenM, sr);
+        v.dk[1] = decayOf(0.008 * (0.6 + 0.4 * nDec), sr);
+        svfSet(v.cf, 0, sr, 2400, 0.8);
+      } else if (sub === 1) {
+        const f = clamp(v.f || 165, 90, 420);
+        v.inc[0] = f / sr; v.inc[1] = (metal === 6 ? 7800 : 12500) / sr;
+        P[3] = 1.6; P[4] = decayOf(0.018, sr);
+        v.lv[0] = 0.52; v.lv[1] = 0.72; v.lv[2] = 1;
+        v.dk[0] = decayOf(0.032 * (0.65 + 0.35 * nDec), sr);
+        v.dk[1] = decayOf(0.078 * nDec * lenM, sr);
+        svfSet(v.cf, 0, sr, 2200, 0.65);
+      } else if (sub === 2) {
+        v.inc[0] = 0; v.inc[1] = (metal === 6 ? 11200 : 19000) / sr;
+        P[3] = 0; P[4] = 1;
+        v.lv[0] = 0; v.lv[1] = 0.44; v.lv[2] = 0;
+        v.dk[0] = 0;
+        v.dk[1] = decayOf((lenM > 1.2 ? 0.115 : 0.021) * nDec * lenM, sr);
+        svfSet(v.cf, 0, sr, 6400, 0.75);
+      } else if (sub === 3) {
+        const f = clamp(v.f || 120, 55, 520);
+        v.inc[0] = f / sr; v.inc[1] = 9200 / sr;
+        P[3] = 1.9; P[4] = decayOf(0.03, sr);
+        v.lv[0] = 0.78; v.lv[1] = 0.24; v.lv[2] = 1;
+        v.dk[0] = decayOf(0.085 * (0.55 + 0.45 * nDec) * lenM, sr);
+        v.dk[1] = decayOf(0.015 * nDec, sr);
+        svfSet(v.cf, 0, sr, 2800, 0.9);
+      } else {
+        v.inc[0] = 0; v.inc[1] = 15500 / sr;
+        P[3] = 0; P[4] = decayOf(0.35 * nDec, sr);
+        v.lv[0] = 0; v.lv[1] = 0.48; v.lv[2] = 1;
+        v.dk[0] = 0;
+        v.dk[1] = decayOf(0.36 * nDec * lenM, sr);
+        svfSet(v.cf, 0, sr, 4200, 0.6);
+      }
+    }
+    function rArcPerc(c, v, L, R, from, n) {
+      const P = v.p, lv = v.lv, dk = v.dk, cf = v.cf, key = c.key, sub = v.mode;
+      const A1 = cf[0], A2 = cf[1], A3 = cf[2], AK = cf[3];
+      const i0 = v.inc[0], i1 = v.inc[1], d0 = dk[0], d1 = dk[1], dg = P[4], gx = P[3], tap = P[0] | 0, kd = v.kd;
+      const gain = v.vel * v.lvl, gL = v.gl * gain, gR = v.gr * gain;
+      const kAmt = sub === 0 ? gain : sub === 1 ? gain * 0.25 : 0;
+      let p0 = v.ph[0], p1 = v.ph[1], lb = lv[0], ln = lv[1], ge = lv[2];
+      let lfsr = P[1] | 0, nz = P[2], s1 = v.fs[0], s2 = v.fs[1], kf = v.kf;
+      for (let i = from; i < n; i++) {
+        ge *= dg;
+        let y = 0;
+        if (lb > 1e-5) {
+          p0 += i0 * (1 + gx * ge); if (p0 >= 1) p0 -= 1;
+          const tri = p0 < 0.5 ? 4 * p0 - 1 : 3 - 4 * p0;
+          y += (sub === 0 ? sat(tri * 1.5) : tri * 0.7 + (p0 < 0.25 ? 0.3 : -0.3)) * lb;
+          lb *= d0;
+        }
+        if (ln > 1e-5) {
+          const clk = sub === 4 ? i1 * (0.35 + 0.65 * ge) : i1;
+          p1 += clk;
+          if (p1 >= 1) {
+            p1 -= Math.floor(p1);
+            const bit = (lfsr ^ (lfsr >> tap)) & 1;
+            lfsr = ((lfsr >> 1) | (bit << 14)) & 0x7fff;
+            if (!lfsr) lfsr = 1;
+            nz = bit ? 1 : -1;
+          }
+          const v3 = nz - s2, v1 = A1 * s1 + A2 * v3, v2 = s2 + A2 * s1 + A3 * v3;
+          s1 = 2 * v1 - s1; s2 = 2 * v2 - s2;
+          const fnz = sub === 2 || sub === 4 ? nz - AK * v1 - v2 : v1 * AK * 0.7 + (nz - AK * v1 - v2) * 0.3;
+          y += fnz * ln;
+          ln *= d1;
+        }
+        const out = sat(y * 1.25) * kf; kf *= kd;
+        if (kAmt !== 0) key[i] += (out < 0 ? -out : out) * kAmt;
+        L[i] += out * gL; R[i] += out * gR;
+      }
+      v.ph[0] = p0; v.ph[1] = p1; lv[0] = lb; lv[1] = ln; lv[2] = ge;
+      P[1] = lfsr; P[2] = nz; v.fs[0] = s1; v.fs[1] = s2; v.kf = kf; v.age += n - from;
+      if ((lb < 1e-4 && ln < 1e-4) || kf < 1e-3) v.active = false;
+    }
+
+    function initArcArp(c, v, src, o, pb, el) {
+      const sr = c.sr, S = c.sec, dur = common(c, v, src, o, el), P = v.p;
+      v.kind = KIND.ARC_ARP;
+      v.tab = c.saw;
+      const chip = src[o + EV.P5] > 0;
+      const freqs = [v.f];
+      if (chip) {
+        for (let j = 0; j < 3; j++) { const fj = src[o + EV.P0 + j]; if (fj > 0) freqs.push(fj); }
+      }
+      v.n = freqs.length;
+      for (let j = 0; j < freqs.length; j++) v.inc[j] = freqs[j];
+      P[0] = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.APW], 0.08, 0.92) : 0.25;
+      P[1] = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.ALEAD], 0, 1) : 0.65;
+      P[2] = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.AARP], 0, 1) : 0.5;
+      P[3] = chip ? 1 : 0;
+      P[4] = 0; P[5] = 0;
+      const f0 = freqs[0];
+      v.o0 = c.tier(f0 * 1.05);
+      P[6] = f0;
+      if (chip) envStart(v, sr, 0.005, Math.max(0.15, dur * 0.4), 0.72, 0.08, v.vel * 0.25);
+      else envStart(v, sr, 0.0025, Math.max(0.05, dur * 0.65), 0.45, 0.038, v.vel * 0.27);
+    }
+    function rArcArp(c, v, L, R, from, n) {
+      const sr = c.sr, P = v.p, saw = v.tab, pb = c.secBase(c.beat), S = c.sec;
+      const hasArc = S[pb + PA.APW] > 0;
+      const pw0 = hasArc ? clamp(S[pb + PA.APW], 0.08, 0.92) : P[0];
+      const bright = hasArc ? clamp(S[pb + PA.ALEAD], 0, 1) : P[1];
+      const arp = hasArc ? clamp(S[pb + PA.AARP], 0, 1) : P[2];
+      const pw = clamp(0.62 - 0.42 * pw0, 0.125, 0.5);
+      const chip = P[3] > 0 && v.n > 1;
+      const stepSamples = chip ? Math.max(64, Math.round(sr / (26 + 36 * arp))) : 0;
+      let curF = P[6], o0 = v.o0, idx = P[4] | 0, cnt = P[5] | 0;
+      svfSet(v.cf, 0, sr, Math.min(sr * 0.44, curF * (3.2 + 15 * bright)), 0.7);
+      let a1 = v.cf[0], a2 = v.cf[1], a3 = v.cf[2];
+      const octG = 0.14 * bright, invSr = 1 / sr;
+      const aI = v.aInc, dC = v.dC, su = v.sus, rC = v.rC, pk = v.peak, kd = v.kd;
+      const gL = v.gl * v.lvl, gR = v.gr * v.lvl;
+      let s1 = v.fs[0], s2 = v.fs[1], ph = v.ph[0], pho = v.ph[1];
+      let e = v.env, st = v.stage, gate = v.gate, kf = v.kf, i = from;
+      for (; i < n; i++) {
+        if (chip && ++cnt >= stepSamples) {
+          cnt = 0; idx = (idx + 1) % v.n;
+          curF = v.inc[idx]; o0 = c.tier(curF * 1.05);
+        }
+        const inc = curF * invSr;
+        ph += inc; if (ph >= 1) ph -= 1;
+        let p2 = ph + pw; if (p2 >= 1) p2 -= 1;
+        let y = (tabAt(saw, o0, ph) - tabAt(saw, o0, p2)) * 0.5;
+        if (octG > 0.002) { pho += inc * 2; if (pho >= 1) pho -= 1; y += sinAt(pho) * octG; }
+        const v3 = y - s2, v1 = a1 * s1 + a2 * v3, v2 = s2 + a2 * s1 + a3 * v3;
+        s1 = 2 * v1 - s1; s2 = 2 * v2 - s2;
+        if (st === 1) { e += aI; if (e >= pk) { e = pk; st = 2; } }
+        else if (st === 2) e += dC * (su - e);
+        else { e -= rC * e; if (e < 1e-5) { st = 0; break; } }
+        if (gate > 0 && --gate === 0) st = 3;
+        const out = v2 * e * kf; kf *= kd;
+        L[i] += out * gL; R[i] += out * gR;
+      }
+      v.fs[0] = s1; v.fs[1] = s2; v.ph[0] = ph; v.ph[1] = pho;
+      v.o0 = o0; P[4] = idx; P[5] = cnt; P[6] = curF;
+      v.env = e; v.stage = st; v.gate = gate; v.kf = kf; v.age += i - from;
+      if (st === 0 || kf < 1e-3) v.active = false;
+    }
   
     /** Engines registered by sigil-voices.js: kind → init(c, v, src, o, pb, el), and its render is RENDER[kind]. */
     const EXT_INIT = [];
@@ -1054,6 +1335,8 @@
     RENDER[KIND.BOW] = rBow; RENDER[KIND.BELL] = rBell; RENDER[KIND.PAD] = rPad; RENDER[KIND.DRONE] = rDrone;
     RENDER[KIND.KICK] = rKick; RENDER[KIND.SNARE] = rSnare; RENDER[KIND.HAT] = rHat;
     RENDER[KIND.NOISE] = rNoise; RENDER[KIND.FIRE] = rFire; RENDER[KIND.TOM] = rTom;
+    RENDER[KIND.ARC_LEAD] = rArcLead; RENDER[KIND.ARC_BASS] = rArcBass;
+    RENDER[KIND.ARC_PERC] = rArcPerc; RENDER[KIND.ARC_ARP] = rArcArp;
   
     /* ── §5 EFFECTS ────────────────────────────────────────────────────────── */
     /** 8-line FDN (Hadamard) + early reflections tapped from the sigil's strokes. */
@@ -2096,7 +2379,7 @@
           if (v.active && v.id === id) {
             if (v.stage === 1 || v.stage === 2) v.stage = 3;
             v.gate = -1;
-            if (v.kind >= KIND.PLUCK) this.kill(v, 0.25);     // a struck or plucked instrument has no note-off of its own: a key let go damps it
+            if (v.kind >= KIND.PLUCK && v.kind <= KIND.CLOUD) this.kill(v, 0.25);     // a struck or plucked instrument has no note-off of its own: a key let go damps it
           }
         }
         for (let i = 0; i < this.nLive; i++) if (this.liveId[i] === id) this.liveEv[i * STRIDE + EV.DUR] = 0.05;
@@ -2142,6 +2425,10 @@
           case KIND.NOISE: initNoise(this, v, src, o, pb); break;
           case KIND.FIRE: initFire(this, v, src, o); break;
           case KIND.TOM: initTom(this, v, src, o, pb); break;
+          case KIND.ARC_LEAD: initArcLead(this, v, src, o, pb, el); break;
+          case KIND.ARC_BASS: initArcBass(this, v, src, o, pb, el); break;
+          case KIND.ARC_PERC: initArcPerc(this, v, src, o, pb); break;
+          case KIND.ARC_ARP: initArcArp(this, v, src, o, pb, el); break;
           default: {
             const init = EXT_INIT[(src[o + EV.KIND] | 0) & 255];
             if (!init || !this.inst) { v.active = false; this.sec = plan; return; }    // an engine nobody has registered, or no instruments dealt
@@ -2156,8 +2443,9 @@
         const E = this.ev;
         for (let i = this.lower(beat - 512); i < this.ptr; i++) {
           const o = i * STRIDE, k = E[o + EV.KIND] & 255;
-          // a held part: the cube's pad and drone, or a palette instrument in the pad's or the drone's slot
-          if (k !== KIND.PAD && k !== KIND.DRONE && !(k >= KIND.PLUCK && ((E[o + EV.P0] | 0) === SLOT_PAD || (E[o + EV.P0] | 0) === SLOT_DRONE))) continue;
+          // a held part: the cube's pad and drone, an arcade held chip-chord, or a palette instrument in the pad's or the drone's slot
+          const heldArc = k === KIND.ARC_ARP && E[o + EV.P5] > 0;
+          if (k !== KIND.PAD && k !== KIND.DRONE && !heldArc && !(k >= KIND.PLUCK && k <= KIND.CLOUD && ((E[o + EV.P0] | 0) === SLOT_PAD || (E[o + EV.P0] | 0) === SLOT_DRONE))) continue;
           if (E[o] + E[o + EV.DUR] > beat + 0.25) this.spawn(E, o, 0, beat - E[o], 0);
         }
       }
@@ -2408,7 +2696,8 @@
         this.nzS += (capM - this.nzS) * c;
         if (capM === 1 && this.nzS > 0.9995) this.nzS = 1;
         this.choS += (S[pb + PA.CHORUS] * 0.85 - this.choS) * c;
-        this.echoS += (0.2 + S[pb + PA.ECHO] * 0.6 - this.echoS) * c;
+        const ec = S[pb + PA.ECHO];
+        this.echoS += ((S[pb + PA.APW] > 0 ? Math.max(0, ec) * 0.75 : 0.2 + ec * 0.6) - this.echoS) * c;
         const grit = S[pb + PA.GRIT];
         this.gritS += (grit - this.gritS) * c;
         this.bits = grit > 0 ? clamp(Math.round(S[pb + PA.BITS]), 2, 16) : 16;
@@ -2777,9 +3066,14 @@
         row[EV.F] = 220; row[EV.DUR] = 0.5; row[EV.VEL] = 0.3; row[EV.AUX] = 2000;
         row[EV.P0] = 1.5; row[EV.P1] = 0.05; row[EV.P2] = 0.3; row[EV.P3] = 1; row[EV.P4] = 1; row[EV.P5] = 4; row[EV.SEED] = 7;
         const kinds = [KIND.LEAD, KIND.WAVE, KIND.VOX, KIND.FM, KIND.BOW, KIND.BELL, KIND.PAD, KIND.DRONE,
-          KIND.KICK, KIND.SNARE, KIND.HAT, KIND.NOISE, KIND.FIRE, KIND.TOM];
+          KIND.KICK, KIND.SNARE, KIND.HAT, KIND.NOISE, KIND.FIRE, KIND.TOM,
+          KIND.ARC_LEAD, KIND.ARC_BASS, KIND.ARC_PERC, KIND.ARC_ARP];
         for (let rep = 0; rep < 3; rep++) {
-          for (const k of kinds) { row[EV.KIND] = k; row[EV.BUS] = k >= KIND.KICK ? B_DRUMS : 0; this.spawn(row, 0, 0, 0, 0); }
+          for (const k of kinds) {
+            row[EV.KIND] = k;
+            row[EV.BUS] = (k >= KIND.KICK && k <= KIND.TOM) || k === KIND.ARC_PERC ? B_DRUMS : 0;
+            this.spawn(row, 0, 0, 0, 0);
+          }
           for (let b = 0; b < 16; b++) this.process(sL, sR, BLOCK);
         }
         this.panic();

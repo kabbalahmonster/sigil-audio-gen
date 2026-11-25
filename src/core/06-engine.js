@@ -280,11 +280,20 @@ class Engine {
   trigger(row, when = 0) { this.post({ type: 'trigger', row, when }, [row.buffer]); }
   tick(kind) {
     if (!this.buses) return;
+    if (typeof Sound !== 'undefined' && Sound.engine === 'arcade') {
+      this.trigger(SigilPlan.row({ kind: 'ARC_PERC', bus: 'fx', vel: 0.28, dur: 0.08 / this.spb, p: [2, kind === 'vowel' ? 1 : 0, 0.55] }));
+      return;
+    }
     const f = kind === 'vowel' ? 2600 : 4200;
     this.trigger(SigilPlan.row({ kind: 'NOISE', bus: 'bell', vel: 0.22, dur: 0.1 / this.spb, p: [1, f, f, 3, 0.001, 0.012] }));
   }
   chime(midi) {
-    if (this.buses) this.trigger(SigilPlan.row({ kind: 'BELL', bus: 'bell', f: mtof(midi), dur: 1.2 / this.spb, vel: 0.7 }));
+    if (!this.buses) return;
+    if (typeof Sound !== 'undefined' && Sound.engine === 'arcade') {
+      this.trigger(SigilPlan.row({ kind: 'ARC_LEAD', bus: 'fx', f: mtof(midi), dur: 1.0 / this.spb, vel: 0.72, p: [1, 3.5, 7] }));
+      return;
+    }
+    this.trigger(SigilPlan.row({ kind: 'BELL', bus: 'bell', f: mtof(midi), dur: 1.2 / this.spb, vel: 0.7 }));
   }
   /** The Banishing: a native low-pass sweep on the master, plus fire on the post bus (unfiltered). */
   banish(sec) {

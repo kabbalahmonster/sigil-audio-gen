@@ -83,6 +83,10 @@ const LiveLens = (() => {
       case 'pad': case 'bass': case 'arp': case 'comp': {
         if (ev.chord == null) return ev;
         const c = mapChord(ev.chord, song);
+        if (ev.arc && typeof Arcade !== 'undefined') {
+          const p = Arcade.pitch(ev, c, song, ev.chord2 != null ? mapChord(ev.chord2, song) : undefined);
+          return Array.isArray(p) ? { ...ev, midi: p[0], midis: p } : { ...ev, midi: p, from: undefined };
+        }
         // A note a style wrote (05f) knows how to find its own pitch for a chord: a power chord stays a power chord.
         if (ev.st && typeof Style !== 'undefined') {
           const p = Style.pitch(ev, c, song, ev.chord2 != null ? mapChord(ev.chord2, song) : undefined);

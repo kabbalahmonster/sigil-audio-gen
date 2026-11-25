@@ -1,0 +1,2898 @@
+diff --git a/index.html b/index.html
+index f5b8bd4..730433d 100644
+--- a/index.html
++++ b/index.html
+@@ -175,6 +175,7 @@
+     <script src="src/core/05g-rite.js"   onerror="SIGIL_FAIL(this)"></script>      <!-- the rites (forms); needs 05's makePlan -->
+     <script src="src/core/05i-flow.js"   onerror="SIGIL_FAIL(this)"></script>      <!-- the passes of a rite go round its body, not the whole -->
+     <script src="src/core/05j-palette.js" onerror="SIGIL_FAIL(this)"></script>     <!-- who plays the sigil: worlds, instruments, their numbers -->
++    <script src="src/core/05l-arcade.js"  onerror="SIGIL_FAIL(this)"></script>
+     <script src="src/core/05h-deliver.js" onerror="SIGIL_FAIL(this)"></script>     <!-- delivery: the end of a render, its loudness, its bits; needs 05e -->
+     
+     <!-- Core: runtime layer -->
+@@ -245,6 +246,7 @@
+         ['src/core/05g-rite.js',     ['Rite']],
+         ['src/core/05i-flow.js',     ['Flow']],
+         ['src/core/05j-palette.js',  ['Palette']],
++        ['src/core/05l-arcade.js',   ['Arcade']],
+         ['src/core/05h-deliver.js',  ['Deliver']],
+         ['src/core/06-engine.js',    ['Engine', 'TransportClock']],
+         ['src/core/06b-compiler.js', ['SigilPlan']],
+diff --git a/package.json b/package.json
+index 0b3f92a..3c1d991 100644
+--- a/package.json
++++ b/package.json
+@@ -22,6 +22,8 @@
+     "deliver:quick": "node tests/deliver.spec.mjs --quick",
+     "voices": "node tests/voices.spec.mjs",
+     "voices:quick": "node tests/voices.spec.mjs --quick",
++    "arcade": "node tests/arcade.spec.mjs",
++    "arcade:quick": "node tests/arcade.spec.mjs --quick",
+     "calibrate": "node tools/calibrate-voices.mjs"
+   }
+ }
+\ No newline at end of file
+diff --git a/src/core/05b-timbre.js b/src/core/05b-timbre.js
+index 4732d19..3c32975 100644
+--- a/src/core/05b-timbre.js
++++ b/src/core/05b-timbre.js
+@@ -78,16 +78,22 @@ const SoundDesign = (() => {
+     pal: ['pv', 0, 99], palOff: ['po', 0, 1],
+     iLead: ['xl', 0, 255], iAlt: ['xa', 0, 255], iHarm: ['xh', 0, 255], iBell: ['xb', 0, 255], iBass: ['xs', 0, 255],
+     iArp: ['xr', 0, 255], iPad: ['xp', 0, 255], iDrone: ['xd', 0, 255], iComp: ['xc', 0, 255], iPerc: ['xk', 0, 255],
++    eng: ['en', 0, 1],
++    aTempo: ['at', 60, 220], aScale: ['as', 0, 1], aComplex: ['ac', 0, 1], aSwing: ['aw', 0, 0.65],
++    aBright: ['ab', 0, 1], aFm: ['af', 0, 1], aPw: ['ap', 0.1, 0.9], aDrive: ['ad', 0, 1],
++    aDrum: ['ak', 0, 1], aDecay: ['an', 0.15, 2], aArp: ['ar', 0, 1], aSpace: ['ax', 0, 1],
+   };
+   const INTEGER_FIELDS = new Set(['vowel', 'bits', 'hold', 'dBits', 'dHold', 'dTime', 'take', 'mVar', 'mMute', 'finish',
+-    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc']);
++    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc',
++    'eng', 'aTempo']);
+   /**
+    * Fields Mutate leaves alone: switches and indices, where a nudge is a different thing entirely;
+    * and the kit's filter, which is a performance control (a nudge off centre takes the kick's sub away).
+    */
+   const FIXED_FIELDS = new Set(['bits', 'hold', 'voice', 'dBits', 'dHold', 'dTime', 'dFilter', 'take',
+     'motion', 'evolve', 'mVar', 'mMute', 'finish', 'fAmt',
+-    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc']);
++    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc',
++    'eng', 'aTempo', 'aScale', 'aComplex', 'aSwing', 'aBright', 'aFm', 'aPw', 'aDrive', 'aDrum', 'aDecay', 'aArp', 'aSpace']);
+   const VOICES = ['auto', 'vox', 'wave'];
+   const clampTo = (x, a, b) => Math.min(b, Math.max(a, x));
+ 
+diff --git a/src/core/05l-arcade.js b/src/core/05l-arcade.js
+new file mode 100644
+index 0000000..638f2ec
+--- /dev/null
++++ b/src/core/05l-arcade.js
+@@ -0,0 +1,734 @@
++'use strict';
++
++const Arcade = (() => {
++  'use strict';
++
++  const DEFAULTS = {
++    aTempo: 128,
++    aScale: 0.55,
++    aComplex: 0.5,
++    aSwing: 0.08,
++    aBright: 0.65,
++    aFm: 0.5,
++    aPw: 0.25,
++    aDrive: 0.35,
++    aDrum: 0.6,
++    aDecay: 0.7,
++    aArp: 0.5,
++    aSpace: 0.3,
++  };
++
++  const MACROS = [
++    { name: 'aTempo',   label: 'Tempo',           min: 60,   max: 220,  step: 1 },
++    { name: 'aScale',   label: 'Scale density',   min: 0,    max: 1,    step: 0.01 },
++    { name: 'aComplex', label: 'Complexity',      min: 0,    max: 1,    step: 0.01 },
++    { name: 'aSwing',   label: 'Swing',           min: 0,    max: 0.65, step: 0.01 },
++    { name: 'aBright',  label: 'Lead brightness', min: 0,    max: 1,    step: 0.01 },
++    { name: 'aFm',      label: 'FM depth',        min: 0,    max: 1,    step: 0.01 },
++    { name: 'aPw',      label: 'Pulse width',     min: 0.1,  max: 0.9,  step: 0.01 },
++    { name: 'aDrive',   label: 'Bass drive',      min: 0,    max: 1,    step: 0.01 },
++    { name: 'aDrum',    label: 'Drum density',    min: 0,    max: 1,    step: 0.01 },
++    { name: 'aDecay',   label: 'Noise decay',     min: 0.15, max: 2,    step: 0.01 },
++    { name: 'aArp',     label: 'Arpeggio rate',   min: 0,    max: 1,    step: 0.01 },
++    { name: 'aSpace',   label: 'Space',           min: 0,    max: 1,    step: 0.01 },
++  ];
++
++  const CUBE_MEMO = new WeakMap();
++  const dmemo = new Map();
++  const clampN = (x, a, b) => (x < a ? a : x > b ? b : x);
++  const num = (x, d) => (typeof x === 'number' && Number.isFinite(x) ? x : d);
++
++  function hashNoise(seed, a, b, c) {
++    let h = (seed | 0) ^ Math.imul((a | 0) + 1, 0x9e3779b1) ^ Math.imul((b | 0) + 1, 0x85ebca6b) ^ Math.imul((c | 0) + 1, 0xc2b2ae35);
++    h ^= h >>> 16; h = Math.imul(h, 0x7feb352d);
++    h ^= h >>> 15; h = Math.imul(h, 0x846ca68b);
++    h ^= h >>> 16;
++    return (h >>> 0) / 4294967296;
++  }
++
++  function derive(hash, variant = 0) {
++    const key = toHex(hash) + ':' + (variant | 0);
++    let d = dmemo.get(key);
++    if (!d) {
++      const R = stream(hash, variant ? `arcade:${variant | 0}` : 'arcade');
++      d = {
++        seed: (R.float() * 4294967296) >>> 0,
++        aTempo: R.int(112, 148),
++        aScale: +R.range(0.38, 0.76).toFixed(2),
++        aComplex: +R.range(0.36, 0.74).toFixed(2),
++        aSwing: R.pick([0, 0, 0.08, 0.14, 0.2]),
++        aBright: +R.range(0.48, 0.84).toFixed(2),
++        aFm: +R.range(0.32, 0.74).toFixed(2),
++        aPw: R.pick([0.13, 0.25, 0.25, 0.38, 0.5]),
++        aDrive: +R.range(0.18, 0.56).toFixed(2),
++        aDrum: +R.range(0.48, 0.82).toFixed(2),
++        aDecay: +R.range(0.45, 0.92).toFixed(2),
++        aArp: +R.range(0.38, 0.78).toFixed(2),
++        aSpace: +R.range(0.18, 0.48).toFixed(2),
++        fmRatio: R.pick([1, 2, 2, 3, 4]),
++        fmRatio2: R.pick([3, 4, 5, 6]),
++      };
++      if (dmemo.size > 64) dmemo.clear();
++      dmemo.set(key, d);
++    }
++    return { ...d };
++  }
++
++  function resolve(P, sigil, variant = 0) {
++    const base = sigil ? derive(sigil.hash, variant) : DEFAULTS;
++    const src = P || {};
++    return {
++      seed: base.seed || 0x13579bdf,
++      fmRatio: base.fmRatio || 2,
++      fmRatio2: base.fmRatio2 || 3,
++      aTempo: Math.round(clampN(num(src.aTempo, base.aTempo ?? DEFAULTS.aTempo), 60, 220)),
++      aScale: clampN(num(src.aScale, base.aScale ?? DEFAULTS.aScale), 0, 1),
++      aComplex: clampN(num(src.aComplex, base.aComplex ?? DEFAULTS.aComplex), 0, 1),
++      aSwing: clampN(num(src.aSwing, base.aSwing ?? DEFAULTS.aSwing), 0, 0.65),
++      aBright: clampN(num(src.aBright, base.aBright ?? DEFAULTS.aBright), 0, 1),
++      aFm: clampN(num(src.aFm, base.aFm ?? DEFAULTS.aFm), 0, 1),
++      aPw: clampN(num(src.aPw, base.aPw ?? DEFAULTS.aPw), 0.1, 0.9),
++      aDrive: clampN(num(src.aDrive, base.aDrive ?? DEFAULTS.aDrive), 0, 1),
++      aDrum: clampN(num(src.aDrum, base.aDrum ?? DEFAULTS.aDrum), 0, 1),
++      aDecay: clampN(num(src.aDecay, base.aDecay ?? DEFAULTS.aDecay), 0.15, 2),
++      aArp: clampN(num(src.aArp, base.aArp ?? DEFAULTS.aArp), 0, 1),
++      aSpace: clampN(num(src.aSpace, base.aSpace ?? DEFAULTS.aSpace), 0, 1),
++    };
++  }
++
++  function mutate(hash, n, base, current) {
++    const R = stream(hash, `arcade:mutate:${n}`);
++    const o = { ...current };
++    for (const m of MACROS) {
++      if (m.name === 'aTempo') {
++        if (R.chance(0.25)) {
++          const from = num(current.aTempo, num(base && base.aTempo, DEFAULTS.aTempo));
++          o.aTempo = Math.round(clampN(from + R.int(-14, 14), m.min, m.max));
++        }
++        continue;
++      }
++      if (!R.chance(0.55)) continue;
++      const from = num(current[m.name], num(base && base[m.name], DEFAULTS[m.name]));
++      const v = clampN(from + R.range(-0.2, 0.2) * (m.max - m.min), m.min, m.max);
++      o[m.name] = +v.toFixed(2);
++    }
++    return o;
++  }
++
++  function isArcade(spec, song) {
++    if (spec && spec.P && spec.P.eng !== undefined) return (spec.P.eng | 0) === 1;
++    return !!(song && song.cfg && song.cfg.soundEngine === 'arcade');
++  }
++
++  function sigOf(o) {
++    return [o.aScale, o.aComplex, o.aSwing, o.aDrum, o.aArp]
++      .map((x) => +(+x).toFixed(3)).join('|');
++  }
++
++  function warpBeat(x, sw) {
++    if (!(sw > 0)) return x;
++    const b = Math.floor(x * 2), g = x * 2 - b;
++    const k = 0.5 + sw * 0.38;
++    const y = g < 0.5 ? g * (k / 0.5) : k + (g - 0.5) * ((1 - k) / 0.5);
++    return (b + y) * 0.5;
++  }
++
++  function quantiseDeg(deg, chord, aScale) {
++    if (aScale >= 0.35) return deg;
++    const oct = Math.floor(deg / 7), pc = mod(deg, 7);
++    const rel = mod(pc - chord, 7);
++    if (aScale < 0.16) {
++      const tri = [0, 0, 2, 2, 4, 4, 0][rel];
++      return oct * 7 + chord + tri - (chord + tri >= 7 ? 7 : 0);
++    }
++    const pent = [0, 0, 2, 3, 4, 4, 5][rel];
++    let out = oct * 7 + mod(chord + pent, 7);
++    while (out - deg > 3) out -= 7;
++    while (deg - out > 3) out += 7;
++    return out;
++  }
++
++  function expandLeadNotes(notes, chordOf, aScale, aComplex, seed, phIdx) {
++    const base = aScale < 0.25 ? notes.filter((n) => !n.passing) : notes.slice();
++    const out = [];
++    for (let i = 0; i < base.length; i++) {
++      const n = base[i], nx = base[i + 1];
++      const c = chordOf(n.start);
++      const deg = quantiseDeg(n.deg, c, aScale);
++      if (aScale > 0.64 && nx && n.dur >= 1.0) {
++        const nxDeg = quantiseDeg(nx.deg, chordOf(nx.start), aScale);
++        const diff = nxDeg - deg;
++        const stepGrid = aScale > 0.84 ? 0.25 : 0.5;
++        const maxSteps = Math.min(aScale > 0.84 ? 4 : 2, Math.floor((n.dur - stepGrid) / stepGrid), Math.max(1, Math.abs(diff)));
++        if (maxSteps >= 1 && hashNoise(seed, phIdx, i, 1) < (aScale - 0.55) * 2.1) {
++          const mainDur = n.dur - maxSteps * stepGrid;
++          out.push({ ...n, deg, dur: mainDur });
++          const dir = diff === 0 ? (i % 2 ? 1 : -1) : Math.sign(diff);
++          for (let k = 0; k < maxSteps; k++) {
++            const runDeg = diff === 0
++              ? deg + (k % 2 === 0 ? dir : 0)
++              : nxDeg - dir * (maxSteps - k);
++            out.push({
++              start: n.start + mainDur + k * stepGrid,
++              dur: stepGrid,
++              deg: quantiseDeg(runDeg, chordOf(n.start + mainDur + k * stepGrid), aScale),
++              passing: true,
++              glide: false,
++            });
++          }
++          continue;
++        }
++      }
++      out.push({ ...n, deg });
++    }
++    return out;
++  }
++
++  function chordTonesFor(c, scale, leadBase, aScale, aComplex) {
++    let degs;
++    if (aScale < 0.24) degs = [c, c + 4, c + 7];
++    else if (aScale < 0.64) degs = [c, c + 2, c + 4, c + 7];
++    else if (aComplex > 0.58) degs = [c, c + 2, c + 4, c + 6, c + 8];
++    else degs = [c, c + 2, c + 4, c + 6, c + 7];
++    let tones = degs.map((d) => degToMidi(d, leadBase, scale));
++    if (tones[0] > leadBase + 7) tones = tones.map((m) => m - 12);
++    return tones;
++  }
++
++  const ARP_FIGS = [
++    [0, 1, 2],
++    [0, 1, 2, 1],
++    [0, 1, 2, 3, 2, 1],
++    [0, 2, 1, 3, 2, 3],
++    [0, 2, 4, 1, 3, 2, 4, 1],
++  ];
++
++  function arpRateLabel(v) {
++    if (v >= 0.86) return `${Math.round(30 + (v - 0.86) / 0.14 * 30)} Hz`;
++    if (v >= 0.68) return '1/32';
++    if (v >= 0.42) return '1/16';
++    if (v >= 0.20) return '1/8T';
++    return '1/8';
++  }
++
++  function bassNoteMidi(c, role, bassBase, scale, cNext) {
++    const root = fold(degToMidi(c, bassBase, scale), bassBase - 2, bassBase + 10);
++    if (role === 'oct') return root + 12;
++    if (role === 'fifth') return fold(degToMidi(c + 4, bassBase, scale), bassBase - 2, bassBase + 12);
++    if (role === 'seventh') return fold(degToMidi(c + 6, bassBase, scale), bassBase - 2, bassBase + 12);
++    if (role === 'third') return fold(degToMidi(c + 2, bassBase, scale), bassBase - 2, bassBase + 11);
++    if (role === 'app') {
++      const r2 = fold(degToMidi(cNext ?? c, bassBase, scale), bassBase - 2, bassBase + 10);
++      return fold(degToMidi((cNext ?? c) - 1, bassBase, scale), r2 - 2, r2 + 9);
++    }
++    return root;
++  }
++
++  function pitch(ev, c, song, c2) {
++    const sc = song.scale, lb = song.leadBase, bb = song.bassBase;
++    if (ev.type === 'bass') return bassNoteMidi(c, ev.arcRole || ev.role || 'root', bb, sc, c2);
++    if (ev.type === 'arp') {
++      const tones = chordTonesFor(c, sc, lb, ev.aScale ?? 0.55, ev.aComplex ?? 0.5);
++      if (ev.chip && ev.midis) return tones.slice(0, 4);
++      return tones[mod(ev.idx || 0, tones.length)];
++    }
++    return ev.midi;
++  }
++
++  function turnPoly(pat, T) {
++    if (typeof Groove !== 'undefined' && Groove.turn) return Groove.turn(pat, T);
++    return pat.slice();
++  }
++
++  function anchorPoly(pat) {
++    if (typeof Groove !== 'undefined' && Groove.anchor) return Groove.anchor(pat);
++    return pat.slice();
++  }
++
++  function write(m, sigil, rawOpts) {
++    const o = resolve(rawOpts, sigil, 0);
++    const cfg = m.cfg || {};
++    const scale = MODES[cfg.modeName] || MODES.Aeolian;
++    const leadBase = 57 + mod((cfg.tonicPc ?? 0) - 9, 12);
++    const bassBase = leadBase - 24;
++    const red = sigil.reduced || 'KRS', RL = Math.max(1, red.length);
++    const CLASS = SoundDesign.CONSONANT_CLASS;
++    const ev = [];
++    const { aScale, aComplex, aSwing, aDrum, aArp, seed } = o;
++
++    let pCursor = 0;
++    m.sections.forEach((sec, si) => {
++      const nextSec = m.sections[si + 1];
++      const I = sec.intensity | 0;
++      const T = sec.T || { k: 0, m: 1, reverse: false };
++      const kickPoly = anchorPoly(turnPoly(m.P.kick, T));
++      const hatPoly = turnPoly(m.P.hat, T);
++      const bassPoly = anchorPoly(turnPoly(m.P.bass, T));
++      sec.rhythm = { kick: kickPoly, hat: hatPoly };
++
++      const drumActive = aDrum > 0.01 && (I > 0 || aDrum > 0.85);
++      if (drumActive && I >= 3 && aDrum >= 0.25) {
++        ev.push({ beat: sec.start, type: 'crash', vel: 0.72, arc: 1, lfsr: 0 });
++      }
++
++      for (let p = 0; p < sec.phrases; p++) {
++        const ph = m.phrases[pCursor++];
++        if (!ph) continue;
++        const pBeat = ph.start;
++        const chords = ph.chords;
++        const lastPhrase = p === sec.phrases - 1;
++        const chordAtLocal = (bt) => chords[clampN(Math.floor(bt / 4), 0, 3)];
++
++        if (sec.voice !== 'none') {
++          const bellVoice = sec.voice === 'bell';
++          const srcNotes = expandLeadNotes(ph.notes, chordAtLocal, aScale, aComplex, seed, pCursor);
++          const ch1 = [];
++          let prevMidi = null, prevDeg = null;
++          const partnerNotes = ph.partners && ph.partners[0] ? ph.partners[0].notes : null;
++
++          for (let ni = 0; ni < srcNotes.length; ni++) {
++            const n = srcNotes[ni], nx = srcNotes[ni + 1];
++            if (bellVoice && n.passing && aScale < 0.7) continue;
++            let deg = n.deg;
++            let octShift = bellVoice ? 12 : 0;
++            if (!bellVoice && aComplex > 0.55 && (I >= 2 || sec.octave) && !n.passing
++                && hashNoise(seed, pCursor, ni, 2) < (aComplex - 0.45) * 0.55) {
++              octShift = 12;
++            }
++            let midi = degToMidi(deg, leadBase, scale) + octShift;
++            if (bellVoice && midi > 90) { midi -= 12; octShift = 0; }
++
++            if (!bellVoice && aComplex > 0.52 && !n.passing && n.dur >= 1.0 && n.start >= 0.25
++                && hashNoise(seed, pCursor, ni, 3) < (aComplex - 0.45) * 0.6) {
++              const gStart = n.start - 0.25;
++              const prevEnd = ch1.length ? ch1[ch1.length - 1].endLocal : -1;
++              if (gStart >= prevEnd - 1e-4) {
++                const gDeg = quantiseDeg(deg - 1, chordAtLocal(gStart), aScale);
++                const gMidi = degToMidi(gDeg, leadBase, scale) + octShift;
++                ch1.push({
++                  startLocal: gStart, endLocal: n.start,
++                  deg: gDeg, add: octShift, midi: gMidi,
++                  vel: 0.54, glide: false, mode: 0,
++                  r1: o.fmRatio, r2: o.fmRatio2,
++                });
++                prevMidi = gMidi; prevDeg = gDeg;
++              }
++            }
++
++            const gateFrac = bellVoice ? 0.95 : n.glide ? 0.98 : 0.84;
++            const dur = Math.max(0.12, n.dur * gateFrac);
++            const vel = clampN((n.passing ? 0.56 : 0.8) + (mod(n.start, 4) === 0 ? 0.12 : 0), 0.25, 0.98)
++                      * (bellVoice ? 0.76 : 1);
++            ch1.push({
++              startLocal: n.start, endLocal: n.start + dur,
++              deg, add: octShift, midi,
++              from: n.glide ? prevMidi : null,
++              fromDeg: n.glide ? prevDeg : null,
++              vel, mode: bellVoice ? 1 : 0,
++              r1: bellVoice ? 3.5 : sec.voice === 'alt' ? 3 : o.fmRatio,
++              r2: bellVoice ? 7 : o.fmRatio2,
++            });
++            prevMidi = midi; prevDeg = deg;
++
++            const gapEnd = nx ? nx.start : 16;
++            const gap = gapEnd - (n.start + n.dur * 0.65);
++            if (!bellVoice && aComplex > 0.38 && gap >= 0.75
++                && hashNoise(seed, pCursor, ni, 4) < (aComplex - 0.25) * 0.85) {
++              const echoStart = Math.ceil((n.start + Math.min(n.dur * 0.65, n.dur - 0.25)) * 2) * 0.5;
++              if (echoStart > n.start + 0.2 && echoStart + 0.45 <= gapEnd) {
++                const last = ch1[ch1.length - 1];
++                if (last.endLocal > echoStart) last.endLocal = echoStart - 0.02;
++                let eDeg = deg + (aScale < 0.25 ? 4 : 2);
++                if (partnerNotes && partnerNotes.length) {
++                  const pn = partnerNotes.find((q) => q.start <= echoStart && q.start + q.dur > echoStart);
++                  if (pn) eDeg = quantiseDeg(pn.deg, chordAtLocal(echoStart), aScale);
++                }
++                while (eDeg > 11) eDeg -= 7;
++                ch1.push({
++                  startLocal: echoStart, endLocal: Math.min(gapEnd - 0.04, echoStart + 0.46),
++                  deg: eDeg, add: 0, midi: degToMidi(eDeg, leadBase, scale),
++                  from: null, fromDeg: null,
++                  vel: vel * 0.62, mode: 2,
++                  r1: o.fmRatio * 2 <= 6 ? o.fmRatio * 2 : 3, r2: o.fmRatio2,
++                });
++              }
++            }
++          }
++
++          ch1.sort((a, b) => a.startLocal - b.startLocal);
++          for (let i = 0; i < ch1.length; i++) {
++            const cur = ch1[i], nxt = ch1[i + 1];
++            const tStart = warpBeat(pBeat + cur.startLocal, aSwing);
++            const rawEnd = nxt ? Math.min(cur.endLocal, nxt.startLocal - 0.015) : cur.endLocal;
++            const tEnd = warpBeat(pBeat + Math.max(cur.startLocal + 0.08, rawEnd), aSwing);
++            ev.push({
++              beat: tStart,
++              type: 'lead',
++              midi: cur.midi,
++              dur: Math.max(0.08, tEnd - tStart),
++              vel: cur.vel,
++              from: cur.from,
++              fromDeg: cur.fromDeg,
++              deg: cur.deg,
++              reg: leadBase,
++              off: 0,
++              add: cur.add || 0,
++              cap: cur.mode === 1 ? 90 : undefined,
++              arc: 1,
++              arcMode: cur.mode,
++              r1: cur.r1,
++              r2: cur.r2,
++            });
++          }
++        }
++
++        for (let b = 0; b < 4; b++) {
++          const t0 = pBeat + b * 4;
++          const c = chords[b];
++          const cNext = b < 3 ? chords[b + 1] : chords[0];
++          const isLastBar = lastPhrase && b === 3;
++          const barIdx = Math.round(t0 / 4);
++
++          if (sec.bass || (I >= 1 && sec.voice !== 'none') || (aComplex > 0.55 && sec.voice !== 'none')) {
++            const bSteps = [];
++            if (sec.halfTime && aComplex < 0.5) {
++              bSteps.push({ s: 0, len: 8, role: 'root', vel: 0.84 });
++              bSteps.push({ s: 8, len: 4, role: aScale > 0.3 ? 'fifth' : 'root', vel: 0.7 });
++              if (aComplex > 0.25) bSteps.push({ s: 12, len: 4, role: aScale > 0.5 ? 'app' : 'oct', vel: 0.68 });
++            } else if (aComplex < 0.25 || I === 0) {
++              bSteps.push({ s: 0, len: 8, role: 'root', vel: I === 0 ? 0.6 : 0.85 });
++              if (I > 0) bSteps.push({ s: 8, len: 8, role: b % 2 ? 'fifth' : 'root', vel: 0.72 });
++            } else if (aComplex < 0.62) {
++              for (let e = 0; e < 8; e++) {
++                const s = e * 2;
++                const onPoly = bassPoly[s] || bassPoly[s + 1];
++                if (e % 2 === 0 || onPoly || aComplex > 0.44) {
++                  let role = e === 0 ? 'root' : e % 2 === 1 ? 'oct' : (e === 6 && aScale > 0.35 ? 'fifth' : 'root');
++                  if (e === 7 && aScale > 0.52 && aComplex > 0.48) role = 'app';
++                  bSteps.push({ s, len: 2, role, vel: e === 0 ? 0.9 : e % 2 === 0 ? 0.78 : 0.68 });
++                }
++              }
++            } else {
++              for (let s = 0; s < 16; s++) {
++                const active = s % 4 === 0 || s % 2 === 0 || bassPoly[s]
++                  || hashNoise(seed, barIdx, s, 10) < (aComplex - 0.55) * 1.4;
++                if (!active) continue;
++                let role = 'root';
++                if (s === 15 && aScale > 0.45) role = 'app';
++                else if (s % 4 === 2) role = 'oct';
++                else if (s === 10 || s === 12) role = aScale > 0.55 ? 'fifth' : 'oct';
++                else if (s % 2 === 1) role = aScale > 0.68 && s === 13 ? 'seventh' : 'oct';
++                const slide = s % 2 === 1 && role === 'oct' && hashNoise(seed, barIdx, s, 11) < 0.35;
++                bSteps.push({ s, len: 1, role, vel: s === 0 ? 0.92 : s % 4 === 0 ? 0.8 : 0.68, slide });
++              }
++            }
++
++            let prevBMidi = null;
++            for (let bi = 0; bi < bSteps.length; bi++) {
++              const cur = bSteps[bi], nxt = bSteps[bi + 1];
++              const nextS = nxt ? nxt.s : 16;
++              const tStart = warpBeat(t0 + cur.s * 0.25, aSwing);
++              const rawSpan = Math.min(cur.len || (nextS - cur.s), nextS - cur.s);
++              const tEnd = warpBeat(t0 + (cur.s + rawSpan * 0.86) * 0.25, aSwing);
++              const midi = bassNoteMidi(c, cur.role, bassBase, scale, cNext);
++              ev.push({
++                beat: tStart,
++                type: 'bass',
++                midi,
++                from: cur.slide && prevBMidi != null ? prevBMidi : undefined,
++                dur: Math.max(0.08, tEnd - tStart),
++                vel: cur.vel,
++                chord: c,
++                chord2: cNext,
++                role: cur.role === 'fifth' || cur.role === 'oct' ? cur.role : 'root',
++                arcRole: cur.role,
++                arc: 1,
++              });
++              prevBMidi = midi;
++            }
++          }
++
++          if (sec.pad || sec.arp || sec.drone || I > 0) {
++            const tones = chordTonesFor(c, scale, leadBase, aScale, aComplex);
++            const figIdx = clampN(Math.floor(aComplex * ARP_FIGS.length), 0, ARP_FIGS.length - 1);
++            const fig = ARP_FIGS[figIdx];
++            const velBase = I === 0 ? 0.42 : sec.arp === 'full' || I >= 3 ? 0.72 : 0.58;
++            const holdTail = sec.final && isLastBar && sec.ends !== 'struck' ? (sec.tail || 0) : 0;
++
++            if (aArp >= 0.86) {
++              const beatsInBar = 4 + holdTail;
++              const segLen = I === 0 ? 2 : aComplex > 0.55 ? 0.5 : 1;
++              const steps = Math.max(1, Math.round(beatsInBar / segLen));
++              for (let k = 0; k < steps; k++) {
++                const sb = t0 + k * segLen;
++                if (aComplex > 0.65 && k % 4 === 3 && !holdTail && hashNoise(seed, barIdx, k, 20) < 0.35) continue;
++                const rot = (k + barIdx) % tones.length;
++                const rotated = tones.slice(rot).concat(tones.slice(0, rot)).slice(0, 4);
++                const tStart = warpBeat(sb, segLen <= 0.5 ? aSwing : 0);
++                const tEnd = warpBeat(sb + segLen * (holdTail && k === steps - 1 ? 0.98 : 0.9), segLen <= 0.5 ? aSwing : 0);
++                ev.push({
++                  beat: tStart,
++                  type: 'arp',
++                  midi: rotated[0],
++                  midis: rotated,
++                  chip: 1,
++                  dur: Math.max(0.1, tEnd - tStart),
++                  vel: velBase * (k % 2 === 0 ? 1 : 0.84),
++                  pan: (((k + barIdx) % 3) - 1) * 0.28,
++                  chord: c,
++                  idx: rot,
++                  aScale,
++                  aComplex,
++                  arc: 1,
++                });
++              }
++            } else {
++              const rate = aArp < 0.20 ? 0.5 : aArp < 0.42 ? 1 / 3 : aArp < 0.68 ? 0.25 : 0.125;
++              const spanBeats = 4 + holdTail;
++              const steps = Math.round(spanBeats / rate);
++              for (let k = 0; k < steps; k++) {
++                const rawBeat = t0 + k * rate;
++                if (I === 0 && k % 2 === 1 && aArp > 0.3) continue;
++                const idx = fig[(k + barIdx * 2) % fig.length] % tones.length;
++                const ringBoost = sigil.nodes[(k + barIdx) % sigil.nodes.length].ring;
++                const swingable = Math.abs(rate - 0.25) < 1e-4 || Math.abs(rate - 0.125) < 1e-4;
++                const tStart = swingable ? warpBeat(rawBeat, aSwing) : rawBeat;
++                const tEnd = swingable ? warpBeat(rawBeat + rate * 0.88, aSwing) : rawBeat + rate * 0.88;
++                ev.push({
++                  beat: tStart,
++                  type: 'arp',
++                  midi: tones[idx],
++                  dur: Math.max(0.05, tEnd - tStart),
++                  vel: velBase * (k % 4 === 0 ? 1 : 0.78) * (0.88 + 0.08 * ringBoost),
++                  pan: ((k % 4) / 3 - 0.5) * 0.5,
++                  chord: c,
++                  idx,
++                  aScale,
++                  aComplex,
++                  arc: 1,
++                });
++              }
++            }
++          }
++
++          if (drumActive) {
++            const effD = I === 0 ? aDrum * 0.45 : clampN(aDrum * (0.65 + 0.15 * I), 0, 1);
++            const doFill = (lastPhrase && b === 3 || (b === 3 && aComplex > 0.65))
++              && effD >= 0.32 && aComplex >= 0.22
++              && !(sec.final && sec.ends !== 'struck');
++            const fillStart = doFill ? (aComplex > 0.68 && nextSec && nextSec.intensity > I ? 8 : 12) : 16;
++
++            for (let s = 0; s < fillStart; s++) {
++              const t = warpBeat(t0 + s * 0.25, aSwing);
++              const ch = red[(s + barIdx * 3) % RL];
++              const cls = CLASS[ch] || 'fricative';
++              const metal = cls === 'plosive' || cls === 'fricative' ? 1 : 0;
++
++              let hit = null;
++              if (sec.halfTime) {
++                if (s === 0 || (s === 10 && kickPoly[10] && effD > 0.35)) {
++                  hit = { type: 'kick', vel: s === 0 ? 0.92 : 0.72, lfsr: 0 };
++                } else if (s === 8 && effD >= 0.18) {
++                  hit = { type: 'snare', vel: 0.84, lfsr: 0 };
++                } else if (effD > 0.55 && aComplex > 0.45 && (s === 7 || s === 15) && hashNoise(seed, barIdx, s, 30) < aComplex * 0.5) {
++                  hit = { type: 'snare', vel: 0.36, lfsr: 1 };
++                }
++              } else {
++                const backbeat = (s === 4 || s === 12) && effD >= 0.18;
++                const mainKick = s === 0 || (effD >= 0.3 && kickPoly[s] && s !== 4 && s !== 12 && hashNoise(seed, barIdx, s, 31) < effD + 0.25);
++                const syncKick = effD >= 0.62 && aComplex > 0.5 && (s === 10 || s === 14) && b % 2 === 1 && hashNoise(seed, barIdx, s, 32) < aComplex * 0.55;
++                const ghostSnare = effD >= 0.58 && aComplex > 0.4 && (s === 7 || s === 9 || s === 15) && hashNoise(seed, barIdx, s, 33) < (aComplex - 0.3) * 0.75;
++
++                if (backbeat) hit = { type: 'snare', vel: 0.85, lfsr: b === 3 && s === 12 && aComplex > 0.6 ? 1 : 0 };
++                else if (mainKick || syncKick) hit = { type: 'kick', vel: s === 0 ? 0.95 : 0.76, lfsr: 0 };
++                else if (ghostSnare) hit = { type: 'snare', vel: 0.34, lfsr: 1 };
++              }
++
++              if (!hit) {
++                const hatOn = effD >= 0.75 ? true
++                  : effD >= 0.45 ? (s % 2 === 0 || hatPoly[s])
++                  : effD >= 0.22 ? (s % 4 === 2 || (s % 4 === 0 && hatPoly[s]))
++                  : (s === 4 || s === 12);
++                if (hatOn && hashNoise(seed, barIdx, s, 34) < effD + 0.28) {
++                  const open = effD >= 0.42 && (s === 14 || (aComplex > 0.55 && s === 6 && b % 2 === 1));
++                  hit = {
++                    type: 'hat',
++                    vel: (s % 4 === 0 ? 0.48 : s % 2 === 0 ? 0.68 : 0.44) * (open ? 1.15 : 1),
++                    open,
++                    lfsr: metal,
++                    pan: ((s % 3) - 1) * 0.2,
++                  };
++                }
++              }
++
++              if (hit) ev.push({ beat: t, ...hit, arc: 1 });
++            }
++
++            if (doFill) {
++              const seqNodes = T.reverse ? sigil.nodes.slice().reverse() : sigil.nodes;
++              for (let s = fillStart; s < 16; s++) {
++                const t = warpBeat(t0 + s * 0.25, aSwing);
++                const nd = seqNodes[(s - fillStart) % seqNodes.length];
++                const ch = nd.letter;
++                const riseVel = 0.52 + 0.42 * ((s - fillStart + 1) / (16 - fillStart));
++                if (s === 15 && nextSec && nextSec.intensity >= I) {
++                  ev.push({ beat: t, type: 'snare', vel: 0.9, lfsr: 0, arc: 1 });
++                } else if ('BP'.includes(ch)) {
++                  ev.push({ beat: t, type: 'kick', vel: riseVel, lfsr: 0, arc: 1 });
++                } else if ('TKQ'.includes(ch)) {
++                  ev.push({ beat: t, type: 'snare', vel: riseVel, lfsr: 0, arc: 1 });
++                } else if ('SZFXHC'.includes(ch)) {
++                  ev.push({ beat: t, type: 'hat', vel: riseVel * 0.85, open: s >= 14, lfsr: 1, arc: 1 });
++                } else {
++                  const tomIdx = T.m < 0 ? 2 - nd.ring : nd.ring;
++                  ev.push({ beat: t, type: 'tom', tom: clampN(tomIdx, 0, 2), vel: riseVel, lfsr: 1, arc: 1 });
++                }
++              }
++            }
++          }
++        }
++
++        if (sec.final) {
++          ev.push({
++            beat: pBeat + 16,
++            type: 'lead',
++            midi: leadBase + 12,
++            dur: 6,
++            vel: 0.68,
++            deg: 0, off: 0, reg: leadBase, add: 12,
++            arc: 1, arcMode: 1, r1: 3.5, r2: 7,
++          });
++        }
++        if (lastPhrase && sec.final && sec.ends === 'struck' && (sec.tail || 0) > 0) {
++          const t = pBeat + 16, held = Math.min(3, sec.tail);
++          const tones = chordTonesFor(0, scale, leadBase, aScale, aComplex).slice(0, 4);
++          ev.push({ beat: t, type: 'arp', midi: tones[0], midis: tones, chip: 1, dur: held, vel: 0.8, chord: 0, idx: 0, aScale, aComplex, arc: 1 });
++          ev.push({ beat: t, type: 'bass', midi: bassNoteMidi(0, 'root', bassBase, scale, 0), dur: held, vel: 0.9, chord: 0, role: 'root', arcRole: 'root', arc: 1 });
++          if (drumActive) {
++            ev.push({ beat: t, type: 'kick', vel: 0.95, lfsr: 0, arc: 1 });
++            if (I >= 2) ev.push({ beat: t, type: 'crash', vel: 0.8, lfsr: 0, arc: 1 });
++          }
++        }
++      }
++    });
++
++    const total = m.total || Infinity;
++    const filtered = ev.filter((e) => e.beat < total);
++    filtered.sort((a, b) => a.beat - b.beat);
++    return {
++      events: filtered,
++      info: { sig: sigOf(o), channels: 4, arpRate: arpRateLabel(aArp) },
++    };
++  }
++
++  function reindex(song) {
++    song.events.sort((a, b) => a.beat - b.beat);
++    song.kicks = song.events.filter((e) => e.type === 'kick').map((e) => e.beat);
++    song.snares = song.events.filter((e) => e.type === 'snare' && e.vel > 0.5).map((e) => e.beat);
++  }
++
++  function score(events, ctx, rawOpts) {
++    const cfg = ctx.cfg;
++    if (!CUBE_MEMO.has(cfg)) {
++      CUBE_MEMO.set(cfg, {
++        events: events.slice(),
++        rhythms: ctx.sections.map((s) => s.rhythm),
++        groove: cfg.groove,
++      });
++    }
++    delete cfg.groove;
++    const w = write({ sections: ctx.sections, phrases: ctx.phrases, P: cfg.P, bpm: cfg.bpm, total: ctx.total, cfg }, ctx.sigil, rawOpts);
++    cfg.arcade = w.info;
++    cfg.soundEngine = 'arcade';
++    return w.events;
++  }
++
++  function apply(song, sigil, rawOpts) {
++    if (!song || !sigil || !song.cfg) return song;
++    const cfg = song.cfg;
++    if (!CUBE_MEMO.has(cfg)) {
++      CUBE_MEMO.set(cfg, {
++        events: song.events.slice(),
++        rhythms: song.sections.map((s) => s.rhythm),
++        groove: cfg.groove,
++      });
++    }
++    delete cfg.groove;
++    const w = write({ sections: song.sections, phrases: song.phrases, P: song.P, bpm: song.bpm, total: song.total, cfg }, sigil, rawOpts);
++    song.events = w.events;
++    cfg.arcade = w.info;
++    cfg.soundEngine = 'arcade';
++    reindex(song);
++    return song;
++  }
++
++  function restore(song) {
++    if (!song || !song.cfg) return song;
++    const cfg = song.cfg, saved = CUBE_MEMO.get(cfg);
++    delete cfg.arcade;
++    delete cfg.soundEngine;
++    if (!saved) return song;
++    song.events = saved.events.slice();
++    song.sections.forEach((s, i) => {
++      if (saved.rhythms[i]) s.rhythm = saved.rhythms[i];
++      else delete s.rhythm;
++    });
++    if (saved.groove) cfg.groove = saved.groove;
++    else delete cfg.groove;
++    reindex(song);
++    return song;
++  }
++
++  function sync(song, sigil, rawOpts, active) {
++    if (!song || !sigil || !song.cfg) return false;
++    if (!active) {
++      if (!song.cfg.arcade) return false;
++      restore(song);
++      return true;
++    }
++    const o = resolve(rawOpts, sigil, 0);
++    const want = sigOf(o);
++    const have = song.cfg.arcade ? song.cfg.arcade.sig : null;
++    if (want === have) return false;
++    apply(song, sigil, o);
++    return true;
++  }
++
++  function wavePreview(rawP, N = 128) {
++    const P = resolve(rawP, null, 0);
++    const lead = new Float32Array(N), bass = new Float32Array(N), perc = new Float32Array(N), arp = new Float32Array(N);
++    const idx = P.aFm * (0.25 + 1.35 * P.aFm) * (0.45 + 0.75 * P.aBright);
++    const fb = 0.04 + 0.28 * P.aBright * P.aFm;
++    let pm = 0, lfsr = 0x53a9, nz = 1;
++    const step = Math.max(1, Math.round(6 - 4.2 * Math.min(1, P.aDrum * 0.5 + 0.3)));
++    for (let i = 0; i < N; i++) {
++      const p = i / N, th = TAU * p;
++      const m1 = Math.sin(2 * th + fb * pm * TAU); pm = m1;
++      lead[i] = Math.sin(th + idx * m1 * TAU) * (0.7 + 0.3 * P.aBright);
++      const rawPulse = p < P.aPw ? 1 - P.aPw : -P.aPw;
++      const drv = 1 + 5.5 * P.aDrive;
++      bass[i] = Math.tanh((rawPulse * 1.4 + 0.25 * Math.sin(th)) * drv) / Math.tanh(drv);
++      if (i % step === 0) {
++        const bit = (lfsr ^ (lfsr >> 1)) & 1;
++        lfsr = ((lfsr >> 1) | (bit << 14)) & 0x7fff;
++        nz = bit ? 1 : -1;
++      }
++      const env = Math.exp((-i / N) * (3.2 / Math.max(0.2, P.aDecay)));
++      perc[i] = nz * env * (P.aDrum > 0.01 ? 0.35 + 0.65 * P.aDrum : 0);
++      const stages = P.aScale < 0.24 ? 3 : 4;
++      const seg = Math.floor((p * (2 + Math.round(P.aArp * 6))) % stages);
++      const ratio = [1, 1.25, 1.5, 2][seg];
++      const ap = (p * ratio * 2) % 1;
++      const apw = clampN(0.62 - 0.42 * P.aPw, 0.125, 0.5);
++      arp[i] = (ap < apw ? 0.8 : -0.8) * (0.65 + 0.35 * P.aBright);
++    }
++    return { lead, bass, perc, arp };
++  }
++
++  return {
++    DEFAULTS, MACROS, derive, resolve, mutate, isArcade, sigOf, arpRateLabel,
++    warpBeat, quantiseDeg, chordTonesFor, pitch, write, score, apply, restore, sync, wavePreview,
++  };
++})();
++
++if (typeof window !== 'undefined') window.Arcade = Arcade;
+diff --git a/src/core/06-engine.js b/src/core/06-engine.js
+index 7d09a93..7ce4fe4 100644
+--- a/src/core/06-engine.js
++++ b/src/core/06-engine.js
+@@ -280,11 +280,20 @@ class Engine {
+   trigger(row, when = 0) { this.post({ type: 'trigger', row, when }, [row.buffer]); }
+   tick(kind) {
+     if (!this.buses) return;
++    if (typeof Sound !== 'undefined' && Sound.engine === 'arcade') {
++      this.trigger(SigilPlan.row({ kind: 'ARC_PERC', bus: 'fx', vel: 0.28, dur: 0.08 / this.spb, p: [2, kind === 'vowel' ? 1 : 0, 0.55] }));
++      return;
++    }
+     const f = kind === 'vowel' ? 2600 : 4200;
+     this.trigger(SigilPlan.row({ kind: 'NOISE', bus: 'bell', vel: 0.22, dur: 0.1 / this.spb, p: [1, f, f, 3, 0.001, 0.012] }));
+   }
+   chime(midi) {
+-    if (this.buses) this.trigger(SigilPlan.row({ kind: 'BELL', bus: 'bell', f: mtof(midi), dur: 1.2 / this.spb, vel: 0.7 }));
++    if (!this.buses) return;
++    if (typeof Sound !== 'undefined' && Sound.engine === 'arcade') {
++      this.trigger(SigilPlan.row({ kind: 'ARC_LEAD', bus: 'fx', f: mtof(midi), dur: 1.0 / this.spb, vel: 0.72, p: [1, 3.5, 7] }));
++      return;
++    }
++    this.trigger(SigilPlan.row({ kind: 'BELL', bus: 'bell', f: mtof(midi), dur: 1.2 / this.spb, vel: 0.7 }));
+   }
+   /** The Banishing: a native low-pass sweep on the master, plus fire on the post bus (unfiltered). */
+   banish(sec) {
+diff --git a/src/core/06b-compiler.js b/src/core/06b-compiler.js
+index 852a613..25f685d 100644
+--- a/src/core/06b-compiler.js
++++ b/src/core/06b-compiler.js
+@@ -71,10 +71,14 @@ const SigilPlan = (() => {
+   const variantOf = (tb) => parseInt(String(tb.key).split(':').pop(), 10) || 0;
+ 
+   /* ── Inputs from optional modules (all soft dependencies) ───────────── */
++  const isArcadeSpec = (spec, song) => typeof Arcade !== 'undefined' && Arcade.isArcade(spec, song);
++
+   function defaultSpec(sigil, song) {
+     // The sigil's own patch, dressed by the song: a style's signature, a mood's values, an element's lean (SD.shape).
+-    let P = SD.shape({ ...DEFAULTS, ...SD.derive(sigil.hash, 0), ...SD.drumFx(sigil.hash, 0) }, song && song.cfg);
+-    if (typeof Palette !== 'undefined') P = Palette.dress(P, Palette.finish(sigil, song && song.cfg, P), SD.FIELDS);   // the world's own colour (M11 does the same for the stage)
++    const arcBase = typeof Arcade !== 'undefined' ? Arcade.derive(sigil.hash, 0) : {};
++    const arcOn = !!(song && song.cfg && song.cfg.soundEngine === 'arcade');
++    let P = SD.shape({ ...DEFAULTS, ...arcBase, ...(arcOn ? { eng: 1 } : {}), ...SD.derive(sigil.hash, 0), ...SD.drumFx(sigil.hash, 0) }, song && song.cfg);
++    if (typeof Palette !== 'undefined' && !arcOn) P = Palette.dress(P, Palette.finish(sigil, song && song.cfg, P), SD.FIELDS);   // the world's own colour (M11 does the same for the stage)
+     return { P, cube: SD.tables(sigil, 0),
+       variant: 0, arc: true, frozen: false, verb: true, vowels: null };
+   }
+@@ -103,12 +107,41 @@ const SigilPlan = (() => {
+   }
+ 
+   /* ── Sections ───────────────────────────────────────────────────────── */
+-  function patches(song, spec) {
++  function patches(song, spec, sigil) {
+     const n = song.sections.length;
++    if (isArcadeSpec(spec, song)) {
++      const A = Arcade.resolve(spec.P, sigil, spec.variant || 0);
++      return song.sections.map((sec) => {
++        if (!spec.arc) return { ...spec.P, ...A };
++        const fade = sec.final && sec.ends !== 'struck' ? 0.72 : 1;
++        return { ...spec.P, ...A, aBright: A.aBright * fade };
++      });
++    }
+     return song.sections.map((sec, si) => (spec.arc ? { ...spec.P, ...SD.arc(spec.P, sec, si, n) } : spec.P));
+   }
+   function sectionsTable(song, sigil, spec, Ps, DS) {
+     const out = new Float64Array(Ps.length * PSTRIDE);
++    if (isArcadeSpec(spec, song)) {
++      Ps.forEach((P, si) => {
++        const o = si * PSTRIDE, sec = song.sections[si];
++        out[o + PA.START] = sec.start || 0;
++        out[o + PA.ALEAD] = clamp(num(P.aBright, 0.65), 0, 1);
++        out[o + PA.AFM] = clamp(num(P.aFm, 0.5), 0, 1);
++        out[o + PA.APW] = clamp(num(P.aPw, 0.25), 0.08, 0.92);
++        out[o + PA.ADRIVE] = clamp(num(P.aDrive, 0.35), 0, 1);
++        out[o + PA.ADECAY] = clamp(num(P.aDecay, 0.7), 0.15, 2);
++        out[o + PA.AARP] = clamp(num(P.aArp, 0.5), 0, 1);
++        out[o + PA.ECHO] = clamp(num(P.aSpace, 0.3), 0, 1);
++        out[o + PA.CHORUS] = 0;
++        out[o + PA.DRUMS] = 1;
++        out[o + PA.HDECAY] = 1;
++        out[o + PA.GRIT] = 0; out[o + PA.BITS] = 16; out[o + PA.HOLD] = 1;
++        out[o + PA.DUCK] = sec.intensity ? 0.16 : 0;
++        out[o + PA.INTENSITY] = sec.intensity || 0;
++        out[o + PA.DBITS] = 16; out[o + PA.DHOLD] = 1; out[o + PA.DSIZE] = 0.5; out[o + PA.DTIME] = 0.75;
++      });
++      return out;
++    }
+     const fxOn = DS.fx !== false;                    // the panel's bypass: every D* column at rest
+     Ps.forEach((P, si) => {
+       const o = si * PSTRIDE, sec = song.sections[si];
+@@ -292,12 +325,85 @@ const SigilPlan = (() => {
+       return false;
+     };
+ 
++    const useArcade = isArcadeSpec(spec, song);
++    const viaArcade = (ev) => {
++      switch (ev.type) {
++        case 'lead': case 'harm': case 'bell': {
++          const bell = ev.type === 'bell';
++          const o = put(ev, KIND.ARC_LEAD, BUS.lead, mtof(ev.midi));
++          out[o + EV.F0] = ev.from != null ? mtof(ev.from) : 0;
++          out[o + EV.PAN] = ev.part === 1 ? -0.25 : ev.part === 2 ? 0.25 : 0;
++          out[o + EV.AUX] = ev.deg ?? 0;
++          out[o + EV.P0] = bell ? 1 : (ev.arcMode ?? (ev.type === 'harm' ? 2 : 0));
++          out[o + EV.P1] = ev.r1 || (bell ? 3.5 : 2);
++          out[o + EV.P2] = ev.r2 || (bell ? 7 : 3);
++          return true;
++        }
++        case 'bass': {
++          const o = put(ev, KIND.ARC_BASS, BUS.bass, mtof(ev.midi));
++          out[o + EV.F0] = ev.from != null ? mtof(ev.from) : 0;
++          return true;
++        }
++        case 'arp': case 'comp': case 'pad': case 'drone': {
++          if ((ev.chip && ev.midis && ev.midis.length > 1) || ev.type === 'pad') {
++            const ms = ev.midis || [ev.midi];
++            const o = put(ev, KIND.ARC_ARP, BUS.arp, mtof(ms[0]));
++            out[o + EV.PAN] = ev.pan || 0;
++            for (let j = 1; j < 4; j++) out[o + EV.P0 + j - 1] = j < ms.length ? mtof(ms[j]) : 0;
++            out[o + EV.P5] = ms.length > 1 ? 1 : 0;
++          } else if (ev.type === 'drone') {
++            const o = put(ev, KIND.ARC_ARP, BUS.arp, mtof(ev.midi + 12));
++            out[o + EV.VEL] = (ev.vel ?? 0.7) * 0.55;
++            out[o + EV.P0] = mtof(ev.midi + 19);
++            out[o + EV.P1] = mtof(ev.midi + 24);
++            out[o + EV.P5] = 1;
++          } else {
++            const o = put(ev, KIND.ARC_ARP, BUS.arp, mtof(ev.midi));
++            out[o + EV.PAN] = ev.pan || 0;
++            out[o + EV.P5] = 0;
++          }
++          return true;
++        }
++        case 'kick': case 'snare': case 'hat': case 'shaker': case 'crash':
++        case 'tom': case 'perc': case 'rim': case 'clap': case 'ride': case 'swell': {
++          const root = rootAt(song, ev.beat, DS);
++          if (ev.type === 'kick') {
++            const o = put(ev, KIND.ARC_PERC, BUS.drums, mtof(root));
++            out[o + EV.P0] = 0; out[o + EV.P1] = 0; out[o + EV.P2] = 1;
++          } else if (ev.type === 'snare' || ev.type === 'rim' || ev.type === 'clap') {
++            const o = put(ev, KIND.ARC_PERC, BUS.drums, mtof(root + (ev.type === 'rim' ? 19 : 12)));
++            out[o + EV.PAN] = ev.pan || 0;
++            out[o + EV.P0] = 1;
++            out[o + EV.P1] = ev.lfsr ?? (ev.type === 'rim' || ev.type === 'clap' ? 1 : 0);
++            out[o + EV.P2] = ev.type === 'rim' ? 0.55 : 1;
++          } else if (ev.type === 'hat' || ev.type === 'shaker' || ev.type === 'ride') {
++            const o = put(ev, KIND.ARC_PERC, BUS.drums, 0);
++            out[o + EV.PAN] = ev.pan || 0;
++            out[o + EV.P0] = 2;
++            out[o + EV.P1] = ev.lfsr ?? 0;
++            out[o + EV.P2] = ev.open || ev.type === 'ride' ? 1.8 : 1;
++          } else if (ev.type === 'tom' || ev.type === 'perc') {
++            const idx = clamp((ev.tom ?? ev.pi) | 0, 0, 2);
++            const o = put(ev, KIND.ARC_PERC, BUS.drums, mtof(fold(root + 12, 43, 55) + (idx === 2 ? 12 : idx === 1 ? 7 : 0)));
++            out[o + EV.PAN] = ev.pan ?? TOM_PAN[idx] * 0.7;
++            out[o + EV.P0] = 3; out[o + EV.P1] = 1; out[o + EV.P2] = 1;
++          } else {
++            const o = put(ev, KIND.ARC_PERC, BUS.drums, 0);
++            out[o + EV.P0] = 4; out[o + EV.P1] = 0; out[o + EV.P2] = 1.2;
++          }
++          return true;
++        }
++      }
++      return false;
++    };
++
+     for (let i = 0; i < N; i++) {
+       const raw = src[i];
+       while (si + 1 < starts.length && raw.beat >= starts[si + 1]) si++;
+       const ev = lens ? LiveLens.map(raw, song) : raw;
+       const P = Ps[si];
+       flag = raw.when ? WHEN[raw.when] | 0 : 0;
++      if (useArcade && viaArcade(ev)) continue;
+       if (pal && viaPalette(ev)) continue;
+       switch (ev.type) {
+         case 'lead': case 'harm': {
+@@ -477,7 +583,7 @@ const SigilPlan = (() => {
+    * packed with no depth and no drift, so it adds exactly nothing.
+    */
+   function motionTable(song, sigil, spec, DS) {
+-    if (typeof Motion === 'undefined' || !song.cfg) return null;
++    if (isArcadeSpec(spec, song) || typeof Motion === 'undefined' || !song.cfg) return null;
+     const P = spec.P, t = Motion.bake(song, sigil, { variant: num(P.mVar, 0), mute: num(P.mMute, 0), kit: DS.fx !== false });
+     if (!t.packed) {
+       const L = new Float64Array(t.n * ASTRIDE);
+@@ -508,7 +614,7 @@ const SigilPlan = (() => {
+    */
+   function paletteOf(song, sigil, spec, on) {
+     // (and only where the engines are: a host that has the palette but not sigil-voices.js would be given parts that make no sound)
+-    if (typeof Palette === 'undefined' || typeof SigilVoices === 'undefined' || on === false || !sigil || !spec) return null;
++    if (isArcadeSpec(spec, song) || typeof Palette === 'undefined' || typeof SigilVoices === 'undefined' || on === false || !sigil || !spec) return null;
+     return Palette.resolve(sigil, song && song.cfg, spec.P);
+   }
+   /** The hall a song and its palette ask for together: the element's size and damping, and the world's on top. */
+@@ -517,15 +623,28 @@ const SigilPlan = (() => {
+     if (!w) return h;
+     return { size: num(h && h.size, 1) * num(w.size, 1), damp: num(h && h.damp, 0) + num(w.damp, 0) };
+   }
+-  const spaceWith = (song, pal) => clamp(spaceOf(song) * (pal && !pal.classic ? num(pal.space, 1) : 1), 0, 3);
++  const spaceWith = (song, pal, spec, sigil) => {
++    if (isArcadeSpec(spec, song)) {
++      const A = Arcade.resolve(spec && spec.P, sigil, (spec && spec.variant) || 0);
++      return clamp(A.aSpace * 1.4, 0, 3);
++    }
++    return clamp(spaceOf(song) * (pal && !pal.classic ? num(pal.space, 1) : 1), 0, 3);
++  };
+ 
+   /** Compile a song. opts: { spec, lens, events:false (sections only), drums (settings override), flow (the passes go round the body), palette (false: the cube's voices only) } */
+   function compile(song, sigil, opts = {}) {
+     const spec = opts.spec || soundSpec(sigil, song);
+-    const Ps = patches(song, spec), DS = drumSettings(opts.drums), pal = paletteOf(song, sigil, spec, opts.palette);
++    const useArcade = isArcadeSpec(spec, song);
++    const Ps = patches(song, spec, sigil), DS = drumSettings(opts.drums), pal = paletteOf(song, sigil, spec, opts.palette);
+     const loop = loopOf(song, opts.flow);
+-    // a pass that is followed by another turns: a fill into the body's start (05i). Played from a copy of the score.
+-    const score = loop && opts.turn !== false && typeof Flow !== 'undefined' && Flow.turnSong ? Flow.turnSong(song, sigil, loop) : song;
++    let score = song;
++    if (useArcade && !(song.cfg && song.cfg.arcade) && opts.rawScore !== true && sigil) {
++      const secs = song.sections.map((s) => ({ ...s }));
++      const w = Arcade.write({ sections: secs, phrases: song.phrases, P: song.P, bpm: song.bpm, total: song.total, cfg: song.cfg || {} }, sigil, spec.P);
++      score = { ...song, sections: secs, events: w.events };
++    } else if (!useArcade && loop && opts.turn !== false && typeof Flow !== 'undefined' && Flow.turnSong) {
++      score = Flow.turnSong(song, sigil, loop);
++    }
+     const p = { spec, Ps, sections: sectionsTable(song, sigil, spec, Ps, DS), nSec: Ps.length, total: song.total,
+       auto: motionTable(song, sigil, spec, DS),
+       motion: clamp(num(spec.P.motion, 1), 0, 2), evolve: clamp(num(spec.P.evolve, 0.5), 0, 1), loop,
+@@ -590,7 +709,11 @@ const SigilPlan = (() => {
+ 
+   /* ── Reverb from the sigil's strokes ───────────────────────────────── */
+   /** `hall` (a song's cfg.hall, from its element): { size: × the decay, damp: + the damping }. */
+-  function reverbSpec(sigil, spec, hall) {
++  function reverbSpec(sigil, spec, hall, song) {
++    if (isArcadeSpec(spec, song)) {
++      const A = Arcade.resolve(spec && spec.P, sigil, (spec && spec.variant) || 0);
++      return { rt60: clamp(0.85 + A.aSpace * 2.4, 0.4, 4), damp: 0.48, taps: null };
++    }
+     const size = clamp(num(hall && hall.size, 1), 0.3, 2.5), dd = num(hall && hall.damp, 0);
+     if (!sigil || !spec || !spec.verb) return { rt60: 2.6 * size, damp: clamp(0.55 + dd, 0.05, 0.95), taps: null };
+     const r = SD.irSpec(sigil, spec.variant), taps = new Float64Array(r.taps.length * 3);
+@@ -602,8 +725,8 @@ const SigilPlan = (() => {
+   const spaceOf = (song) => clamp(num(song && song.cfg && song.cfg.space, 1), 0, 3);
+   function sendReverb(eng, sigil = hasApp() ? app.sigil : null) {
+     const spec = sigil ? soundSpec(sigil, eng.song) : null, pal = paletteOf(eng.song, sigil, spec);
+-    const rv = reverbSpec(sigil, spec, hallWith(eng.song, pal));
+-    const space = spaceWith(eng.song, pal);
++    const rv = reverbSpec(sigil, spec, hallWith(eng.song, pal), eng.song);
++    const space = spaceWith(eng.song, pal, spec, sigil);
+     if (eng.space !== space) { eng.space = space; if (eng.revReturn) eng.revReturn.gain.value = eng.revReturn.gain.value; }   // the world's room, in the listener's Space
+     eng.post({ type: 'reverb', rt60: rv.rt60, damp: rv.damp, taps: rv.taps }, rv.taps ? [rv.taps.buffer] : []);
+   }
+@@ -677,6 +800,9 @@ const SigilPlan = (() => {
+   }
+   /** A played note (the keys, a click on a letter): the lead's instrument, when the palette has dealt one. */
+   function liveNote(midi, deg, vel, timbre, pal) {
++    if (typeof Sound !== 'undefined' && Sound.engine === 'arcade') {
++      return row({ kind: 'ARC_LEAD', bus: 'fx', f: mtof(midi), dur: 0, vel, aux: deg, p: [0, 2, 3] });
++    }
+     const d = pal && pal.roles && pal.roles.lead;
+     if (d && d.engine !== 'cube') return palRow(d, 'lead', 'fx', midi, vel);
+     return row({ kind: 'LEAD', bus: 'fx', f: mtof(midi), dur: 0, vel, aux: deg, p: [TIMBRE[timbre] ?? 0, -1, CONS.nasal, 1] });
+@@ -754,15 +880,17 @@ const SigilPlan = (() => {
+   function renderJob(song, sigil, o) {
+     const p = compile(song, sigil, { lens: !!o.lens, spec: o.spec, drums: o.drums, flow: o.flow, palette: o.palette });
+     const eng = hasApp() ? app.engine : null;
++    const useArcade = isArcadeSpec(p.spec, song);
++    const spb = o.spb || (useArcade && p.spec.P.aTempo ? 60 / p.spec.P.aTempo : song.spb);
+     return {
+-      sr: o.sr, bpm: 60 / o.spb, passes: Math.max(1, o.passes | 0), voices: 80,
++      sr: o.sr, bpm: 60 / spb, passes: Math.max(1, o.passes | 0), voices: 80,
+       events: p.events, count: p.count, sections: p.sections, nSec: p.nSec, total: p.total, loop: p.loop,
+       spectra: spectra(p.spec.cube), tilt: num(p.spec.P.tilt, 0), density: num(p.spec.P.density, 1),
+-      reverb: reverbSpec(sigil, p.spec, hallWith(song, p.pal)), inst: p.inst, levels: o.levels || currentLevels(song),
++      reverb: reverbSpec(sigil, p.spec, hallWith(song, p.pal), song), inst: p.inst, levels: o.levels || currentLevels(song),
+       // The live engine's own lane table and amounts: a render, whole or stem, moves as the stage does.
+       // pass0 starts the evolution further on (a render begins at pass 0, the rite as written).
+       auto: autoMsg(p.auto),
+-      params: { reverb: eng && eng.params && eng.song === song ? eng.params.reverb : 0.85 * spaceWith(song, p.pal), waveOff: waveOffset(),
++      params: { reverb: eng && eng.params && eng.song === song ? eng.params.reverb : 0.85 * spaceWith(song, p.pal, p.spec, sigil), waveOff: waveOffset(),
+         motion: p.motion, evolve: p.evolve, pass0: Math.max(0, o.pass0 | 0),
+         holdK: o.holdK > 0 ? o.holdK : 1 },
+       // How the song asks to be finished, and (if the caller has one) the plan that finishes it.
+@@ -773,7 +901,11 @@ const SigilPlan = (() => {
+   return {
+     compile, sendSong, replan, refreshSections, sendTables, sendReverb,
+     soundSpec, defaultSpec, waveOffset, row, liveNote, auditionRows, renderJob, spectra, mixInfo, paletteOf, hallWith,
+-    spaceOf: (song, sigil) => (sigil ? spaceWith(song, paletteOf(song, sigil, soundSpec(sigil, song))) : spaceOf(song)),
++    spaceOf: (song, sigil) => {
++      if (!sigil) return spaceOf(song);
++      const spec = soundSpec(sigil, song);
++      return spaceWith(song, paletteOf(song, sigil, spec), spec, sigil);
++    },
+     KIND, BUS, LANE_COL,
+   };
+ })();
+\ No newline at end of file
+diff --git a/src/dsp/sigil-dsp.js b/src/dsp/sigil-dsp.js
+index 865d849..f90ca63 100644
+--- a/src/dsp/sigil-dsp.js
++++ b/src/dsp/sigil-dsp.js
+@@ -68,7 +68,8 @@
+       DRONE: 8, KICK: 9, SNARE: 10, HAT: 11, NOISE: 12, FIRE: 13, TOM: 14,
+       // The palette's engines (sigil-voices.js). Their parameters are not in the event row but in the INSTRUMENT TABLE
+       // (see IN): a row names its instrument in P0. ⚠ APPEND ONLY: an id is in every link that has ever used it.
+-      PLUCK: 15, MODAL: 16, ANALOG: 17, ORGAN: 18, DX: 19, BREATH: 20, FOLD: 21, CLOUD: 22 });
++      PLUCK: 15, MODAL: 16, ANALOG: 17, ORGAN: 18, DX: 19, BREATH: 20, FOLD: 21, CLOUD: 22,
++      ARC_LEAD: 23, ARC_BASS: 24, ARC_PERC: 25, ARC_ARP: 26 });
+   
+     /** Buses. 'fx' = live keys and ritual sounds; 'post' bypasses the master chain and the banish filter. */
+     const BUS_NAMES = Object.freeze(['lead', 'harm', 'bell', 'pad', 'bass', 'arp', 'drums', 'drone', 'fx', 'post']);
+@@ -120,7 +121,8 @@
+       SWEEP: 7, DRIFT: 8, VOWEL: 9, VOICE: 10, DRUMS: 11, HDECAY: 12, CHORUS: 13, ECHO: 14,
+       GRIT: 15, BITS: 16, HOLD: 17, FOLD: 18, DRIVE: 19, DUCK: 20, INTENSITY: 21,
+       DPUNCH: 22, DBODY: 23, DDRIVE: 24, DCRUSH: 25, DBITS: 26, DHOLD: 27, DFILTER: 28,
+-      DSMASH: 29, DROOM: 30, DSIZE: 31, DECHO: 32, DTIME: 33 });
++      DSMASH: 29, DROOM: 30, DSIZE: 31, DECHO: 32, DTIME: 33,
++      ALEAD: 34, AFM: 35, APW: 36, ADRIVE: 37, ADECAY: 38, AARP: 39 });
+     const PSTRIDE = 40;
+     const DEFAULT_PATCH = new Float64Array(PSTRIDE);
+     Object.entries({ BRIGHT: 0.6, SUB: 0.2, BREATH: 0.2, WAVE: 2, LAYER: 1, SWEEP: 0.5, DRIFT: 0.3,
+@@ -1045,6 +1047,285 @@
+       v.rng = r; v.kf = kf; v.age += n - from;
+       if ((t > Math.max(2, dur) && cl < 1e-4) || kf < 1e-3) v.active = false;
+     }
++
++    function initArcLead(c, v, src, o, pb, el) {
++      const sr = c.sr, S = c.sec, dur = common(c, v, src, o, el), P = v.p;
++      v.kind = KIND.ARC_LEAD;
++      const mode = src[o + EV.P0] | 0;
++      const bright = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.ALEAD], 0, 1) : 0.65;
++      const fm = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.AFM], 0, 1) : 0.5;
++      const r1 = src[o + EV.P1] > 0 ? src[o + EV.P1] : mode === 1 ? 3.5 : 2;
++      const r2 = src[o + EV.P2] > 0 ? src[o + EV.P2] : mode === 1 ? 7 : 3;
++      const nyq = clamp((sr * 0.42) / (v.f * Math.max(r1, 2)) - 0.8, 0.08, 1);
++      P[0] = r1; P[1] = r2; P[2] = nyq;
++      P[3] = 1; P[4] = decayOf(mode === 1 ? Math.max(0.18, dur * 0.45) : Math.max(0.05, Math.min(0.28, dur * 0.45)), sr);
++      P[5] = 1; P[6] = decayOf(mode === 1 ? 0.09 : 0.035, sr);
++      P[7] = bright; P[8] = fm; P[9] = 0; P[10] = mode;
++      v.glideC = coefOf(0.018, sr);
++      if (mode !== 1 && (v.gate < 0 || dur > 0.35)) {
++        v.vibA = 0.0048; v.vibInc = 5.8 / sr; v.vibRI = 1 / (0.28 * sr);
++      }
++      if (mode === 1) envStart(v, sr, 0.002, Math.max(0.16, dur * 0.55), 0.06, 0.28, v.vel * 0.34);
++      else envStart(v, sr, 0.0035, 0.13, mode === 2 ? 0.62 : 0.74, 0.055, v.vel * (mode === 2 ? 0.26 : 0.34));
++    }
++    function rArcLead(c, v, L, R, from, n) {
++      const sr = c.sr, P = v.p, pb = c.secBase(c.beat), S = c.sec;
++      const hasArc = S[pb + PA.APW] > 0;
++      const bright = hasArc ? clamp(S[pb + PA.ALEAD], 0, 1) : P[7];
++      const fm = hasArc ? clamp(S[pb + PA.AFM], 0, 1) : P[8];
++      const fc = Math.min(sr * 0.44, v.f * (2.4 + 20 * bright * bright + 3.6 * bright));
++      svfSet(v.cf, 0, sr, fc, 0.72 + 0.35 * bright);
++      const a1 = v.cf[0], a2 = v.cf[1], a3 = v.cf[2];
++      const r1 = P[0], r2 = P[1], nyq = P[2], mDec = P[4], tDec = P[6];
++      const fb = (0.03 + 0.28 * bright * (0.3 + 0.7 * fm)) * nyq;
++      const baseIdx = fm * (0.22 + 1.35 * fm) * (0.45 + 0.75 * bright) * nyq;
++      const tineIdx = fm * (0.1 + 0.7 * bright) * nyq;
++      const h2 = 0.16 * bright * (1 - 0.5 * fm);
++      const fs = v.f / sr, glC = v.glideC, vA = v.vibA, vI = v.vibInc, vRI = v.vibRI;
++      const aI = v.aInc, dC = v.dC, su = v.sus, rC = v.rC, pk = v.peak, kd = v.kd;
++      const gL = v.gl * v.lvl, gR = v.gr * v.lvl;
++      let s1 = v.fs[0], s2 = v.fs[1], ph = v.ph[0], m1p = v.ph[1], m2p = v.ph[2];
++      let gl = v.glide, vp = v.vibPh, vr = v.vibR, mEnv = P[3], tEnv = P[5], prevM = P[9];
++      let e = v.env, st = v.stage, gate = v.gate, kf = v.kf, i = from;
++      for (; i < n; i++) {
++        if (gl !== 1) { gl += (1 - gl) * glC; if (gl > 0.99995 && gl < 1.00005) gl = 1; }
++        let m = gl;
++        if (vA !== 0) { vp += vI; if (vp >= 1) vp -= 1; if (vr < 1) vr += vRI; m *= 1 + vA * vr * sinAt(vp); }
++        const inc = fs * m;
++        m1p += inc * r1; m1p -= Math.floor(m1p);
++        m2p += inc * r2; m2p -= Math.floor(m2p);
++        ph += inc; if (ph >= 1) ph -= 1;
++        let mp = m1p + fb * prevM; mp -= Math.floor(mp);
++        const mod1 = sinAt(mp); prevM = mod1;
++        const mod2 = sinAt(m2p) * tEnv;
++        mEnv = 0.35 + (mEnv - 0.35) * mDec;
++        tEnv *= tDec;
++        let cp = ph + baseIdx * mEnv * mod1 + tineIdx * mod2;
++        cp -= Math.floor(cp);
++        let y = sinAt(cp);
++        if (h2 > 0.002) { let p2 = ph * 2; if (p2 >= 1) p2 -= 1; y += sinAt(p2) * h2; }
++        const v3 = y - s2, v1 = a1 * s1 + a2 * v3, v2 = s2 + a2 * s1 + a3 * v3;
++        s1 = 2 * v1 - s1; s2 = 2 * v2 - s2;
++        if (st === 1) { e += aI; if (e >= pk) { e = pk; st = 2; } }
++        else if (st === 2) e += dC * (su - e);
++        else { e -= rC * e; if (e < 1e-5) { st = 0; break; } }
++        if (gate > 0 && --gate === 0) st = 3;
++        const out = v2 * e * kf; kf *= kd;
++        L[i] += out * gL; R[i] += out * gR;
++      }
++      v.fs[0] = s1; v.fs[1] = s2; v.ph[0] = ph; v.ph[1] = m1p; v.ph[2] = m2p;
++      v.glide = gl; v.vibPh = vp; v.vibR = vr; P[3] = mEnv; P[5] = tEnv; P[9] = prevM;
++      v.env = e; v.stage = st; v.gate = gate; v.kf = kf; v.age += i - from;
++      if (st === 0 || kf < 1e-3) v.active = false;
++    }
++
++    function initArcBass(c, v, src, o, pb, el) {
++      const sr = c.sr, S = c.sec, P = v.p;
++      common(c, v, src, o, el);
++      v.kind = KIND.ARC_BASS;
++      v.tab = c.saw;
++      v.o0 = c.tier(v.f * Math.max(1, v.glide) * 1.05);
++      v.glideC = coefOf(0.015, sr);
++      P[0] = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.APW], 0.08, 0.92) : 0.25;
++      P[1] = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.ADRIVE], 0, 1) : 0.35;
++      P[2] = 1; P[3] = 1 - Math.exp(-BLOCK / (0.09 * sr));
++      envStart(v, sr, 0.0025, 0.1, 0.72, 0.042, v.vel * 0.38);
++    }
++    function rArcBass(c, v, L, R, from, n) {
++      const sr = c.sr, P = v.p, saw = v.tab, o0 = v.o0, pb = c.secBase(c.beat), S = c.sec;
++      const hasArc = S[pb + PA.APW] > 0;
++      const pw = hasArc ? clamp(S[pb + PA.APW], 0.08, 0.92) : P[0];
++      const drive = hasArc ? clamp(S[pb + PA.ADRIVE], 0, 1) : P[1];
++      P[2] *= 1 - P[3];
++      const fc = Math.min(sr * 0.42, v.f * (2.8 + 8.5 * (0.25 + 0.75 * drive) + 6 * P[2]));
++      svfSet(v.cf, 0, sr, fc, 0.85 + 1.15 * drive);
++      const a1 = v.cf[0], a2 = v.cf[1], a3 = v.cf[2];
++      const drv = 1 + 6.5 * drive, nrm = 1 / sat(drv), subG = 0.28 + 0.16 * drive;
++      const fs = v.f / sr, glC = v.glideC;
++      const aI = v.aInc, dC = v.dC, su = v.sus, rC = v.rC, pk = v.peak, kd = v.kd;
++      const gL = v.gl * v.lvl, gR = v.gr * v.lvl;
++      let s1 = v.fs[0], s2 = v.fs[1], ph = v.ph[0], phs = v.ph[1], gl = v.glide;
++      let e = v.env, st = v.stage, gate = v.gate, kf = v.kf, i = from;
++      for (; i < n; i++) {
++        if (gl !== 1) { gl += (1 - gl) * glC; if (gl > 0.99995 && gl < 1.00005) gl = 1; }
++        const inc = fs * gl;
++        ph += inc; if (ph >= 1) ph -= 1;
++        let p2 = ph + pw; if (p2 >= 1) p2 -= 1;
++        const pulse = (tabAt(saw, o0, ph) - tabAt(saw, o0, p2)) * 0.52;
++        phs += inc * 0.5; if (phs >= 1) phs -= 1;
++        const raw = pulse + sinAt(phs) * subG;
++        const v3 = raw - s2, v1 = a1 * s1 + a2 * v3, v2 = s2 + a2 * s1 + a3 * v3;
++        s1 = 2 * v1 - s1; s2 = 2 * v2 - s2;
++        const y = sat(v2 * drv) * nrm;
++        if (st === 1) { e += aI; if (e >= pk) { e = pk; st = 2; } }
++        else if (st === 2) e += dC * (su - e);
++        else { e -= rC * e; if (e < 1e-5) { st = 0; break; } }
++        if (gate > 0 && --gate === 0) st = 3;
++        const out = y * e * kf; kf *= kd;
++        L[i] += out * gL; R[i] += out * gR;
++      }
++      v.fs[0] = s1; v.fs[1] = s2; v.ph[0] = ph; v.ph[1] = phs; v.glide = gl;
++      v.env = e; v.stage = st; v.gate = gate; v.kf = kf; v.age += i - from;
++      if (st === 0 || kf < 1e-3) v.active = false;
++    }
++
++    function initArcPerc(c, v, src, o, pb) {
++      const sr = c.sr, S = c.sec, P = v.p;
++      common(c, v, src, o, 0); v.gate = -1;
++      v.kind = KIND.ARC_PERC; v.stage = 2;
++      const nDec = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.ADECAY], 0.12, 2.5) : 0.7;
++      const sub = clamp(src[o + EV.P0] | 0, 0, 4);
++      const metal = (src[o + EV.P1] | 0) === 1 ? 6 : 1;
++      const lenM = src[o + EV.P2] > 0 ? src[o + EV.P2] : 1;
++      v.lvl = (v.bus === B_DRUMS ? S[pb + PA.DRUMS] : 1) * 0.92;
++      v.mode = sub;
++      const lfsr0 = ((v.rng & 0x7fff) || 0x45d9) & 0x7fff;
++      P[0] = metal; P[1] = lfsr0; P[2] = 1;
++      if (sub === 0) {
++        const f = clamp(v.f || 52, 32, 140);
++        v.inc[0] = f / sr; v.inc[1] = 7500 / sr;
++        P[3] = 3.2; P[4] = decayOf(0.022, sr);
++        v.lv[0] = 0.95; v.lv[1] = 0.38; v.lv[2] = 1;
++        v.dk[0] = decayOf(0.11 * (0.55 + 0.45 * nDec) * lenM, sr);
++        v.dk[1] = decayOf(0.008 * (0.6 + 0.4 * nDec), sr);
++        svfSet(v.cf, 0, sr, 2400, 0.8);
++      } else if (sub === 1) {
++        const f = clamp(v.f || 165, 90, 420);
++        v.inc[0] = f / sr; v.inc[1] = (metal === 6 ? 7800 : 12500) / sr;
++        P[3] = 1.6; P[4] = decayOf(0.018, sr);
++        v.lv[0] = 0.52; v.lv[1] = 0.72; v.lv[2] = 1;
++        v.dk[0] = decayOf(0.032 * (0.65 + 0.35 * nDec), sr);
++        v.dk[1] = decayOf(0.078 * nDec * lenM, sr);
++        svfSet(v.cf, 0, sr, 2200, 0.65);
++      } else if (sub === 2) {
++        v.inc[0] = 0; v.inc[1] = (metal === 6 ? 11200 : 19000) / sr;
++        P[3] = 0; P[4] = 1;
++        v.lv[0] = 0; v.lv[1] = 0.44; v.lv[2] = 0;
++        v.dk[0] = 0;
++        v.dk[1] = decayOf((lenM > 1.2 ? 0.115 : 0.021) * nDec * lenM, sr);
++        svfSet(v.cf, 0, sr, 6400, 0.75);
++      } else if (sub === 3) {
++        const f = clamp(v.f || 120, 55, 520);
++        v.inc[0] = f / sr; v.inc[1] = 9200 / sr;
++        P[3] = 1.9; P[4] = decayOf(0.03, sr);
++        v.lv[0] = 0.78; v.lv[1] = 0.24; v.lv[2] = 1;
++        v.dk[0] = decayOf(0.085 * (0.55 + 0.45 * nDec) * lenM, sr);
++        v.dk[1] = decayOf(0.015 * nDec, sr);
++        svfSet(v.cf, 0, sr, 2800, 0.9);
++      } else {
++        v.inc[0] = 0; v.inc[1] = 15500 / sr;
++        P[3] = 0; P[4] = decayOf(0.35 * nDec, sr);
++        v.lv[0] = 0; v.lv[1] = 0.48; v.lv[2] = 1;
++        v.dk[0] = 0;
++        v.dk[1] = decayOf(0.36 * nDec * lenM, sr);
++        svfSet(v.cf, 0, sr, 4200, 0.6);
++      }
++    }
++    function rArcPerc(c, v, L, R, from, n) {
++      const P = v.p, lv = v.lv, dk = v.dk, cf = v.cf, key = c.key, sub = v.mode;
++      const A1 = cf[0], A2 = cf[1], A3 = cf[2], AK = cf[3];
++      const i0 = v.inc[0], i1 = v.inc[1], d0 = dk[0], d1 = dk[1], dg = P[4], gx = P[3], tap = P[0] | 0, kd = v.kd;
++      const gain = v.vel * v.lvl, gL = v.gl * gain, gR = v.gr * gain;
++      const kAmt = sub === 0 ? gain : sub === 1 ? gain * 0.25 : 0;
++      let p0 = v.ph[0], p1 = v.ph[1], lb = lv[0], ln = lv[1], ge = lv[2];
++      let lfsr = P[1] | 0, nz = P[2], s1 = v.fs[0], s2 = v.fs[1], kf = v.kf;
++      for (let i = from; i < n; i++) {
++        ge *= dg;
++        let y = 0;
++        if (lb > 1e-5) {
++          p0 += i0 * (1 + gx * ge); if (p0 >= 1) p0 -= 1;
++          const tri = p0 < 0.5 ? 4 * p0 - 1 : 3 - 4 * p0;
++          y += (sub === 0 ? sat(tri * 1.5) : tri * 0.7 + (p0 < 0.25 ? 0.3 : -0.3)) * lb;
++          lb *= d0;
++        }
++        if (ln > 1e-5) {
++          const clk = sub === 4 ? i1 * (0.35 + 0.65 * ge) : i1;
++          p1 += clk;
++          if (p1 >= 1) {
++            p1 -= Math.floor(p1);
++            const bit = (lfsr ^ (lfsr >> tap)) & 1;
++            lfsr = ((lfsr >> 1) | (bit << 14)) & 0x7fff;
++            if (!lfsr) lfsr = 1;
++            nz = bit ? 1 : -1;
++          }
++          const v3 = nz - s2, v1 = A1 * s1 + A2 * v3, v2 = s2 + A2 * s1 + A3 * v3;
++          s1 = 2 * v1 - s1; s2 = 2 * v2 - s2;
++          const fnz = sub === 2 || sub === 4 ? nz - AK * v1 - v2 : v1 * AK * 0.7 + (nz - AK * v1 - v2) * 0.3;
++          y += fnz * ln;
++          ln *= d1;
++        }
++        const out = sat(y * 1.25) * kf; kf *= kd;
++        if (kAmt !== 0) key[i] += (out < 0 ? -out : out) * kAmt;
++        L[i] += out * gL; R[i] += out * gR;
++      }
++      v.ph[0] = p0; v.ph[1] = p1; lv[0] = lb; lv[1] = ln; lv[2] = ge;
++      P[1] = lfsr; P[2] = nz; v.fs[0] = s1; v.fs[1] = s2; v.kf = kf; v.age += n - from;
++      if ((lb < 1e-4 && ln < 1e-4) || kf < 1e-3) v.active = false;
++    }
++
++    function initArcArp(c, v, src, o, pb, el) {
++      const sr = c.sr, S = c.sec, dur = common(c, v, src, o, el), P = v.p;
++      v.kind = KIND.ARC_ARP;
++      v.tab = c.saw;
++      const chip = src[o + EV.P5] > 0;
++      const freqs = [v.f];
++      if (chip) {
++        for (let j = 0; j < 3; j++) { const fj = src[o + EV.P0 + j]; if (fj > 0) freqs.push(fj); }
++      }
++      v.n = freqs.length;
++      for (let j = 0; j < freqs.length; j++) v.inc[j] = freqs[j];
++      P[0] = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.APW], 0.08, 0.92) : 0.25;
++      P[1] = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.ALEAD], 0, 1) : 0.65;
++      P[2] = S[pb + PA.APW] > 0 ? clamp(S[pb + PA.AARP], 0, 1) : 0.5;
++      P[3] = chip ? 1 : 0;
++      P[4] = 0; P[5] = 0;
++      const f0 = freqs[0];
++      v.o0 = c.tier(f0 * 1.05);
++      P[6] = f0;
++      if (chip) envStart(v, sr, 0.005, Math.max(0.15, dur * 0.4), 0.72, 0.08, v.vel * 0.25);
++      else envStart(v, sr, 0.0025, Math.max(0.05, dur * 0.65), 0.45, 0.038, v.vel * 0.27);
++    }
++    function rArcArp(c, v, L, R, from, n) {
++      const sr = c.sr, P = v.p, saw = v.tab, pb = c.secBase(c.beat), S = c.sec;
++      const hasArc = S[pb + PA.APW] > 0;
++      const pw0 = hasArc ? clamp(S[pb + PA.APW], 0.08, 0.92) : P[0];
++      const bright = hasArc ? clamp(S[pb + PA.ALEAD], 0, 1) : P[1];
++      const arp = hasArc ? clamp(S[pb + PA.AARP], 0, 1) : P[2];
++      const pw = clamp(0.62 - 0.42 * pw0, 0.125, 0.5);
++      const chip = P[3] > 0 && v.n > 1;
++      const stepSamples = chip ? Math.max(64, Math.round(sr / (26 + 36 * arp))) : 0;
++      let curF = P[6], o0 = v.o0, idx = P[4] | 0, cnt = P[5] | 0;
++      svfSet(v.cf, 0, sr, Math.min(sr * 0.44, curF * (3.2 + 15 * bright)), 0.7);
++      let a1 = v.cf[0], a2 = v.cf[1], a3 = v.cf[2];
++      const octG = 0.14 * bright, invSr = 1 / sr;
++      const aI = v.aInc, dC = v.dC, su = v.sus, rC = v.rC, pk = v.peak, kd = v.kd;
++      const gL = v.gl * v.lvl, gR = v.gr * v.lvl;
++      let s1 = v.fs[0], s2 = v.fs[1], ph = v.ph[0], pho = v.ph[1];
++      let e = v.env, st = v.stage, gate = v.gate, kf = v.kf, i = from;
++      for (; i < n; i++) {
++        if (chip && ++cnt >= stepSamples) {
++          cnt = 0; idx = (idx + 1) % v.n;
++          curF = v.inc[idx]; o0 = c.tier(curF * 1.05);
++        }
++        const inc = curF * invSr;
++        ph += inc; if (ph >= 1) ph -= 1;
++        let p2 = ph + pw; if (p2 >= 1) p2 -= 1;
++        let y = (tabAt(saw, o0, ph) - tabAt(saw, o0, p2)) * 0.5;
++        if (octG > 0.002) { pho += inc * 2; if (pho >= 1) pho -= 1; y += sinAt(pho) * octG; }
++        const v3 = y - s2, v1 = a1 * s1 + a2 * v3, v2 = s2 + a2 * s1 + a3 * v3;
++        s1 = 2 * v1 - s1; s2 = 2 * v2 - s2;
++        if (st === 1) { e += aI; if (e >= pk) { e = pk; st = 2; } }
++        else if (st === 2) e += dC * (su - e);
++        else { e -= rC * e; if (e < 1e-5) { st = 0; break; } }
++        if (gate > 0 && --gate === 0) st = 3;
++        const out = v2 * e * kf; kf *= kd;
++        L[i] += out * gL; R[i] += out * gR;
++      }
++      v.fs[0] = s1; v.fs[1] = s2; v.ph[0] = ph; v.ph[1] = pho;
++      v.o0 = o0; P[4] = idx; P[5] = cnt; P[6] = curF;
++      v.env = e; v.stage = st; v.gate = gate; v.kf = kf; v.age += i - from;
++      if (st === 0 || kf < 1e-3) v.active = false;
++    }
+   
+     /** Engines registered by sigil-voices.js: kind → init(c, v, src, o, pb, el), and its render is RENDER[kind]. */
+     const EXT_INIT = [];
+@@ -1054,6 +1335,8 @@
+     RENDER[KIND.BOW] = rBow; RENDER[KIND.BELL] = rBell; RENDER[KIND.PAD] = rPad; RENDER[KIND.DRONE] = rDrone;
+     RENDER[KIND.KICK] = rKick; RENDER[KIND.SNARE] = rSnare; RENDER[KIND.HAT] = rHat;
+     RENDER[KIND.NOISE] = rNoise; RENDER[KIND.FIRE] = rFire; RENDER[KIND.TOM] = rTom;
++    RENDER[KIND.ARC_LEAD] = rArcLead; RENDER[KIND.ARC_BASS] = rArcBass;
++    RENDER[KIND.ARC_PERC] = rArcPerc; RENDER[KIND.ARC_ARP] = rArcArp;
+   
+     /* ── §5 EFFECTS ────────────────────────────────────────────────────────── */
+     /** 8-line FDN (Hadamard) + early reflections tapped from the sigil's strokes. */
+@@ -2096,7 +2379,7 @@
+           if (v.active && v.id === id) {
+             if (v.stage === 1 || v.stage === 2) v.stage = 3;
+             v.gate = -1;
+-            if (v.kind >= KIND.PLUCK) this.kill(v, 0.25);     // a struck or plucked instrument has no note-off of its own: a key let go damps it
++            if (v.kind >= KIND.PLUCK && v.kind <= KIND.CLOUD) this.kill(v, 0.25);     // a struck or plucked instrument has no note-off of its own: a key let go damps it
+           }
+         }
+         for (let i = 0; i < this.nLive; i++) if (this.liveId[i] === id) this.liveEv[i * STRIDE + EV.DUR] = 0.05;
+@@ -2142,6 +2425,10 @@
+           case KIND.NOISE: initNoise(this, v, src, o, pb); break;
+           case KIND.FIRE: initFire(this, v, src, o); break;
+           case KIND.TOM: initTom(this, v, src, o, pb); break;
++          case KIND.ARC_LEAD: initArcLead(this, v, src, o, pb, el); break;
++          case KIND.ARC_BASS: initArcBass(this, v, src, o, pb, el); break;
++          case KIND.ARC_PERC: initArcPerc(this, v, src, o, pb); break;
++          case KIND.ARC_ARP: initArcArp(this, v, src, o, pb, el); break;
+           default: {
+             const init = EXT_INIT[(src[o + EV.KIND] | 0) & 255];
+             if (!init || !this.inst) { v.active = false; this.sec = plan; return; }    // an engine nobody has registered, or no instruments dealt
+@@ -2156,8 +2443,9 @@
+         const E = this.ev;
+         for (let i = this.lower(beat - 512); i < this.ptr; i++) {
+           const o = i * STRIDE, k = E[o + EV.KIND] & 255;
+-          // a held part: the cube's pad and drone, or a palette instrument in the pad's or the drone's slot
+-          if (k !== KIND.PAD && k !== KIND.DRONE && !(k >= KIND.PLUCK && ((E[o + EV.P0] | 0) === SLOT_PAD || (E[o + EV.P0] | 0) === SLOT_DRONE))) continue;
++          // a held part: the cube's pad and drone, an arcade held chip-chord, or a palette instrument in the pad's or the drone's slot
++          const heldArc = k === KIND.ARC_ARP && E[o + EV.P5] > 0;
++          if (k !== KIND.PAD && k !== KIND.DRONE && !heldArc && !(k >= KIND.PLUCK && k <= KIND.CLOUD && ((E[o + EV.P0] | 0) === SLOT_PAD || (E[o + EV.P0] | 0) === SLOT_DRONE))) continue;
+           if (E[o] + E[o + EV.DUR] > beat + 0.25) this.spawn(E, o, 0, beat - E[o], 0);
+         }
+       }
+@@ -2408,7 +2696,8 @@
+         this.nzS += (capM - this.nzS) * c;
+         if (capM === 1 && this.nzS > 0.9995) this.nzS = 1;
+         this.choS += (S[pb + PA.CHORUS] * 0.85 - this.choS) * c;
+-        this.echoS += (0.2 + S[pb + PA.ECHO] * 0.6 - this.echoS) * c;
++        const ec = S[pb + PA.ECHO];
++        this.echoS += ((S[pb + PA.APW] > 0 ? Math.max(0, ec) * 0.75 : 0.2 + ec * 0.6) - this.echoS) * c;
+         const grit = S[pb + PA.GRIT];
+         this.gritS += (grit - this.gritS) * c;
+         this.bits = grit > 0 ? clamp(Math.round(S[pb + PA.BITS]), 2, 16) : 16;
+@@ -2777,9 +3066,14 @@
+         row[EV.F] = 220; row[EV.DUR] = 0.5; row[EV.VEL] = 0.3; row[EV.AUX] = 2000;
+         row[EV.P0] = 1.5; row[EV.P1] = 0.05; row[EV.P2] = 0.3; row[EV.P3] = 1; row[EV.P4] = 1; row[EV.P5] = 4; row[EV.SEED] = 7;
+         const kinds = [KIND.LEAD, KIND.WAVE, KIND.VOX, KIND.FM, KIND.BOW, KIND.BELL, KIND.PAD, KIND.DRONE,
+-          KIND.KICK, KIND.SNARE, KIND.HAT, KIND.NOISE, KIND.FIRE, KIND.TOM];
++          KIND.KICK, KIND.SNARE, KIND.HAT, KIND.NOISE, KIND.FIRE, KIND.TOM,
++          KIND.ARC_LEAD, KIND.ARC_BASS, KIND.ARC_PERC, KIND.ARC_ARP];
+         for (let rep = 0; rep < 3; rep++) {
+-          for (const k of kinds) { row[EV.KIND] = k; row[EV.BUS] = k >= KIND.KICK ? B_DRUMS : 0; this.spawn(row, 0, 0, 0, 0); }
++          for (const k of kinds) {
++            row[EV.KIND] = k;
++            row[EV.BUS] = (k >= KIND.KICK && k <= KIND.TOM) || k === KIND.ARC_PERC ? B_DRUMS : 0;
++            this.spawn(row, 0, 0, 0, 0);
++          }
+           for (let b = 0; b < 16; b++) this.process(sL, sR, BLOCK);
+         }
+         this.panic();
+diff --git a/src/modules/m11-voices.js b/src/modules/m11-voices.js
+index 8de5760..7b44ebb 100644
+--- a/src/modules/m11-voices.js
++++ b/src/modules/m11-voices.js
+@@ -25,6 +25,7 @@ const Sound = (() => {
+   const VOICE_BUDGET = 34;
+   const prefs = {
+     mode: Prefs.get('sound.mode', 'sigil'),
++    engine: Prefs.get('sound.engine', 'cube') === 'arcade' ? 'arcade' : 'cube',
+     lite: Prefs.get('sound.lite', (navigator.hardwareConcurrency || 4) <= 2),
+     lensWave: Prefs.get('sound.lensWave', false),
+     vowelMemory: Prefs.get('sound.vowelMemory', true),
+@@ -36,6 +37,7 @@ const Sound = (() => {
+   let bank = Prefs.get('soundbank', {});
+   let library = Prefs.get('soundlib', []);
+   const cur = { key: null, variant: 0, o: {}, base: null, P: null, tables: null, mags: null, mut: 0 };
++  const preO = {};
+   let pending = null, lastVowel = null, frozen = false, vowelMemory = null;
+   const subs = new Set();
+   const notify = () => subs.forEach((fn) => { try { fn(); } catch (e) { console.error('[sound:ui]', e); } });
+@@ -87,17 +89,24 @@ const Sound = (() => {
+ 
+   function composePatch(sig, variant, overrides) {
+     const derived = SD.derive(sig.hash, variant);
++    const arcBase = typeof Arcade !== 'undefined' ? Arcade.derive(sig.hash, variant) : {};
++    const engFlag = prefs.engine === 'arcade' ? 1 : 0;
+     // The kit's FX (the D· knobs) are dealt from their own stream, so derive() stays as it was.
+     // Then the song dresses the patch: a style's signature, a mood's values, an element's lean (SD.shape).
+-    let base = SD.shape({ ...DEFAULTS, ...derived, ...SD.drumFx(sig.hash, variant) }, app.song && app.song.cfg);
++    let base = SD.shape({ ...DEFAULTS, ...arcBase, ...derived, ...SD.drumFx(sig.hash, variant) }, app.song && app.song.cfg);
+     // the world the sigil is dealt colours the base (a tape's warmth, an 8-bit crunch, a dream's haze); the knobs the listener has set are laid over it
+-    if (typeof Palette !== 'undefined') base = Palette.dress(base, Palette.finish(sig, app.song && app.song.cfg, { ...overrides }), SD.FIELDS);
+-    return { base, P: { ...base, ...overrides }, tables: SD.tables(sig, variant) };
++    if (typeof Palette !== 'undefined' && !engFlag) base = Palette.dress(base, Palette.finish(sig, app.song && app.song.cfg, { ...overrides }), SD.FIELDS);
++    return { base, P: { ...base, ...overrides, eng: engFlag }, tables: SD.tables(sig, variant) };
+   }
+ 
+   function recompute() {
+     const sig = app.sigil;
+-    if (!sig) return;
++    if (!sig) {
++      const arcDef = typeof Arcade !== 'undefined' ? Arcade.DEFAULTS : {};
++      cur.base = { ...DEFAULTS, ...arcDef };
++      cur.P = { ...cur.base, ...preO, eng: prefs.engine === 'arcade' ? 1 : 0 };
++      return;
++    }
+     const c = composePatch(sig, cur.variant, cur.o);
+     cur.base = c.base; cur.P = c.P; cur.tables = c.tables;
+     cur.mags = magnitudes(cur.tables, cur.P.wave, cur.P.layer);
+@@ -107,15 +116,20 @@ const Sound = (() => {
+   function syncFrom(sig) {
+     if (!sig) return;
+     const key = keyOf(sig);
+-    if (key !== cur.key || !cur.P) {
++    if (key !== cur.key || !cur.P || !cur.tables) {
+       cur.key = key;
+       const e = bank[key] || {};
+       cur.variant = e.variant | 0;
+-      cur.o = { ...(e.o || {}) };
++      cur.o = { ...(e.o || {}), ...preO };
++      for (const k of Object.keys(preO)) delete preO[k];
++      if (prefs.engine === 'arcade') cur.o.eng = 1; else delete cur.o.eng;
+       cur.mut = 0;
++      persist();
+     }
+     if (pending && pending.key === key) {
+       cur.variant = pending.variant; cur.o = { ...pending.o };
++      if (cur.o.eng === 1) { prefs.engine = 'arcade'; Prefs.set('sound.engine', 'arcade'); }
++      else if (cur.o.eng === 0) { prefs.engine = 'cube'; Prefs.set('sound.engine', 'cube'); delete cur.o.eng; }
+       pending = null; persist();
+     }
+     recompute();
+@@ -914,6 +928,17 @@ const Sound = (() => {
+ 
+   /** The wheel's waveform: a clean cycle and its crushed version, 128 points each. */
+   function ringFor(tb, P) {
++    if (prefs.engine === 'arcade' && typeof Arcade !== 'undefined') {
++      const w = Arcade.wavePreview(P, 128);
++      const crushed = new Float32Array(128);
++      let mx = 1e-9;
++      for (let i = 0; i < 128; i++) {
++        crushed[i] = w.lead[i] * 0.65 + w.bass[i] * 0.35;
++        if (Math.abs(crushed[i]) > mx) mx = Math.abs(crushed[i]);
++      }
++      for (let i = 0; i < 128; i++) crushed[i] /= mx;
++      return { clean: w.lead, crushed };
++    }
+     const a = tb.cell(P.wave, P.layer), b = tb.cell(P.wave + P.sweep * 4, P.layer + P.drift * 2.5);
+     const N = 128, raw = SD.waveSamples(a, b, 0.5, N), clean = new Float32Array(N);
+     let mx = 1e-9;
+@@ -983,6 +1008,41 @@ const Sound = (() => {
+   Hooks.on('buses', (_b, eng) => attach(eng));
+   Hooks.on('voice', voiceHook, 0);
+ 
++  function overridesOf(sig) {
++    if (!sig) return { ...preO };
++    const key = keyOf(sig);
++    if (pending && pending.key === key) return { ...pending.o };
++    if (key === cur.key && cur.P && cur.tables) return { ...cur.o };
++    return { ...((bank[key] && bank[key].o) || {}), ...preO };
++  }
++
++  Hooks.on('compose', (cfg, sigil) => {
++    if (typeof Arcade === 'undefined') return;
++    const o = overridesOf(sigil);
++    const arcOn = o.eng === 1 || (o.eng === undefined && prefs.engine === 'arcade');
++    if (!arcOn) return;
++    cfg.soundEngine = 'arcade';
++    const d = Arcade.derive(sigil.hash, 0);
++    const moodMul = clamp((cfg.bpm || 86) / 86, 0.65, 1.45);
++    cfg.bpm = Math.round(clamp(o.aTempo != null ? o.aTempo : d.aTempo * moodMul, 60, 220));
++    cfg.master = Object.assign({}, cfg.master || {}, { house: Object.assign({ arp: 1.5 }, (cfg.master && cfg.master.house) || {}) });
++  }, 40);
++
++  Hooks.on('score', (events, ctx) => {
++    if (typeof Arcade === 'undefined' || !ctx.cfg || ctx.cfg.soundEngine !== 'arcade') return undefined;
++    const o = overridesOf(ctx.sigil);
++    return Arcade.score(events, ctx, { ...Arcade.derive(ctx.sigil.hash, 0), ...o, aTempo: ctx.cfg.bpm });
++  }, 30);
++
++  Hooks.on('meta', (parts) => {
++    if (prefs.engine !== 'arcade' || !app.song) return parts;
++    const i = parts.indexOf(TIMBRE_NAMES[app.song.leadTimbre]);
++    const label = 'arcade · 4ch';
++    if (i >= 0) parts[i] = label;
++    else parts.splice(Math.min(2, parts.length), 0, label);
++    return parts;
++  }, 8);
++
+   Hooks.on('beforeCast', (ctx) => {
+     const seq = [];
+     for (const ch of ctx.text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase()) {
+@@ -995,12 +1055,15 @@ const Sound = (() => {
+   Hooks.on('link', (link) => {
+     const d = link.sound ? SD.decodePatch(link.sound) : null;
+     pending = d ? { key: link.members.join('+'), ...d } : null;
++    if (d && d.o && d.o.eng === 1) { prefs.engine = 'arcade'; Prefs.set('sound.engine', 'arcade'); Hooks.emit('engineMode', 'arcade'); notify(); }
++    else if (d && d.o && d.o.eng === 0) { prefs.engine = 'cube'; Prefs.set('sound.engine', 'cube'); Hooks.emit('engineMode', 'cube'); notify(); }
+     vowelMemory = null;
+   });
+ 
+   Hooks.on('shareKey', (key, sig) => {
+     if (!sig || keyOf(sig) !== cur.key) return undefined;
+-    const code = SD.encodePatch(cur.o, cur.variant);
++    const o = prefs.engine === 'arcade' ? { ...cur.o, eng: 1 } : (() => { const x = { ...cur.o }; delete x.eng; return x; })();
++    const code = SD.encodePatch(o, cur.variant);
+     return code ? key + '!' + code : undefined;
+   }, 20);
+ 
+@@ -1019,6 +1082,46 @@ const Sound = (() => {
+     }
+   };
+ 
++  function setEngine(next) {
++    const eng = next === 'arcade' ? 'arcade' : 'cube';
++    if (eng === prefs.engine && (!app.song || (eng === 'arcade') === !!(app.song.cfg && app.song.cfg.arcade))) {
++      notify();
++      return;
++    }
++    prefs.engine = eng;
++    Prefs.set('sound.engine', eng);
++    if (app.sigil) {
++      if (eng === 'arcade') cur.o.eng = 1; else delete cur.o.eng;
++      persist();
++    }
++    recompute();
++    refreshEngine();
++    if (app.song && app.sigil && typeof Arcade !== 'undefined') {
++      Arcade.sync(app.song, app.sigil, cur.P, eng === 'arcade');
++      if (eng === 'cube' && typeof DrumEngine !== 'undefined') DrumEngine.sync(app.song, app.sigil, false);
++      const e = app.engine;
++      if (e && e.song === app.song) {
++        e.events = app.song.events;
++        const targetBpm = eng === 'arcade'
++          ? (cur.P.aTempo || app.song.bpm)
++          : (typeof Mixer !== 'undefined' && Mixer.state
++              ? (Mixer.state.lock || Math.round(app.song.bpm * (Mixer.state.tempo || 1)))
++              : app.song.bpm);
++        e.setTempo(clamp(targetBpm, 40, 240));
++        SigilPlan.replan(e);
++        SigilPlan.sendReverb(e, app.sigil);
++      }
++      if (typeof renderMeta === 'function') renderMeta();
++      if (app.mode === 'playing' && typeof shareKey === 'function') {
++        history.replaceState(null, '', '#' + shareKey());
++      }
++    }
++    Hooks.emit('engineMode', eng);
++    notify();
++  }
++
++  recompute();
++
+   const api = {
+     SD, prepare, attach, noteOn, live,
+     paramsAt(eng, beat) {
+@@ -1028,7 +1131,7 @@ const Sound = (() => {
+     },
+     recentNotes: () => notes,
+     setMany(obj) {
+-      if (!app.sigil) return;
++      if (!app.sigil) { Object.assign(preO, obj); recompute(); notify(); return; }
+       Object.assign(cur.o, obj);
+       persist(); recompute(); refreshEngine(); notify();
+     },
+@@ -1039,13 +1142,8 @@ const Sound = (() => {
+      * else this device's bank. For code that runs at composition time, before attach() has
+      * synced the live patch to the new sigil (the drum engine reads `take` this way).
+      */
+-    overridesFor(sig) {
+-      if (!sig) return {};
+-      const key = keyOf(sig);
+-      if (pending && pending.key === key) return { ...pending.o };
+-      if (key === cur.key && cur.P) return { ...cur.o };
+-      return { ...((bank[key] && bank[key].o) || {}) };
+-    },
++    overridesFor: overridesOf,
++    get engine() { return prefs.engine; },
+     get mode() { return prefs.mode; },
+     get lite() { return prefs.lite; },
+     get keysOn() { return prefs.keys; },
+@@ -1058,7 +1156,11 @@ const Sound = (() => {
+     lastVowel: () => lastVowel,
+     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
+ 
+-    setMode(m) { prefs.mode = m; Prefs.set('sound.mode', m); notify(); },
++    setEngine,
++    setMode(m) {
++      if (m === 'arcade' || m === 'cube') { setEngine(m); return; }
++      prefs.mode = m; Prefs.set('sound.mode', m); notify();
++    },
+     setLite(v) { prefs.lite = !!v; Prefs.set('sound.lite', prefs.lite); notify(); },
+     setLensWave(v) { prefs.lensWave = !!v; Prefs.set('sound.lensWave', prefs.lensWave); notify(); },
+     setVowelMemory(v) { prefs.vowelMemory = !!v; Prefs.set('sound.vowelMemory', prefs.vowelMemory); notify(); },
+@@ -1077,15 +1179,50 @@ const Sound = (() => {
+     toggleKeys(force) { prefs.keys = force ?? !prefs.keys; notify(); return prefs.keys; },
+     toggleFreeze(force) { frozen = force ?? !frozen; notify(); return frozen; },
+ 
+-    set(name, v) { if (!app.sigil) return; cur.o[name] = v; persist(); recompute(); refreshEngine(); notify(); },
++    set(name, v) {
++      if (!app.sigil) { preO[name] = v; recompute(); notify(); return; }
++      cur.o[name] = v; persist(); recompute(); refreshEngine(); notify();
++    },
+     /** Return one knob to this sigil's own value (and drop it from the patch code). */
+-    unset(name) { if (!app.sigil) return; delete cur.o[name]; persist(); recompute(); refreshEngine(); notify(); },
+-    reset() { cur.o = {}; cur.mut = 0; persist(); recompute(); refreshEngine(); notify(); },
++    unset(name) {
++      if (!app.sigil) { delete preO[name]; recompute(); notify(); return; }
++      delete cur.o[name]; persist(); recompute(); refreshEngine(); notify();
++    },
++    reset() {
++      if (!app.sigil) {
++        for (const k of Object.keys(preO)) delete preO[k];
++        recompute(); notify();
++        return;
++      }
++      if (prefs.engine === 'arcade' && typeof Arcade !== 'undefined') {
++        for (const m of Arcade.MACROS) delete cur.o[m.name];
++        cur.o.eng = 1;
++      } else {
++        const arcSaved = {};
++        if (typeof Arcade !== 'undefined') for (const m of Arcade.MACROS) if (cur.o[m.name] !== undefined) arcSaved[m.name] = cur.o[m.name];
++        cur.o = arcSaved;
++      }
++      cur.mut = 0; persist(); recompute(); refreshEngine();
++      if (prefs.engine === 'arcade' && app.engine && app.song === app.engine.song && cur.P) {
++        app.engine.setTempo(cur.P.aTempo || app.song.bpm);
++        if (typeof renderMeta === 'function') renderMeta();
++      }
++      notify();
++    },
+     mutate() {
+       if (!app.sigil) return;
+       cur.mut++;
+-      cur.o = SD.mutate(app.sigil.hash, cur.mut, cur.base, cur.o);
+-      persist(); recompute(); refreshEngine(); notify();
++      if (prefs.engine === 'arcade' && typeof Arcade !== 'undefined') {
++        cur.o = { ...Arcade.mutate(app.sigil.hash, cur.mut, cur.base, cur.o), eng: 1 };
++      } else {
++        cur.o = SD.mutate(app.sigil.hash, cur.mut, cur.base, cur.o);
++      }
++      persist(); recompute(); refreshEngine();
++      if (prefs.engine === 'arcade' && app.engine && app.song === app.engine.song && cur.P) {
++        app.engine.setTempo(cur.P.aTempo || app.song.bpm);
++        if (typeof renderMeta === 'function') renderMeta();
++      }
++      notify();
+     },
+     dream(delta) {
+       if (!app.sigil) return;
+diff --git a/src/modules/m12-sound-ui.js b/src/modules/m12-sound-ui.js
+index 134aa3b..b80bc90 100644
+--- a/src/modules/m12-sound-ui.js
++++ b/src/modules/m12-sound-ui.js
+@@ -84,11 +84,28 @@ const SoundUI = (() => {
+     { name: 'dTime',   label: 'D·Time',   min: 0,  max: 3,  step: 1,    fmt: (v) => ECHO_NAMES[clamp(Math.round(v), 0, 3)], wheel: 1, hint: 'the echo’s note value' },
+   ];
+ 
++  const fmtPct = (v) => `${Math.round(v * 100)}%`;
++  const ARCADE_KNOBS = [
++    { name: 'aTempo',   label: 'Tempo',           min: 60,   max: 220,  step: 1,    idle: 128,  fmt: (v) => `${Math.round(v)} bpm`, hint: 'shared arcade tempo' },
++    { name: 'aScale',   label: 'Scale density',   min: 0,    max: 1,    step: 0.01, idle: 0.55, fmt: fmtPct, hint: 'pentatonic core to dense scalar runs' },
++    { name: 'aComplex', label: 'Complexity',      min: 0,    max: 1,    step: 0.01, idle: 0.5,  fmt: fmtPct, hint: '4-channel melodic, bass and rhythmic intricacy' },
++    { name: 'aSwing',   label: 'Swing',           min: 0,    max: 0.65, step: 0.01, idle: 0.08, fmt: fmtPct, hint: 'shared off-beat swing across all 4 channels' },
++    { name: 'aBright',  label: 'Lead brightness', min: 0,    max: 1,    step: 0.01, idle: 0.65, fmt: fmtPct, hint: 'FM lead harmonic brightness and filter openness' },
++    { name: 'aFm',      label: 'FM depth',        min: 0,    max: 1,    step: 0.01, idle: 0.5,  fmt: fmtPct, hint: 'FM modulation index and metallic bite' },
++    { name: 'aPw',      label: 'Pulse width',     min: 0.1,  max: 0.9,  step: 0.01, idle: 0.25, fmt: fmtPct, hint: 'pulse bass and chord duty cycle' },
++    { name: 'aDrive',   label: 'Bass drive',      min: 0,    max: 1,    step: 0.01, idle: 0.35, fmt: fmtPct, hint: 'pulse bass saturation and punch' },
++    { name: 'aDrum',    label: 'Drum density',    min: 0,    max: 1,    step: 0.01, idle: 0.6,  fmt: fmtPct, hint: 'noise percussion activity and retro fills' },
++    { name: 'aDecay',   label: 'Noise decay',     min: 0.15, max: 2,    step: 0.01, idle: 0.7,  fmt: fmtPct, hint: 'LFSR noise percussion envelope length' },
++    { name: 'aArp',     label: 'Arpeggio rate',   min: 0,    max: 1,    step: 0.01, idle: 0.5,  fmt: (v) => (typeof Arcade !== 'undefined' ? Arcade.arpRateLabel(v) : fmtPct(v)), hint: 'arpeggiated chord speed from 1/8 to VBI chip-chords' },
++    { name: 'aSpace',   label: 'Space',           min: 0,    max: 1,    step: 0.01, idle: 0.3,  fmt: fmtPct, hint: 'shared stereo echo and hall depth' },
++  ];
++
+   const KEYMAP = { a: 0, s: 1, d: 2, f: 3, h: 4, j: 5, k: 6, ';': 7, q: 8, w: 9, e: 10, r: 11, u: 12, i: 13, o: 14, p: 15 };
+ 
+   const knobs = {};
+   const held = new Map();
+-  let scope, cube, voiceSel, modeSel, liteBox, lensBox, vowBox, arcBox, verbBox, dreamLbl, keyBtn, freezeBtn, libList;
++  const engBtns = [];
++  let scope, cube, arcScope, cubePane, arcadePane, voiceSel, modeSel, liteBox, lensBox, vowBox, arcBox, verbBox, dreamLbl, keyBtn, freezeBtn, libList;
+ 
+   /* ── Knob ───────────────────────────────────────────────────────────── */
+ 
+@@ -392,16 +409,85 @@ const SoundUI = (() => {
+     c.addEventListener('pointercancel', up);
+   }
+ 
++  function paintArcadeScope() {
++    if (!arcScope || typeof Arcade === 'undefined') return;
++    const st = Sound.state(), g = arcScope.getContext('2d');
++    const W = arcScope.width, H = arcScope.height;
++    g.clearRect(0, 0, W, H);
++    if (!st.P) return;
++    const L = renderer.pal.line, A = renderer.pal.accent;
++    const waves = Arcade.wavePreview(st.P, W - 76);
++    const lanes = [
++      ['1 · FM LEAD', waves.lead, true],
++      ['2 · PULSE BASS', waves.bass, false],
++      ['3 · NOISE PERC', waves.perc, false],
++      ['4 · ARP CHORD', waves.arp, true],
++    ];
++    const rowH = H / 4;
++    g.font = `9px ${SERIF}`;
++    g.textAlign = 'left';
++    lanes.forEach(([lbl, arr, hi], r) => {
++      const y0 = r * rowH + rowH * 0.5;
++      g.fillStyle = rgba(L, 0.55);
++      g.fillText(lbl, 4, y0 + 3);
++      g.strokeStyle = rgba(L, 0.1);
++      g.beginPath(); g.moveTo(74, y0); g.lineTo(W - 2, y0); g.stroke();
++      g.beginPath();
++      for (let i = 0; i < arr.length; i++) {
++        const x = 74 + i, y = y0 - arr[i] * (rowH * 0.36);
++        i ? g.lineTo(x, y) : g.moveTo(x, y);
++      }
++      g.strokeStyle = hi ? rgba(A, 0.92) : rgba(L, 0.72);
++      g.lineWidth = 1.25;
++      g.stroke();
++    });
++  }
++
++  function syncEngineVisibility() {
++    const eng = Sound.engine || 'cube';
++    const isArc = eng === 'arcade';
++    if (cubePane) cubePane.hidden = isArc;
++    if (arcadePane) arcadePane.hidden = !isArc;
++    if (modeSel) modeSel.input.value = eng;
++    for (const b of engBtns) b.setAttribute('aria-pressed', String(b.dataset.engine === eng));
++  }
++
++  function chooseEngine(eng) {
++    const next = eng === 'arcade' ? 'arcade' : 'cube';
++    Sound.setEngine(next);
++    syncEngineVisibility();
++    UI.announce(next === 'arcade' ? 'Arcade sound engine' : 'Cube sound engine');
++  }
++
++  function makeEngineSwitch(compact) {
++    const mkBtn = (id, label, title) => {
++      const b = UI.button(label, () => chooseEngine(id), {
++        class: compact ? 'sm eng-pill' : 'sm eng-btn',
++        'data-engine': id,
++        'aria-pressed': String((Sound.engine || 'cube') === id),
++        title,
++      });
++      engBtns.push(b);
++      return b;
++    };
++    return h('div', { class: compact ? 'eng-switch eng-top' : 'eng-switch', role: 'group', 'aria-label': 'Sound engine' },
++      compact ? null : h('span', { class: 'eng-lbl' }, 'Engine'),
++      mkBtn('cube', 'Cube', 'Cube sound engine: wavetable cube & palette'),
++      mkBtn('arcade', 'Arcade', 'Arcade sound engine: 4-channel retro synthesis'));
++  }
++
+   function refresh() {
++    syncEngineVisibility();
+     cancelAnimationFrame(raf);
+     raf = requestAnimationFrame(() => {
++      syncEngineVisibility();
+       if (!voiceSel) return;
+       const st = Sound.state();
+-      for (const d of KNOBS.concat(DRUM_KNOBS, DRUM_FX_KNOBS)) {
++      for (const d of KNOBS.concat(DRUM_KNOBS, DRUM_FX_KNOBS, ARCADE_KNOBS)) {
+         if (knobs[d.name]) knobs[d.name].set(st.P && st.P[d.name] != null ? st.P[d.name] : d.idle ?? d.min);
+       }
+       voiceSel.input.value = st.P ? st.P.voice : 'auto';
+-      modeSel.input.value = Sound.mode;
++      if (modeSel) modeSel.input.value = Sound.engine || 'cube';
+       liteBox.input.checked = Sound.lite;
+       lensBox.input.checked = Sound.lensWave;
+       vowBox.input.checked = Sound.vowelMemoryOn;
+@@ -413,7 +499,8 @@ const SoundUI = (() => {
+       dreamLbl.textContent = app.sigil && st.tables
+         ? `dream ${st.variant} · ${st.tables.D.mult}×+${st.tables.D.off}`
+         : 'cast to dream';
+-      paintScope(); paintCube();
++      if (Sound.engine === 'arcade') paintArcadeScope();
++      else { paintScope(); paintCube(); }
+     });
+   }
+ 
+@@ -451,7 +538,7 @@ const SoundUI = (() => {
+     .kb-ring{position:absolute;inset:0;border-radius:50%;-webkit-mask:radial-gradient(circle,transparent 60%,#000 63%);mask:radial-gradient(circle,transparent 60%,#000 63%)}
+     .kb-cap{position:absolute;inset:8px;border-radius:50%;background:rgba(var(--line),.05);border:1px solid rgba(var(--line),.18)}
+     .kb-cap i{position:absolute;left:50%;top:3px;width:1.5px;height:9px;margin-left:-.75px;background:rgb(var(--accent))}
+-    .kb-label{opacity:.6;letter-spacing:.08em;text-transform:uppercase}
++    .kb-label{opacity:.6;letter-spacing:.06em;text-transform:uppercase;text-align:center;line-height:1.2}
+     .kb-val{font-variant-numeric:tabular-nums;opacity:.55}
+     .kb-span,.kb-bead{position:absolute;inset:-6px;border-radius:50%;pointer-events:none;display:none}
+     .kb-span{-webkit-mask:radial-gradient(circle closest-side,transparent 85%,#000 88%,#000 96%,transparent 99%);mask:radial-gradient(circle closest-side,transparent 85%,#000 88%,#000 96%,transparent 99%)}
+@@ -463,26 +550,37 @@ const SoundUI = (() => {
+     .kb-wrap.kb-flash .kb{animation:kbflash 1.2s ease-out}
+     @keyframes kbflash{0%{box-shadow:0 0 0 0 rgba(var(--accent),.9)}100%{box-shadow:0 0 0 14px rgba(var(--accent),0)}}
+     .snd-scope{width:100%;height:168px;display:block;margin:6px 0 2px}
++    .snd-arc-scope{width:100%;height:124px;display:block;margin:6px 0 8px}
+     .snd-cube{width:100%;height:84px;display:block;margin:0 0 6px;opacity:.9}
++    .eng-switch{display:flex;align-items:center;gap:6px;margin:4px 0 10px}
++    .eng-switch .eng-lbl{font-size:11px;letter-spacing:.2em;text-transform:uppercase;opacity:.6;margin-right:auto}
++    .eng-switch .eng-btn{flex:1;padding:7px 10px}
++    .eng-top{margin:0 6px 0 0;gap:3px}
++    .eng-top .eng-pill{padding:6px 9px;font-size:9px;letter-spacing:.2em}
+     .dream{align-items:center}
+     .dream-lbl{font-style:italic;opacity:.7;font-size:12.5px;min-width:8em;text-align:center}
+     .lib-row{display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid rgba(var(--line),.06)}
+     .lib-name{flex:1;font-style:italic}
+     .snd-h{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;opacity:.6;margin:16px 0 4px}`);
+ 
++  const topRight = document.querySelector('.top-right');
++  if (topRight) topRight.prepend(makeEngineSwitch(true));
++
+   UI.section({ id: 'sound', title: 'Sound & Patch', order: 12, build(el) {
+     const mk = (list) => h('div', { class: 'kb-grid' }, list.map((d) => { const k = knob(d); knobs[d.name] = k; return k.el; }));
+     const grid = mk(KNOBS);
+     const drumGrid = mk(DRUM_KNOBS);
+     const drumFxGrid = mk(DRUM_FX_KNOBS);
++    const arcadeGrid = mk(ARCADE_KNOBS);
+     scope = h('canvas', { class: 'snd-scope', width: 280, height: 168, 'aria-hidden': 'true' });
+     cube = h('canvas', { class: 'snd-cube', width: 280, height: 46, 'aria-hidden': 'true' });
++    arcScope = h('canvas', { class: 'snd-arc-scope', width: 280, height: 124, 'aria-hidden': 'true' });
+ 
+     attachCube(cube);
+ 
+-    modeSel = UI.select({ label: 'Engine', value: Sound.mode,
+-      options: [['sigil', 'Sigil · cube & vox'], ['legacy', 'Legacy · original voices']],
+-      onChange: (v) => Sound.setMode(v) });
++    modeSel = UI.select({ label: 'Sound engine', value: Sound.engine || 'cube',
++      options: [['cube', 'Cube · wavetable & palette'], ['arcade', 'Arcade · 4-channel retro']],
++      onChange: (v) => chooseEngine(v) });
+     voiceSel = UI.select({ label: 'Lead voice', value: 'auto',
+     options: [['auto', 'Auto · per timbre'], ['wave', 'Wavetable'], ['vox', 'Vox · formant'],
+     ['fm', 'FM'], ['bow', 'Bow'], ['bell', 'Bell']],
+@@ -499,7 +597,7 @@ const SoundUI = (() => {
+     libList = h('div', { class: 'lib' });
+     const fileIn = h('input', { type: 'file', accept: 'application/json,.json', style: 'display:none', onchange: () => importFile(fileIn) });
+ 
+-    el.append(
++    cubePane = h('div', { class: 'snd-cube-pane' },
+       UI.note('The sigil is a cube: across is the path drawn letter by letter, up is its spectral character, and every note travels through it.'),
+       ...(typeof Palette === 'undefined' ? [] : [h('p', { class: 'tool-note' }, 'These knobs shape whoever plays: the cube’s voices, and every instrument of the ',
+         h('button', { type: 'button', class: 'rx-link', onclick: () => UI.open('palette') }, 'Palette'), ' too (brightness, width, air, body, sub, motion).')]),
+@@ -516,7 +614,21 @@ const SoundUI = (() => {
+         UI.button('◀ dream', () => Sound.dream(-1)), dreamLbl, UI.button('dream ▶', () => Sound.dream(1))),
+       h('div', { class: 'sgrow' },
+         UI.button('Mutate', () => Sound.mutate()), freezeBtn, UI.button('Reset knobs', () => Sound.reset())),
+-      modeSel, voiceSel, liteBox, lensBox, vowBox,      modeSel, voiceSel, liteBox, lensBox, vowBox, arcBox, verbBox,
++      voiceSel, liteBox, lensBox, vowBox, arcBox, verbBox);
++
++    arcadePane = h('div', { class: 'snd-arcade-pane', hidden: true },
++      UI.note('Four retro channels read the sigil together: FM-style lead, pulse bass, LFSR noise percussion, and an arpeggiated chord channel.'),
++      arcScope,
++      h('div', { class: 'snd-h' }, 'Shared macro controls'),
++      arcadeGrid,
++      h('div', { class: 'sgrow' },
++        UI.button('Mutate', () => Sound.mutate()),
++        UI.button('Reset controls', () => Sound.reset())));
++
++    el.append(
++      makeEngineSwitch(false),
++      cubePane,
++      arcadePane,
+       h('div', { class: 'sgrow' }, keyBtn, UI.button('Copy patch code', () => copy(Sound.code()))),
+       h('div', { class: 'snd-h' }, 'Patch library'),
+       h('div', { class: 'sgrow' },
+@@ -529,6 +641,7 @@ const SoundUI = (() => {
+       libList, fileIn);
+ 
+     renderLibrary();
++    syncEngineVisibility();
+     refresh();
+   } });
+ 
+diff --git a/src/modules/m15-drum-engine.js b/src/modules/m15-drum-engine.js
+index 0cdb19e..418d745 100644
+--- a/src/modules/m15-drum-engine.js
++++ b/src/modules/m15-drum-engine.js
+@@ -394,8 +394,9 @@ const DrumEngine = (() => {
+   }
+ 
+   /** Who writes the kit: a style (05f), if the song has one; else the sigil, or (Classic) the composer. */
++  const isArcade = () => hasSound && Sound.engine === 'arcade';
+   const styled = (cfg) => !!(cfg && cfg.drums && cfg.drums.feel);
+-  const written = (cfg) => S.style === 'sigil' || styled(cfg);
++  const written = (cfg) => !isArcade() && !(cfg && cfg.soundEngine === 'arcade') && (S.style === 'sigil' || styled(cfg));
+ 
+   // Composition: write the part into the score. Classic leaves the composer's bars alone (unless a style plays).
+   Hooks.on('score', (events, ctx) => (written(ctx.cfg) ? Groove.score(events, ctx, optionsFor(ctx.sigil, ctx.cfg)) : undefined));
+@@ -417,7 +418,7 @@ const DrumEngine = (() => {
+    * safe to call on every change. Returns true if the part changed.
+    */
+   function sync(song = app.song, sigil = app.sigil, replan = true) {
+-    if (!song || !sigil || !song.cfg) return false;
++    if (!song || !sigil || !song.cfg || song.cfg.arcade || isArcade()) return false;
+     const opts = optionsFor(sigil, song.cfg);
+     const want = written(song.cfg) ? Groove.sigOf(opts) : null;
+     const have = song.cfg.groove ? song.cfg.groove.sig : null;
+@@ -467,7 +468,7 @@ const DrumEngine = (() => {
+   /* ── Panel: how the kit plays, and how it moves the music ────────────── */
+ 
+   const pct = (v) => `${Math.round(v * 100)}%`;
+-  let styleRow, grooveLbl, grooveInfo, prevBtn, nextBtn, fxRow, duckRow, scRow, secRow, tuneRow, octRow;
++  let det, styleRow, grooveLbl, grooveInfo, prevBtn, nextBtn, fxRow, duckRow, scRow, secRow, tuneRow, octRow;
+   const amounts = {};
+   const AMOUNTS = [
+     ['variation', 'Variation', 'How much each bar answers the one before: extra kicks, flams, side-stick, the shaker’s whispers'],
+@@ -495,6 +496,7 @@ const DrumEngine = (() => {
+   }
+ 
+   function refresh() {
++    if (det) det.hidden = isArcade();
+     if (!duckRow) return;
+     const sigil = written(app.song && app.song.cfg);             // the amounts act on any written part, a style's included
+     styleRow.input.value = S.style;
+@@ -509,7 +511,8 @@ const DrumEngine = (() => {
+     octRow.input.value = S.kickOct;
+   }
+ 
+-  UI.section({ id: 'drums', title: 'Drum Engine', order: 14, build(el) {
++  UI.section({ id: 'drums', title: 'Drum Engine', order: 14, build(el, d) {
++    det = d;
+     UI.css(`.dr-groove{align-items:center}.dr-lbl{flex:1;min-width:6em;text-align:center;font-style:italic;opacity:.7;font-size:12.5px}
+       .dr-info{text-align:center;margin-top:-2px}
+       .dr-h{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;opacity:.6;margin:16px 0 4px}`);
+diff --git a/src/modules/m18-dsp-engine.js b/src/modules/m18-dsp-engine.js
+index 0af4195..9deebdd 100644
+--- a/src/modules/m18-dsp-engine.js
++++ b/src/modules/m18-dsp-engine.js
+@@ -20,21 +20,32 @@ const DspEngine = (() => {
+ 
+   /* ── Sound patch → engine ───────────────────────────────────────────── */
+   const PLAN_KEYS = ['drumX', 'drumY', 'kSub', 'kPunch', 'kDecay', 'kTone', 'sBody', 'sSnap', 'sTone', 'hTone', 'hDecay',
+-    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc'];     // (the palette's choices are baked into the rows)
++    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc',
++    'eng', 'aScale', 'aComplex', 'aSwing', 'aDrum', 'aArp'];
+   const planNow = () => {
+     const st = Sound.state();
+-    return st.P ? PLAN_KEYS.map((k) => st.P[k]).join(',') + `|${Sound.vowelMemoryOn}|${st.variant}` : '';
++    return st.P ? PLAN_KEYS.map((k) => st.P[k]).join(',') + `|${Sound.vowelMemoryOn}|${st.variant}|${Sound.engine}` : '';
++  };
++  const verbNow = () => {
++    const P = Sound.state().P || {};
++    return `${Sound.engine}|${P.aSpace ?? ''}|${Sound.sigilVerbOn}|${Sound.state().variant}|${P.pal | 0}|${P.palOff | 0}|${[P.iLead, P.iAlt, P.iHarm, P.iBell, P.iBass, P.iArp, P.iPad, P.iDrone, P.iComp, P.iPerc].join(',')}`;
+   };
+-  const verbNow = () => { const P = Sound.state().P || {}; return `${Sound.sigilVerbOn}|${Sound.state().variant}|${P.pal | 0}|${P.palOff | 0}|${[P.iLead, P.iAlt, P.iHarm, P.iBell, P.iBass, P.iArp, P.iPad, P.iDrone, P.iComp, P.iPerc].join(',')}`; };
+   let planSig = '', verbSig = '', planT = 0;
+ 
+   function onSound() {
+-    const e = live();
+-    if (!e || !Sound.state().P) return;
++    const e = live(), st = Sound.state();
++    if (!e || !st.P) return;
++    if (Sound.engine === 'arcade' && typeof Arcade !== 'undefined') {
++      if (Arcade.sync(app.song, app.sigil, st.P, true)) e.events = app.song.events;
++      if (st.P.aTempo && Math.abs(60 / e.spb - st.P.aTempo) >= 0.5) {
++        e.setTempo(st.P.aTempo);
++        if (typeof renderMeta === 'function') renderMeta();
++      }
++    }
+     SigilPlan.refreshSections(e);                                   // instant knobs
+-    e.setParams({ waveOff: SigilPlan.waveOffset(), voices: Sound.lite ? Math.min(28, Engine.voiceBudget()) : Engine.voiceBudget() });
++    e.setParams({ waveOff: SigilPlan.waveOffset(), voices: Sound.lite && Sound.engine !== 'arcade' ? Math.min(28, Engine.voiceBudget()) : Engine.voiceBudget() });
+     const ps = planNow();
+-    if (ps !== planSig) { planSig = ps; clearTimeout(planT); planT = setTimeout(() => SigilPlan.replan(live()), 150); }
++    if (ps !== planSig) { planSig = ps; clearTimeout(planT); planT = setTimeout(() => SigilPlan.replan(live()), Sound.engine === 'arcade' ? 75 : 150); }
+     const vs = verbNow();
+     if (vs !== verbSig) { verbSig = vs; SigilPlan.sendReverb(e, app.sigil); }
+   }
+diff --git a/src/modules/m19-motion.js b/src/modules/m19-motion.js
+index 4e4f87c..6ce35fa 100644
+--- a/src/modules/m19-motion.js
++++ b/src/modules/m19-motion.js
+@@ -270,6 +270,7 @@ const MotionPanel = (() => {
+   }
+ 
+   function refresh() {
++    if (det) det.hidden = hasSound && Sound.engine === 'arcade';
+     if (!motionRow) return;
+     const P = patch();
+     motionRow.set(P ? P.motion ?? 1 : 1);
+diff --git a/src/modules/m2-mixer.js b/src/modules/m2-mixer.js
+index 957243e..b26e20c 100644
+--- a/src/modules/m2-mixer.js
++++ b/src/modules/m2-mixer.js
+@@ -20,6 +20,8 @@ const Mixer = (() => {
+ 
+   const BUSES = [['lead', 'Lead'], ['harm', 'Choir'], ['bell', 'Bells'], ['pad', 'Pad'],
+                  ['bass', 'Bass'], ['arp', 'Arpeggio'], ['drums', 'Drums'], ['drone', 'Drone']];
++  const ARC_BUS_LABELS = { lead: 'FM Lead', bass: 'Pulse Bass', arp: 'Arp Chords', drums: 'Noise Perc' };
++  const isArcade = () => typeof Sound !== 'undefined' && Sound.engine === 'arcade';
+ 
+   const BPM_MIN = 40, BPM_MAX = 240;
+   /** Above this tempo the form doubles its verses and choruses. */
+@@ -48,12 +50,15 @@ const Mixer = (() => {
+   function apply(eng = app.engine, instant = false) {
+     if (!eng || !eng.buses) return;
+     const now = eng.ctx.currentTime;
+-    const anySolo = BUSES.some(([k]) => S.solo[k]);
++    const arc = isArcade();
++    const activeBuses = arc ? BUSES.filter(([k]) => ARC_BUS_LABELS[k]) : BUSES;
++    const anySolo = activeBuses.some(([k]) => S.solo[k]);
+     const set = (param, v, tc = 0.05) => (instant ? param.setValueAtTime(v, now) : param.setTargetAtTime(v, now, tc));
+ 
+     for (const [k] of BUSES) {
+       const b = eng.buses[k];
+       if (!b || b._base == null) continue;
++      if (arc && !ARC_BUS_LABELS[k]) { set(b.gain, 0); continue; }
+       set(b.gain, b._base * S.level[k] * (S.mute[k] ? 0 : 1) * (anySolo && !S.solo[k] ? 0 : 1));
+     }
+     /* Volume. The engine's own output leaves headroom, so the fader may go past unity. Under the
+@@ -63,10 +68,11 @@ const Mixer = (() => {
+     set(eng.out.gain, eng.master ? Math.min(vol, 1) : vol);
+     const boost = held ? 20 * Math.log10(vol) : 0;
+     if (eng.setParams && (eng.params.boost || 0) !== boost) eng.setParams({ boost });
+-    if (eng.revReturn) set(eng.revReturn.gain, 0.85 * S.space, 0.08);
++    if (eng.revReturn) set(eng.revReturn.gain, 0.85 * (arc ? 1 : S.space), 0.08);
+   }
+ 
+   Hooks.on('master', (eng) => apply(eng));
++  Hooks.on('engineMode', () => { syncEngineUI(); apply(); });
+ 
+   // Record each bus's post-song-level gain as its baseline, then apply user levels.
+   Hooks.on('buses', (buses, eng) => {
+@@ -81,7 +87,7 @@ const Mixer = (() => {
+     (app.engine && app.song && app.engine.song === app.song ? 60 / app.engine.spb : S.lock || 90);
+ 
+   // Lock applies at composition time, AFTER moods and attunement, so it wins.
+-  Hooks.on('compose', (cfg) => { if (S.lock) cfg.bpm = clamp(S.lock, BPM_MIN, BPM_MAX); }, 50);
++  Hooks.on('compose', (cfg) => { if (S.lock && cfg.soundEngine !== 'arcade') cfg.bpm = clamp(S.lock, BPM_MIN, BPM_MAX); }, 50);
+ 
+   // Fast tempos: double the verses and choruses so the song keeps its length.
+   Hooks.on('plan', (plan, cfg) => {
+@@ -91,7 +97,7 @@ const Mixer = (() => {
+   }, 50);
+ 
+   Hooks.on('song', (sig, song) => {
+-    if (!S.lock && S.tempo !== 1) app.engine.setTempo(clamp(song.bpm * S.tempo, BPM_MIN, BPM_MAX));
++    if (!isArcade() && !S.lock && S.tempo !== 1) app.engine.setTempo(clamp(song.bpm * S.tempo, BPM_MIN, BPM_MAX));
+     renderMeta();
+     syncTempo(true);
+   });
+@@ -100,15 +106,22 @@ const Mixer = (() => {
+     if (!app.song) return;
+     const i = parts.findIndex((p) => /bpm$/.test(p)), eff = Math.round(effective());
+     if (i >= 0) {
+-      parts[i] = `${eff} bpm${S.lock ? ' · locked'
++      if (isArcade()) parts[i] = `${eff} bpm`;
++      else parts[i] = `${eff} bpm${S.lock ? ' · locked'
+                 : eff !== app.song.bpm ? ` (${Math.round((eff / app.song.bpm) * 100)}%)` : ''}`;
+     }
+   });
+ 
+-  let raf = 0, pending = 0, tempoRow, lockBox, tempoInfo;
++  let raf = 0, pending = 0, tempoRow, lockBox, tempoInfo, tapRow, scenesRow;
+ 
+   function setBpm(bpm) {
+     bpm = clamp(Math.round(bpm), BPM_MIN, BPM_MAX);
++    if (isArcade() && typeof Sound !== 'undefined') {
++      Sound.set('aTempo', clamp(bpm, 60, 220));
++      if (app.engine && app.engine.song) app.engine.setTempo(clamp(bpm, 60, 220));
++      renderMeta();
++      return;
++    }
+     if (S.lock) S.lock = bpm;
+     else if (app.song) S.tempo = bpm / app.song.bpm;
+ 
+@@ -170,6 +183,18 @@ const Mixer = (() => {
+     }
+   }
+ 
++  function syncEngineUI() {
++    if (!tempoRow) return;
++    const arc = isArcade();
++    for (const el of [tempoRow, lockBox, tapRow, tempoInfo, space, scenesRow]) if (el) el.hidden = arc;
++    for (const [k, label] of BUSES) {
++      const r = rows[k];
++      if (!r || !r.strip) continue;
++      r.strip.hidden = arc && !ARC_BUS_LABELS[k];
++      r.labelEl.textContent = arc ? (ARC_BUS_LABELS[k] || label) : label;
++    }
++  }
++
+   UI.section({ id: 'mixer', title: 'Mixer & Tempo', order: 25, build(el) {
+     UI.css(`.mx-strip{display:grid;grid-template-columns:64px 1fr 30px 30px;align-items:center;gap:8px;margin:4px 0;font-size:13px}
+       .mx-strip>span{opacity:.72}.mx-strip button{padding:4px 0;font-size:10px;letter-spacing:.05em}`);
+@@ -200,17 +225,17 @@ const Mixer = (() => {
+     space  = UI.slider({ label: 'Space', min: 0, max: 2, step: 0.01, value: S.space, format: pct,
+                          onInput: (v) => { S.space = v; apply(); save(); } });
+ 
+-    el.append(tempoRow, lockBox,
+-      h('div', { class: 'sgrow' },
+-        UI.button('Tap', tap, { title: 'Tap tempo (B)' }),
+-        UI.button('Native', () => {
+-          S.lock = 0; S.tempo = 1;
+-          if (app.engine && app.song) app.engine.setTempo(app.song.bpm);
+-          pending = 0; save(); renderMeta(); syncTempo(true);
+-        }, { title: 'Return to the sigil’s own tempo' })),
+-      tempoInfo, master, space,
+-      h('div', { class: 'sgrow' }, SCENES.map(([name, fn]) =>
+-        UI.button(name, () => { fn(); syncLevels(); apply(); save(); UI.announce(`${name} mix`); }))));
++    tapRow = h('div', { class: 'sgrow' },
++      UI.button('Tap', tap, { title: 'Tap tempo (B)' }),
++      UI.button('Native', () => {
++        S.lock = 0; S.tempo = 1;
++        if (app.engine && app.song) app.engine.setTempo(app.song.bpm);
++        pending = 0; save(); renderMeta(); syncTempo(true);
++      }, { title: 'Return to the sigil’s own tempo' }));
++    scenesRow = h('div', { class: 'sgrow' }, SCENES.map(([name, fn]) =>
++      UI.button(name, () => { fn(); syncLevels(); apply(); save(); UI.announce(`${name} mix`); })));
++
++    el.append(tempoRow, lockBox, tapRow, tempoInfo, master, space, scenesRow);
+ 
+     for (const [k, label] of BUSES) {
+       const slider = UI.slider({ label, min: 0, max: 1.5, step: 0.01, value: S.level[k], format: pct,
+@@ -219,18 +244,20 @@ const Mixer = (() => {
+         { title: `Mute ${label}`, 'aria-label': `Mute ${label}`, 'aria-pressed': 'false' });
+       const s = UI.button('S', () => { S.solo[k] = !S.solo[k]; syncLevels(); apply(); save(); },
+         { title: `Solo ${label}`, 'aria-label': `Solo ${label}`, 'aria-pressed': 'false' });
+-      rows[k] = { slider, m, s };
+-      el.append(h('div', { class: 'mx-strip' }, h('span', {}, label), slider.input, m, s));
++      const labelEl = h('span', {}, label);
++      const strip = h('div', { class: 'mx-strip' }, labelEl, slider.input, m, s);
++      rows[k] = { slider, m, s, strip, labelEl };
++      el.append(strip);
+     }
+ 
+     el.append(h('div', { class: 'sgrow' }, UI.button('Reset all', () => {
+       Object.assign(S, defaults());
+       syncLevels(); apply();
+-      if (app.engine && app.song) app.engine.setTempo(app.song.bpm);
++      if (!isArcade() && app.engine && app.song) app.engine.setTempo(app.song.bpm);
+       pending = 0; save(); renderMeta(); syncTempo(true);
+     })));
+ 
+-    syncLevels(); syncTempo(true);
++    syncLevels(); syncTempo(true); syncEngineUI();
+   } });
+ 
+   UI.key('b', 'Tap tempo', tap, { group: 'Performance', display: 'B' });
+diff --git a/src/modules/m23-palette.js b/src/modules/m23-palette.js
+index e791781..0e6b4b1 100644
+--- a/src/modules/m23-palette.js
++++ b/src/modules/m23-palette.js
+@@ -33,7 +33,7 @@ const PalettePanel = (() => {
+ 
+   /** What the compiler will play with, for the song that is loaded. */
+   function current() {
+-    if (!app.sigil || !app.song || typeof Palette === 'undefined') return null;
++    if ((hasSound && Sound.engine === 'arcade') || !app.sigil || !app.song || typeof Palette === 'undefined') return null;
+     const P = patch();
+     return P ? Palette.resolve(app.sigil, app.song.cfg, P) : null;
+   }
+@@ -104,6 +104,7 @@ const PalettePanel = (() => {
+   }
+ 
+   function refresh() {
++    if (det) det.hidden = hasSound && Sound.engine === 'arcade';
+     if (!listEl) return;
+     deal = current();
+     const P = P0(), on = !!deal;
+diff --git a/src/modules/m9-lens.js b/src/modules/m9-lens.js
+index 7d8afd8..69d5cd6 100644
+--- a/src/modules/m9-lens.js
++++ b/src/modules/m9-lens.js
+@@ -83,6 +83,10 @@ const LiveLens = (() => {
+       case 'pad': case 'bass': case 'arp': case 'comp': {
+         if (ev.chord == null) return ev;
+         const c = mapChord(ev.chord, song);
++        if (ev.arc && typeof Arcade !== 'undefined') {
++          const p = Arcade.pitch(ev, c, song, ev.chord2 != null ? mapChord(ev.chord2, song) : undefined);
++          return Array.isArray(p) ? { ...ev, midi: p[0], midis: p } : { ...ev, midi: p, from: undefined };
++        }
+         // A note a style wrote (05f) knows how to find its own pitch for a chord: a power chord stays a power chord.
+         if (ev.st && typeof Style !== 'undefined') {
+           const p = Style.pitch(ev, c, song, ev.chord2 != null ? mapChord(ev.chord2, song) : undefined);
+diff --git a/styles/ui-kit.css b/styles/ui-kit.css
+index b0085bf..2de37f5 100644
+--- a/styles/ui-kit.css
++++ b/styles/ui-kit.css
+@@ -122,4 +122,5 @@
+    .sr-only {
+      position: absolute !important; width: 1px; height: 1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+-   }
+\ No newline at end of file
++   }
++   [hidden] { display: none !important; }
+\ No newline at end of file
+diff --git a/tests/arcade.spec.mjs b/tests/arcade.spec.mjs
+new file mode 100644
+index 0000000..b375bd7
+--- /dev/null
++++ b/tests/arcade.spec.mjs
+@@ -0,0 +1,575 @@
++import { readFileSync } from 'node:fs';
++import { createContext, runInContext } from 'node:vm';
++import { join } from 'node:path';
++import { scoreSandbox, bootCore, realm, WORDS } from '../tools/voice-lab.mjs';
++
++const QUICK = process.argv.includes('--quick');
++let pass = 0, fail = 0;
++const ok = (cond, label, detail) => {
++  if (cond) { pass++; console.log(`  ✓ ${label}`); }
++  else { fail++; console.error(`  ✗ ${label}${detail ? `\n      ${detail}` : ''}`); }
++};
++const group = (name, fn) => {
++  console.log(`\n${name}`);
++  try { fn(); } catch (e) { ok(false, `${name}: threw`, String((e && e.stack) || e)); }
++};
++
++const run = scoreSandbox(['src/modules/m9-lens.js'].filter(() => false));
++const J = (code) => JSON.parse(run(`JSON.stringify(${code})`));
++const D = bootCore();
++
++group('§1 · 4-channel retro composition & lossless switching', () => {
++  const res = J(`(() => {
++    const out = [];
++    for (const w of ${JSON.stringify(WORDS)}) {
++      const sg = buildSigil(w);
++      const song = Groove.apply(composeSong(sg), sg, {});
++      const cubeSnap = song.events.map((e) => [e.beat, e.type, e.midi || 0, +(e.vel || 0).toFixed(4)]).join(';');
++      const cubeKicks = song.kicks.slice(), cubeSnares = song.snares.slice();
++
++      Arcade.apply(song, sg, { eng: 1 });
++      const types = [...new Set(song.events.map((e) => e.type))];
++      const hasCubeOnly = types.some((t) => ['pad', 'drone', 'harm', 'bell', 'comp', 'swell'].includes(t));
++
++      const spec = SigilPlan.defaultSpec(sg, song);
++      spec.P = { ...spec.P, eng: 1, iLead: 10, iBass: 16, iPad: 79, iArp: 30, iPerc: 51 };
++      const compiled = SigilPlan.compile(song, sg, { spec });
++      const S = SigilDSP.STRIDE, kinds = new Set(), buses = new Set();
++      let sorted = true, finite = true;
++      for (let i = 0; i < compiled.count; i++) {
++        const o = i * S;
++        if (i && compiled.events[o] < compiled.events[o - S]) sorted = false;
++        for (let j = 0; j < S; j++) if (!Number.isFinite(compiled.events[o + j])) finite = false;
++        kinds.add(compiled.events[o + 1] & 255);
++        buses.add(compiled.events[o + 2]);
++      }
++
++      Arcade.restore(song);
++      const restoredSnap = song.events.map((e) => [e.beat, e.type, e.midi || 0, +(e.vel || 0).toFixed(4)]).join(';');
++
++      out.push({
++        w,
++        hasCubeOnly,
++        sorted,
++        finite,
++        noPaletteTable: compiled.inst === null && compiled.pal === null,
++        noMotionTable: compiled.auto === null,
++        kinds: [...kinds].sort((a, b) => a - b),
++        buses: [...buses].sort((a, b) => a - b),
++        restoredExact: cubeSnap === restoredSnap
++          && JSON.stringify(cubeKicks) === JSON.stringify(song.kicks)
++          && JSON.stringify(cubeSnares) === JSON.stringify(song.snares),
++      });
++    }
++    return out;
++  })()`);
++
++  const ARC_KINDS = [D.KIND.ARC_LEAD, D.KIND.ARC_BASS, D.KIND.ARC_PERC, D.KIND.ARC_ARP];
++  const ARC_BUSES = [D.BUS.lead, D.BUS.bass, D.BUS.arp, D.BUS.drums].sort((a, b) => a - b);
++
++  for (const r of res) {
++    ok(!r.hasCubeOnly && r.sorted && r.finite, `${r.w}: pure 4-channel retro score, sorted and finite`);
++    ok(r.kinds.every((k) => ARC_KINDS.includes(k)) && r.kinds.length === 4,
++      `${r.w}: all instrument parts including drums use the 4 Arcade DSP voices (${r.kinds.join(',')})`);
++    ok(JSON.stringify(r.buses) === JSON.stringify(ARC_BUSES) && r.noPaletteTable && r.noMotionTable,
++      `${r.w}: routed strictly to the 4 channels, ignoring Palette and Cube Motion`);
++    ok(r.restoredExact, `${r.w}: switching back to Cube restores the exact original score, kicks, and snares`);
++  }
++
++  const rawFallback = J(`(() => {
++    const sg = buildSigil('KRSTVM'), song = composeSong(sg);
++    song.events.push(
++      { beat: 2, type: 'tom', tom: 1, vel: 0.7 },
++      { beat: 2.25, type: 'perc', pi: 2, vel: 0.7 },
++      { beat: 2.5, type: 'rim', vel: 0.6 },
++      { beat: 2.75, type: 'clap', vel: 0.7 },
++      { beat: 3.0, type: 'ride', vel: 0.6 },
++      { beat: 3.25, type: 'comp', midi: 64, dur: 0.5, vel: 0.6 }
++    );
++    song.events.sort((a, b) => a.beat - b.beat);
++    const spec = SigilPlan.defaultSpec(sg, song);
++    spec.P = { ...spec.P, eng: 1 };
++    const p = SigilPlan.compile(song, sg, { spec, rawScore: true });
++    const kinds = new Set();
++    for (let i = 0; i < p.count; i++) kinds.add(p.events[i * 16 + 1] & 255);
++    return [...kinds].sort((a, b) => a - b);
++  })()`);
++  ok(rawFallback.every((k) => ARC_KINDS.includes(k)), `even raw score event types (pad, drone, bell, harm, comp, tom, perc, rim, clap, ride, swell) compile 100% to Arcade voices (${rawFallback.join(',')})`);
++});
++
++group('§2 · the 12 shared macro parameter controls & codec', () => {
++  const macros = J(`(() => {
++    const want = [
++      'Tempo', 'Scale density', 'Complexity', 'Swing',
++      'Lead brightness', 'FM depth', 'Pulse width', 'Bass drive',
++      'Drum density', 'Noise decay', 'Arpeggio rate', 'Space'
++    ];
++    const got = Arcade.MACROS.map((m) => m.label);
++    const patch = {
++      eng: 1, aTempo: 142, aScale: 0.72, aComplex: 0.64, aSwing: 0.18,
++      aBright: 0.81, aFm: 0.67, aPw: 0.25, aDrive: 0.48,
++      aDrum: 0.75, aDecay: 1.15, aArp: 0.62, aSpace: 0.44
++    };
++    const enc = SoundDesign.encodePatch(patch, 2);
++    const dec = SoundDesign.decodePatch(enc);
++
++    const sg = buildSigil('KRSTVM'), baseSong = composeSong(sg);
++    const wr = (over) => Arcade.write({
++      sections: baseSong.sections.map((s) => ({ ...s })),
++      phrases: baseSong.phrases, P: baseSong.P, bpm: baseSong.bpm, total: baseSong.total, cfg: baseSong.cfg
++    }, sg, over).events;
++
++    const eSparse = wr({ aScale: 0.08, aComplex: 0.2 }), eDense = wr({ aScale: 0.95, aComplex: 0.2 });
++    const eSimple = wr({ aComplex: 0.05, aScale: 0.5 }), eComplex = wr({ aComplex: 0.95, aScale: 0.5 });
++    const eStraight = wr({ aSwing: 0, aDrum: 0.8, aArp: 0.5 }), eSwung = wr({ aSwing: 0.45, aDrum: 0.8, aArp: 0.5 });
++    const eNoDrums = wr({ aDrum: 0 }), eBusyDrums = wr({ aDrum: 0.95, aComplex: 0.8 });
++    const eSlowArp = wr({ aArp: 0.05 }), eFastArp = wr({ aArp: 0.75 }), eChipArp = wr({ aArp: 0.95 });
++
++    const pcs = (evs) => new Set(evs.filter((e) => e.type === 'lead').map((e) => ((e.midi % 12) + 12) % 12)).size;
++    const drumTypes = new Set(['kick', 'snare', 'hat', 'tom', 'crash']);
++    const offGrid = (evs) => evs.filter((e) => Math.abs(e.beat * 4 - Math.round(e.beat * 4)) > 0.01).length;
++
++    const checkMono = (evs, type) => {
++      const list = evs.filter((e) => e.type === type);
++      for (let i = 1; i < list.length; i++) {
++        if (list[i].beat < list[i - 1].beat + list[i - 1].dur - 1e-3) return false;
++      }
++      return true;
++    };
++
++    const jFast = SigilPlan.renderJob(baseSong, sg, { sr: 44100, spec: { ...SigilPlan.defaultSpec(sg, baseSong), P: { ...SigilPlan.defaultSpec(sg, baseSong).P, eng: 1, aTempo: 160, aSpace: 0 } } });
++    const jSlow = SigilPlan.renderJob(baseSong, sg, { sr: 44100, spec: { ...SigilPlan.defaultSpec(sg, baseSong), P: { ...SigilPlan.defaultSpec(sg, baseSong).P, eng: 1, aTempo: 90, aSpace: 0.9 } } });
++
++    return {
++      labelsMatch: JSON.stringify(got) === JSON.stringify(want),
++      roundtrip: JSON.stringify(dec.o) === JSON.stringify(patch) && dec.variant === 2,
++      scaleNotes: [eSparse.filter((e) => e.type === 'lead').length, eDense.filter((e) => e.type === 'lead').length],
++      scalePcs: [pcs(eSparse), pcs(eDense)],
++      complexCount: [eSimple.length, eComplex.length],
++      monoLead: checkMono(eComplex, 'lead'),
++      monoBass: checkMono(eComplex, 'bass'),
++      swingOffGrid: [offGrid(eStraight), offGrid(eSwung)],
++      drumCounts: [eNoDrums.filter((e) => drumTypes.has(e.type)).length, eBusyDrums.filter((e) => drumTypes.has(e.type)).length],
++      arpCounts: [eSlowArp.filter((e) => e.type === 'arp').length, eFastArp.filter((e) => e.type === 'arp').length],
++      chipFlag: eChipArp.some((e) => e.type === 'arp' && e.chip === 1 && e.midis && e.midis.length >= 3),
++      tempoBpm: [jFast.bpm, jSlow.bpm],
++      spaceRev: [jFast.params.reverb, jSlow.params.reverb],
++    };
++  })()`);
++
++  ok(macros.labelsMatch, 'all 12 shared macro parameters exist with the exact requested labels');
++  ok(macros.roundtrip, 'all 12 macro parameters + engine flag survive patch encode/decode roundtrip');
++  ok(macros.scaleNotes[1] > macros.scaleNotes[0] && macros.scalePcs[1] >= macros.scalePcs[0],
++    `Scale density shapes melodic/harmonic pitch density (${macros.scaleNotes[0]} → ${macros.scaleNotes[1]} lead notes)`);
++  ok(macros.complexCount[1] > macros.complexCount[0] && macros.monoLead && macros.monoBass,
++    `Complexity enriches all 4 channels (${macros.complexCount[0]} → ${macros.complexCount[1]} events) while keeping Lead and Bass monophonic`);
++  ok(macros.swingOffGrid[0] === 0 && macros.swingOffGrid[1] > 100,
++    `Swing shifts off-beat sixteenths across the 4 channels (${macros.swingOffGrid[0]} → ${macros.swingOffGrid[1]} swung events)`);
++  ok(macros.drumCounts[0] === 0 && macros.drumCounts[1] > 200,
++    `Drum density scales Channel 3 from silent (${macros.drumCounts[0]}) to full arcade groove + fills (${macros.drumCounts[1]})`);
++  ok(macros.arpCounts[1] > macros.arpCounts[0] * 2 && macros.chipFlag,
++    `Arpeggio rate scales Channel 4 from 1/8 (${macros.arpCounts[0]}) to 1/32 (${macros.arpCounts[1]}) and VBI chip-chords`);
++  ok(macros.tempoBpm[0] === 160 && macros.tempoBpm[1] === 90, 'Tempo macro controls render/playback BPM directly');
++  ok(macros.spaceRev[0] === 0 && macros.spaceRev[1] > 0.9, 'Space macro controls reverb/echo send from completely dry (0) to lush hall');
++});
++
++if (!QUICK) {
++  group('§3 · DSP audio synthesis of the 4 Arcade voices & macro timbre controls', () => {
++    function renderVoice(kind, bus, f, p, secPatch, secs = 1.2, durBeats = 1.0) {
++      const sr = 44100;
++      const core = new D.Core(sr, { warm: false });
++      const sec = new Float64Array(D.PSTRIDE);
++      sec[D.PA.ALEAD] = secPatch.aBright ?? 0.65;
++      sec[D.PA.AFM] = secPatch.aFm ?? 0.5;
++      sec[D.PA.APW] = secPatch.aPw ?? 0.25;
++      sec[D.PA.ADRIVE] = secPatch.aDrive ?? 0.35;
++      sec[D.PA.ADECAY] = secPatch.aDecay ?? 0.7;
++      sec[D.PA.AARP] = secPatch.aArp ?? 0.5;
++      sec[D.PA.ECHO] = secPatch.aSpace ?? 0;
++      sec[D.PA.DRUMS] = 1;
++      sec[D.PA.BITS] = 16; sec[D.PA.HOLD] = 1; sec[D.PA.DBITS] = 16; sec[D.PA.DHOLD] = 1;
++      const ev = new Float64Array(D.STRIDE);
++      ev[D.EV.BEAT] = 0; ev[D.EV.KIND] = kind; ev[D.EV.BUS] = bus;
++      ev[D.EV.F] = f; ev[D.EV.DUR] = durBeats; ev[D.EV.VEL] = 0.85; ev[D.EV.SEED] = 12345;
++      (p || []).forEach((v, i) => { ev[D.EV.P0 + i] = v; });
++      core.command({ type: 'plan', events: ev, count: 1, sections: sec, nSec: 1, total: 8, bpm: 120, passes: 1 });
++      core.command({ type: 'params', reverb: (secPatch.aSpace ?? 0) * 1.2 });
++      core.command({ type: 'play', beat: 0, pass: 0, chase: false });
++      core.snapFx();
++      const N = Math.round(secs * sr), L = new Float32Array(N), R = new Float32Array(N);
++      const bl = new Float32Array(D.BLOCK), br = new Float32Array(D.BLOCK);
++      for (let pos = 0; pos < N; pos += D.BLOCK) {
++        core.process(bl, br, D.BLOCK);
++        const take = Math.min(D.BLOCK, N - pos);
++        L.set(bl.subarray(0, take), pos);
++        R.set(br.subarray(0, take), pos);
++      }
++      let energy = 0, tailEnergy = 0, peak = 0, hfDiff = 0, finite = true;
++      const tailFrom = Math.floor(N * 0.75);
++      for (let i = 0; i < N; i++) {
++        if (!Number.isFinite(L[i]) || !Number.isFinite(R[i])) finite = false;
++        const a = Math.abs(L[i]);
++        if (a > peak) peak = a;
++        energy += L[i] * L[i];
++        if (i >= tailFrom) tailEnergy += L[i] * L[i];
++        if (i > 0) { const d = L[i] - L[i - 1]; hfDiff += d * d; }
++      }
++      return { L, R, finite, nans: core.nans, peak, rms: Math.sqrt(energy / N), tailRms: Math.sqrt(tailEnergy / (N - tailFrom)), hfRatio: hfDiff / (energy + 1e-12) };
++    }
++
++    const leadDark = renderVoice(D.KIND.ARC_LEAD, D.BUS.lead, 440, [0, 2, 3], { aBright: 0.05, aFm: 0.5 });
++    const leadBright = renderVoice(D.KIND.ARC_LEAD, D.BUS.lead, 440, [0, 2, 3], { aBright: 0.95, aFm: 0.5 });
++    ok(leadDark.finite && leadBright.finite && leadBright.hfRatio > leadDark.hfRatio * 1.5,
++      `Lead brightness opens high-frequency spectrum of ARC_LEAD (${leadDark.hfRatio.toFixed(3)} → ${leadBright.hfRatio.toFixed(3)})`);
++
++    const leadPure = renderVoice(D.KIND.ARC_LEAD, D.BUS.lead, 330, [0, 2, 3], { aBright: 0.75, aFm: 0 });
++    const leadFm = renderVoice(D.KIND.ARC_LEAD, D.BUS.lead, 330, [0, 2, 3], { aBright: 0.75, aFm: 0.95 });
++    ok(leadPure.finite && leadFm.finite && leadFm.hfRatio > leadPure.hfRatio * 1.8,
++      `FM depth drives FM sidebands on ARC_LEAD (${leadPure.hfRatio.toFixed(3)} → ${leadFm.hfRatio.toFixed(3)})`);
++
++    const bassNarrow = renderVoice(D.KIND.ARC_BASS, D.BUS.bass, 110, [], { aPw: 0.12, aDrive: 0.2 });
++    const bassSquare = renderVoice(D.KIND.ARC_BASS, D.BUS.bass, 110, [], { aPw: 0.5, aDrive: 0.2 });
++    let diffPw = 0;
++    for (let i = 0; i < 4000; i++) diffPw += Math.abs(bassNarrow.L[i] - bassSquare.L[i]);
++    ok(bassNarrow.finite && bassSquare.finite && diffPw > 20,
++      `Pulse width reshapes ARC_BASS duty cycle cleanly (waveform L1 diff ${diffPw.toFixed(1)})`);
++
++    const bassClean = renderVoice(D.KIND.ARC_BASS, D.BUS.bass, 82.4, [], { aPw: 0.25, aDrive: 0 });
++    const bassDriven = renderVoice(D.KIND.ARC_BASS, D.BUS.bass, 82.4, [], { aPw: 0.25, aDrive: 1 });
++    ok(bassClean.finite && bassDriven.finite && bassDriven.hfRatio > bassClean.hfRatio * 1.4,
++      `Bass drive saturates ARC_BASS with upper harmonics (${bassClean.hfRatio.toFixed(4)} → ${bassDriven.hfRatio.toFixed(4)})`);
++
++    const snareShort = renderVoice(D.KIND.ARC_PERC, D.BUS.drums, 180, [1, 0, 1], { aDecay: 0.2 }, 0.8, 0.25);
++    const snareLong = renderVoice(D.KIND.ARC_PERC, D.BUS.drums, 180, [1, 0, 1], { aDecay: 1.9 }, 0.8, 0.25);
++    ok(snareShort.finite && snareLong.finite && snareLong.rms > snareShort.rms * 1.35,
++      `Noise decay lengthens LFSR noise percussion envelope (${snareShort.rms.toFixed(4)} → ${snareLong.rms.toFixed(4)} rms)`);
++
++    for (const [sub, name] of [[0, 'kick'], [1, 'snare'], [2, 'hat'], [3, 'tom'], [4, 'crash']]) {
++      const h = renderVoice(D.KIND.ARC_PERC, D.BUS.drums, 120, [sub, sub % 2, 1], { aDecay: 0.7 }, 1.2, 0.25);
++      ok(h.finite && h.nans === 0 && h.peak > 0.05 && h.peak <= 1.05, `ARC_PERC ${name}: finite, audible, bounded (peak ${h.peak.toFixed(2)})`);
++    }
++
++    const arpChip = renderVoice(D.KIND.ARC_ARP, D.BUS.arp, 261.63, [329.63, 392.0, 523.25, 0, 0, 1], { aArp: 0.9, aBright: 0.7 }, 1.0, 1.5);
++    ok(arpChip.finite && arpChip.nans === 0 && arpChip.rms > 0.02 && arpChip.peak <= 1.05,
++      `ARC_ARP VBI chip-chord: finite, audible, bounded (rms ${arpChip.rms.toFixed(3)})`);
++
++    const drySpace = renderVoice(D.KIND.ARC_LEAD, D.BUS.lead, 440, [0, 2, 3], { aSpace: 0 }, 1.6, 0.4);
++    const wetSpace = renderVoice(D.KIND.ARC_LEAD, D.BUS.lead, 440, [0, 2, 3], { aSpace: 0.95 }, 1.6, 0.4);
++    ok(drySpace.tailRms < 1e-4 && wetSpace.tailRms > 0.003,
++      `Space macro: dry tail is silent (${drySpace.tailRms.toExponential(1)}), wet tail rings with stereo echo & hall (${wetSpace.tailRms.toFixed(4)})`);
++
++    const job = realm(run(`(() => {
++      const sg = buildSigil('KRSTVM'), song = composeSong(sg);
++      Arcade.apply(song, sg, { eng: 1 });
++      const spec = SigilPlan.defaultSpec(sg, song);
++      spec.P = { ...spec.P, eng: 1 };
++      return SigilPlan.renderJob(song, sg, { sr: 44100, spb: 60 / 132, passes: 1, spec });
++    })()`));
++    const r1 = D.renderRange(job, 4, 12, 4);
++    const r2 = D.renderRange(job, 4, 12, 4);
++    let same = true, pk = 0, sumSq = 0;
++    for (let i = 0; i < r1.L.length; i++) {
++      if (r1.L[i] !== r2.L[i] || r1.R[i] !== r2.R[i]) same = false;
++      const a = Math.max(Math.abs(r1.L[i]), Math.abs(r1.R[i]));
++      if (a > pk) pk = a;
++      sumSq += r1.L[i] * r1.L[i] + r1.R[i] * r1.R[i];
++    }
++    ok(same && pk > 0.1 && pk <= 1.05 && sumSq > 100, `full 4-channel Arcade song render is deterministic, lively and bounded (peak ${pk.toFixed(3)})`);
++  });
++}
++
++group('§4 · UI engine switching & exclusive display of controls', () => {
++  const html = readFileSync(join(process.cwd(), 'index.html'), 'utf8');
++  const scriptSrcs = [...html.matchAll(/<script\s+src="([^"]+)"/g)].map((m) => m[1]);
++  ok(scriptSrcs.includes('src/core/05l-arcade.js'), 'index.html loads src/core/05l-arcade.js in script order');
++
++  class FakeNode {
++    constructor(tag, doc) {
++      this.tagName = String(tag || 'DIV').toUpperCase();
++      this.ownerDocument = doc;
++      this.children = [];
++      this.parentElement = null;
++      this.className = '';
++      this.id = '';
++      this.hidden = false;
++      this.open = false;
++      this.inert = false;
++      this.disabled = false;
++      this.checked = false;
++      this.value = '';
++      this.textContent = '';
++      this.title = '';
++      this.tabIndex = 0;
++      this.style = { setProperty() {}, cssText: '' };
++      this.dataset = {};
++      this.attributes = {};
++      this.listeners = {};
++      this._innerHTML = '';
++      const self = this;
++      this.classList = {
++        _set() { return new Set(String(self.className || '').split(/\s+/).filter(Boolean)); },
++        add(...cs) { const s = this._set(); cs.forEach((c) => c && s.add(c)); self.className = [...s].join(' '); },
++        remove(...cs) { const s = this._set(); cs.forEach((c) => s.delete(c)); self.className = [...s].join(' '); },
++        toggle(c, f) { const s = this._set(); const on = f !== undefined ? !!f : !s.has(c); if (on) s.add(c); else s.delete(c); self.className = [...s].join(' '); return on; },
++        contains(c) { return this._set().has(c); },
++      };
++    }
++    get innerHTML() { return this._innerHTML; }
++    set innerHTML(v) { this._innerHTML = v; if (v === '') this.children = []; }
++    setAttribute(k, v) {
++      this.attributes[k] = String(v);
++      if (k === 'id') this.id = String(v);
++      if (k === 'class') this.className = String(v);
++      if (k.startsWith('data-')) {
++        const camel = k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
++        this.dataset[camel] = String(v);
++      }
++    }
++    getAttribute(k) { return k === 'id' ? this.id : k === 'class' ? this.className : this.attributes[k] ?? null; }
++    append(...nodes) {
++      for (const n of nodes) {
++        const child = typeof n === 'string' ? new FakeNode('#text', this.ownerDocument) : n;
++        if (typeof n === 'string') child.textContent = n;
++        if (child && child.parentElement) {
++          const idx = child.parentElement.children.indexOf(child);
++          if (idx >= 0) child.parentElement.children.splice(idx, 1);
++        }
++        if (child) { child.parentElement = this; this.children.push(child); }
++      }
++    }
++    prepend(...nodes) {
++      for (let i = nodes.length - 1; i >= 0; i--) {
++        const n = nodes[i];
++        if (!n) continue;
++        if (n.parentElement) {
++          const idx = n.parentElement.children.indexOf(n);
++          if (idx >= 0) n.parentElement.children.splice(idx, 1);
++        }
++        n.parentElement = this;
++        this.children.unshift(n);
++      }
++    }
++    appendChild(n) { this.append(n); return n; }
++    insertBefore(n, ref) {
++      if (!ref) { this.append(n); return n; }
++      if (n.parentElement) {
++        const i = n.parentElement.children.indexOf(n);
++        if (i >= 0) n.parentElement.children.splice(i, 1);
++      }
++      n.parentElement = this;
++      const at = this.children.indexOf(ref);
++      if (at >= 0) this.children.splice(at, 0, n); else this.children.push(n);
++      return n;
++    }
++    before(n) { if (this.parentElement) this.parentElement.insertBefore(n, this); }
++    after(n) {
++      if (!this.parentElement) return;
++      const i = this.parentElement.children.indexOf(this);
++      this.parentElement.insertBefore(n, this.parentElement.children[i + 1] || null);
++    }
++    replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
++    remove() {
++      if (!this.parentElement) return;
++      const i = this.parentElement.children.indexOf(this);
++      if (i >= 0) this.parentElement.children.splice(i, 1);
++      this.parentElement = null;
++    }
++    contains(other) {
++      for (let p = other; p; p = p.parentElement) if (p === this) return true;
++      return false;
++    }
++    closest(sel) {
++      for (let p = this; p; p = p.parentElement) if (matches(p, sel)) return p;
++      return null;
++    }
++    addEventListener(type, fn) { (this.listeners[type] || (this.listeners[type] = [])).push(fn); }
++    dispatchEvent(ev) {
++      ev.target = ev.target || this;
++      ev.currentTarget = this;
++      for (const fn of this.listeners[ev.type] || []) fn(ev);
++    }
++    click() { this.dispatchEvent({ type: 'click', preventDefault() {}, stopPropagation() {} }); }
++    focus() {}
++    blur() {}
++    scrollIntoView() {}
++    getBoundingClientRect() { return { left: 0, top: 0, width: 300, height: 100 }; }
++    get options() { return this.children.filter((c) => c.tagName === 'OPTION'); }
++    get rows() { return this.children.filter((c) => c.tagName === 'TR'); }
++    get cells() { return this.children.filter((c) => c.tagName === 'TD' || c.tagName === 'TH'); }
++    getContext() {
++      return {
++        clearRect() {}, fillRect() {}, strokeRect() {}, beginPath() {}, closePath() {},
++        moveTo() {}, lineTo() {}, arc() {}, fill() {}, stroke() {}, fillText() {},
++        setLineDash() {}, setTransform() {}, drawImage() {}, save() {}, restore() {}, scale() {},
++        createRadialGradient() { return { addColorStop() {} }; },
++        createLinearGradient() { return { addColorStop() {} }; },
++      };
++    }
++    querySelector(sel) { return queryAll(this, sel)[0] || null; }
++    querySelectorAll(sel) { return queryAll(this, sel); }
++  }
++
++  function matches(node, sel) {
++    if (!node || node.tagName === '#TEXT') return false;
++    sel = sel.trim();
++    if (sel.includes(' ')) {
++      const parts = sel.split(/\s+/);
++      if (!matches(node, parts[parts.length - 1])) return false;
++      let cur = node.parentElement;
++      for (let i = parts.length - 2; i >= 0; i--) {
++        while (cur && !matches(cur, parts[i])) cur = cur.parentElement;
++        if (!cur) return false;
++        cur = cur.parentElement;
++      }
++      return true;
++    }
++    let m;
++    if ((m = sel.match(/^([a-z0-9]+)?#([a-zA-Z0-9_-]+)$/))) {
++      return (!m[1] || node.tagName === m[1].toUpperCase()) && node.id === m[2];
++    }
++    if ((m = sel.match(/^([a-z0-9]+)?\.([a-zA-Z0-9_-]+)$/))) {
++      return (!m[1] || node.tagName === m[1].toUpperCase()) && node.classList.contains(m[2]);
++    }
++    if ((m = sel.match(/^([a-z0-9]+)?\[([a-zA-Z0-9_-]+)(?:="([^"]*)")?\]$/))) {
++      if (m[1] && node.tagName !== m[1].toUpperCase()) return false;
++      const v = node.getAttribute(m[2]);
++      return m[3] !== undefined ? v === m[3] : v !== null;
++    }
++    return node.tagName === sel.toUpperCase();
++  }
++
++  function queryAll(root, sel) {
++    const out = [];
++    const groups = sel.split(',').map((s) => s.trim());
++    const walk = (n) => {
++      for (const c of n.children || []) {
++        if (groups.some((g) => matches(c, g))) out.push(c);
++        walk(c);
++      }
++    };
++    walk(root);
++    return out;
++  }
++
++  const doc = {
++    head: null, body: null, documentElement: null, activeElement: null, hidden: false, fullscreenElement: null,
++    createElement(t) { return new FakeNode(t, doc); },
++    querySelector(s) { return queryAll(doc.documentElement, s)[0] || null; },
++    querySelectorAll(s) { return queryAll(doc.documentElement, s); },
++    getElementById(id) { return queryAll(doc.documentElement, '#' + id)[0] || null; },
++    addEventListener() {},
++  };
++  doc.documentElement = new FakeNode('html', doc);
++  doc.head = new FakeNode('head', doc);
++  doc.body = new FakeNode('body', doc);
++  doc.documentElement.append(doc.head, doc.body);
++
++  const stage = new FakeNode('canvas', doc); stage.id = 'stage';
++  const ui = new FakeNode('div', doc); ui.id = 'ui';
++  const top = new FakeNode('header', doc); top.id = 'top';
++  const aboutBtn = new FakeNode('button', doc); aboutBtn.id = 'aboutBtn';
++  top.append(aboutBtn);
++  const invoke = new FakeNode('section', doc); invoke.id = 'invoke';
++  const desireLbl = new FakeNode('label', doc); desireLbl.id = 'desireLabel';
++  const field = new FakeNode('div', doc); field.className = 'field';
++  const desire = new FakeNode('input', doc); desire.id = 'desire';
++  const castBtn = new FakeNode('button', doc); castBtn.id = 'castBtn';
++  field.append(desire, castBtn);
++  const hint = new FakeNode('p', doc); hint.className = 'hint';
++  const err = new FakeNode('p', doc); err.id = 'err';
++  invoke.append(desireLbl, field, hint, err);
++  const reduction = new FakeNode('div', doc); reduction.id = 'reduction';
++  const hud = new FakeNode('section', doc); hud.id = 'hud';
++  const secInfo = new FakeNode('div', doc); secInfo.id = 'secInfo';
++  ['roman', 'name', 'desc'].forEach((c) => { const sp = new FakeNode('span', doc); sp.className = c; secInfo.append(sp); });
++  const center = new FakeNode('div', doc); center.id = 'center';
++  const letters = new FakeNode('div', doc); letters.id = 'letters';
++  const progress = new FakeNode('div', doc); progress.id = 'progress';
++  const fill = new FakeNode('div', doc); fill.className = 'fill'; progress.append(fill);
++  center.append(letters, progress);
++  const right = new FakeNode('div', doc); right.id = 'right';
++  const meta = new FakeNode('div', doc); meta.id = 'meta';
++  const controls = new FakeNode('div', doc); controls.id = 'controls';
++  right.append(meta, controls);
++  hud.append(secInfo, center, right);
++  const toastEl = new FakeNode('div', doc); toastEl.id = 'toast';
++  const about = new FakeNode('div', doc); about.id = 'about';
++  const aboutClose = new FakeNode('button', doc); aboutClose.id = 'aboutClose'; about.append(aboutClose);
++  ui.append(top, invoke, reduction, hud, toastEl, about);
++  doc.body.append(stage, ui);
++
++  const storage = new Map();
++  const rafQueue = [];
++  const flushRaf = () => { const batch = rafQueue.splice(0); batch.forEach((fn) => fn(performance.now())); };
++  const sb = {
++    TextEncoder, btoa, atob, console, performance, Math,
++    document: doc, Node: FakeNode, Event: class {},
++    localStorage: {
++      getItem: (k) => (storage.has(k) ? storage.get(k) : null),
++      setItem: (k, v) => storage.set(k, String(v)),
++      removeItem: (k) => storage.delete(k),
++    },
++    location: { protocol: 'http:', hash: '', href: 'http://localhost/', pathname: '/', search: '' },
++    history: { replaceState() {} },
++    navigator: { hardwareConcurrency: 4 },
++    innerWidth: 1280, innerHeight: 800, devicePixelRatio: 1,
++    requestAnimationFrame: (fn) => { rafQueue.push(fn); return rafQueue.length; },
++    cancelAnimationFrame: () => {},
++    setTimeout: () => 1, clearTimeout: () => {},
++    setInterval: () => 1, clearInterval: () => {},
++    matchMedia: () => ({ matches: false, addEventListener() {} }),
++    addEventListener() {},
++  };
++  sb.window = sb; sb.globalThis = sb; sb.self = sb;
++  const ctx = createContext(sb);
++  for (const f of scriptSrcs) runInContext(readFileSync(join(process.cwd(), f), 'utf8'), ctx, { filename: f });
++  const preflightMatch = html.match(/<script>\s*(\(function preflight\(\)[\s\S]*?)<\/script>/);
++  if (preflightMatch) runInContext(preflightMatch[1], ctx, { filename: 'index.html:preflight' });
++  ok(doc.querySelectorAll('[role="alert"]').length === 0, 'index.html preflight passes with zero missing globals or load errors');
++  flushRaf();
++
++  const isVisible = (node) => {
++    for (let p = node; p; p = p.parentElement) if (p.hidden) return false;
++    return !!node;
++  };
++
++  const stateCube = runInContext(`Sound.engine`, ctx);
++  const cubePane = doc.querySelector('.snd-cube-pane');
++  const arcadePane = doc.querySelector('.snd-arcade-pane');
++  const toolPalette = doc.getElementById('tool-palette');
++  const toolDrums = doc.getElementById('tool-drums');
++  const toolMotion = doc.getElementById('tool-motion');
++
++  ok(stateCube === 'cube', 'default engine is "cube"');
++  ok(isVisible(cubePane) && !isVisible(arcadePane), 'in Cube mode: Cube controls are displayed and Arcade controls are hidden');
++  ok(!toolPalette.hidden && !toolDrums.hidden && !toolMotion.hidden, 'in Cube mode: Palette, Drum Engine, and Motion panels are displayed');
++
++  const arcBtn = doc.querySelector('button[data-engine="arcade"]');
++  arcBtn.click();
++  flushRaf();
++
++  const stateArcade = runInContext(`Sound.engine`, ctx);
++  ok(stateArcade === 'arcade', 'clicking Arcade switches engine to "arcade"');
++  ok(!isVisible(cubePane) && isVisible(arcadePane), 'in Arcade mode: ONLY Arcade controls are displayed and Cube controls are hidden');
++  ok(toolPalette.hidden && toolDrums.hidden && toolMotion.hidden, 'in Arcade mode: Cube-only Palette, Drum Engine, and Motion panels are hidden');
++
++  const visibleSliders = queryAll(doc.getElementById('tool-sound'), '[role="slider"]')
++    .filter((el) => isVisible(el))
++    .map((el) => el.getAttribute('aria-label'));
++  const expectedLabels = [
++    'Tempo', 'Scale density', 'Complexity', 'Swing',
++    'Lead brightness', 'FM depth', 'Pulse width', 'Bass drive',
++    'Drum density', 'Noise decay', 'Arpeggio rate', 'Space',
++  ];
++  ok(JSON.stringify(visibleSliders) === JSON.stringify(expectedLabels),
++    `in Arcade mode: visible parameter controls are strictly the 12 Arcade macros (${visibleSliders.join(', ')})`);
++
++  const cubeBtn = doc.querySelector('button[data-engine="cube"]');
++  cubeBtn.click();
++  flushRaf();
++  ok(runInContext(`Sound.engine`, ctx) === 'cube' && isVisible(cubePane) && !isVisible(arcadePane) && !toolPalette.hidden && !toolDrums.hidden && !toolMotion.hidden,
++    'clicking Cube switches back to "cube" and restores Cube controls while hiding Arcade controls');
++});
++
++console.log(`\n${pass} passed, ${fail} failed`);
++if (fail) process.exit(1);
+diff --git a/tools/voice-lab.mjs b/tools/voice-lab.mjs
+index bc90866..fd04b0b 100644
+--- a/tools/voice-lab.mjs
++++ b/tools/voice-lab.mjs
+@@ -18,7 +18,7 @@
+    const SCORE = ['src/core/00-utils.js', 'src/core/01-crypto.js', 'src/core/02-reduction.js', 'src/core/03-geometry.js',
+      'src/core/04-theory.js', 'src/core/05-composer.js', 'src/core/05b-timbre.js', 'src/core/05k-fills.js', 'src/core/05c-groove.js', 'src/core/05d-motion.js',
+      'src/dsp/sigil-dsp.js', 'src/dsp/sigil-voices.js', 'src/core/05e-master.js', 'src/core/05f-style.js', 'src/core/05g-rite.js',
+-     'src/core/05i-flow.js', 'src/core/05j-palette.js', 'src/core/05h-deliver.js', 'src/core/06b-compiler.js'];
++      'src/core/05i-flow.js', 'src/core/05j-palette.js', 'src/core/05l-arcade.js', 'src/core/05h-deliver.js', 'src/core/06b-compiler.js'];
+    const SCORE_EXTRA = [];
+    
+    /** The sandbox that composes and compiles (slow Math, and that is all right). */

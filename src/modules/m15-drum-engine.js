@@ -394,8 +394,9 @@ const DrumEngine = (() => {
   }
 
   /** Who writes the kit: a style (05f), if the song has one; else the sigil, or (Classic) the composer. */
+  const isArcade = () => hasSound && Sound.engine === 'arcade';
   const styled = (cfg) => !!(cfg && cfg.drums && cfg.drums.feel);
-  const written = (cfg) => S.style === 'sigil' || styled(cfg);
+  const written = (cfg) => !isArcade() && !(cfg && cfg.soundEngine === 'arcade') && (S.style === 'sigil' || styled(cfg));
 
   // Composition: write the part into the score. Classic leaves the composer's bars alone (unless a style plays).
   Hooks.on('score', (events, ctx) => (written(ctx.cfg) ? Groove.score(events, ctx, optionsFor(ctx.sigil, ctx.cfg)) : undefined));
@@ -417,7 +418,7 @@ const DrumEngine = (() => {
    * safe to call on every change. Returns true if the part changed.
    */
   function sync(song = app.song, sigil = app.sigil, replan = true) {
-    if (!song || !sigil || !song.cfg) return false;
+    if (!song || !sigil || !song.cfg || song.cfg.arcade || isArcade()) return false;
     const opts = optionsFor(sigil, song.cfg);
     const want = written(song.cfg) ? Groove.sigOf(opts) : null;
     const have = song.cfg.groove ? song.cfg.groove.sig : null;
@@ -467,7 +468,7 @@ const DrumEngine = (() => {
   /* ── Panel: how the kit plays, and how it moves the music ────────────── */
 
   const pct = (v) => `${Math.round(v * 100)}%`;
-  let styleRow, grooveLbl, grooveInfo, prevBtn, nextBtn, fxRow, duckRow, scRow, secRow, tuneRow, octRow;
+  let det, styleRow, grooveLbl, grooveInfo, prevBtn, nextBtn, fxRow, duckRow, scRow, secRow, tuneRow, octRow;
   const amounts = {};
   const AMOUNTS = [
     ['variation', 'Variation', 'How much each bar answers the one before: extra kicks, flams, side-stick, the shaker’s whispers'],
@@ -495,6 +496,7 @@ const DrumEngine = (() => {
   }
 
   function refresh() {
+    if (det) det.hidden = isArcade();
     if (!duckRow) return;
     const sigil = written(app.song && app.song.cfg);             // the amounts act on any written part, a style's included
     styleRow.input.value = S.style;
@@ -509,7 +511,8 @@ const DrumEngine = (() => {
     octRow.input.value = S.kickOct;
   }
 
-  UI.section({ id: 'drums', title: 'Drum Engine', order: 14, build(el) {
+  UI.section({ id: 'drums', title: 'Drum Engine', order: 14, build(el, d) {
+    det = d;
     UI.css(`.dr-groove{align-items:center}.dr-lbl{flex:1;min-width:6em;text-align:center;font-style:italic;opacity:.7;font-size:12.5px}
       .dr-info{text-align:center;margin-top:-2px}
       .dr-h{font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;opacity:.6;margin:16px 0 4px}`);

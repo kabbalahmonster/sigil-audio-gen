@@ -33,7 +33,7 @@ const PalettePanel = (() => {
 
   /** What the compiler will play with, for the song that is loaded. */
   function current() {
-    if (!app.sigil || !app.song || typeof Palette === 'undefined') return null;
+    if ((hasSound && Sound.engine === 'arcade') || !app.sigil || !app.song || typeof Palette === 'undefined') return null;
     const P = patch();
     return P ? Palette.resolve(app.sigil, app.song.cfg, P) : null;
   }
@@ -104,6 +104,7 @@ const PalettePanel = (() => {
   }
 
   function refresh() {
+    if (det) det.hidden = hasSound && Sound.engine === 'arcade';
     if (!listEl) return;
     deal = current();
     const P = P0(), on = !!deal;

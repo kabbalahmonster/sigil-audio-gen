@@ -25,6 +25,7 @@ const Sound = (() => {
   const VOICE_BUDGET = 34;
   const prefs = {
     mode: Prefs.get('sound.mode', 'sigil'),
+    engine: Prefs.get('sound.engine', 'cube') === 'arcade' ? 'arcade' : 'cube',
     lite: Prefs.get('sound.lite', (navigator.hardwareConcurrency || 4) <= 2),
     lensWave: Prefs.get('sound.lensWave', false),
     vowelMemory: Prefs.get('sound.vowelMemory', true),
@@ -36,6 +37,7 @@ const Sound = (() => {
   let bank = Prefs.get('soundbank', {});
   let library = Prefs.get('soundlib', []);
   const cur = { key: null, variant: 0, o: {}, base: null, P: null, tables: null, mags: null, mut: 0 };
+  const preO = {};
   let pending = null, lastVowel = null, frozen = false, vowelMemory = null;
   const subs = new Set();
   const notify = () => subs.forEach((fn) => { try { fn(); } catch (e) { console.error('[sound:ui]', e); } });
@@ -87,17 +89,24 @@ const Sound = (() => {
 
   function composePatch(sig, variant, overrides) {
     const derived = SD.derive(sig.hash, variant);
+    const arcBase = typeof Arcade !== 'undefined' ? Arcade.derive(sig.hash, variant) : {};
+    const engFlag = prefs.engine === 'arcade' ? 1 : 0;
     // The kit's FX (the D· knobs) are dealt from their own stream, so derive() stays as it was.
     // Then the song dresses the patch: a style's signature, a mood's values, an element's lean (SD.shape).
-    let base = SD.shape({ ...DEFAULTS, ...derived, ...SD.drumFx(sig.hash, variant) }, app.song && app.song.cfg);
+    let base = SD.shape({ ...DEFAULTS, ...arcBase, ...derived, ...SD.drumFx(sig.hash, variant) }, app.song && app.song.cfg);
     // the world the sigil is dealt colours the base (a tape's warmth, an 8-bit crunch, a dream's haze); the knobs the listener has set are laid over it
-    if (typeof Palette !== 'undefined') base = Palette.dress(base, Palette.finish(sig, app.song && app.song.cfg, { ...overrides }), SD.FIELDS);
-    return { base, P: { ...base, ...overrides }, tables: SD.tables(sig, variant) };
+    if (typeof Palette !== 'undefined' && !engFlag) base = Palette.dress(base, Palette.finish(sig, app.song && app.song.cfg, { ...overrides }), SD.FIELDS);
+    return { base, P: { ...base, ...overrides, eng: engFlag }, tables: SD.tables(sig, variant) };
   }
 
   function recompute() {
     const sig = app.sigil;
-    if (!sig) return;
+    if (!sig) {
+      const arcDef = typeof Arcade !== 'undefined' ? Arcade.DEFAULTS : {};
+      cur.base = { ...DEFAULTS, ...arcDef };
+      cur.P = { ...cur.base, ...preO, eng: prefs.engine === 'arcade' ? 1 : 0 };
+      return;
+    }
     const c = composePatch(sig, cur.variant, cur.o);
     cur.base = c.base; cur.P = c.P; cur.tables = c.tables;
     cur.mags = magnitudes(cur.tables, cur.P.wave, cur.P.layer);
@@ -107,15 +116,20 @@ const Sound = (() => {
   function syncFrom(sig) {
     if (!sig) return;
     const key = keyOf(sig);
-    if (key !== cur.key || !cur.P) {
+    if (key !== cur.key || !cur.P || !cur.tables) {
       cur.key = key;
       const e = bank[key] || {};
       cur.variant = e.variant | 0;
-      cur.o = { ...(e.o || {}) };
+      cur.o = { ...(e.o || {}), ...preO };
+      for (const k of Object.keys(preO)) delete preO[k];
+      if (prefs.engine === 'arcade') cur.o.eng = 1; else delete cur.o.eng;
       cur.mut = 0;
+      persist();
     }
     if (pending && pending.key === key) {
       cur.variant = pending.variant; cur.o = { ...pending.o };
+      if (cur.o.eng === 1) { prefs.engine = 'arcade'; Prefs.set('sound.engine', 'arcade'); }
+      else if (cur.o.eng === 0) { prefs.engine = 'cube'; Prefs.set('sound.engine', 'cube'); delete cur.o.eng; }
       pending = null; persist();
     }
     recompute();
@@ -914,6 +928,17 @@ const Sound = (() => {
 
   /** The wheel's waveform: a clean cycle and its crushed version, 128 points each. */
   function ringFor(tb, P) {
+    if (prefs.engine === 'arcade' && typeof Arcade !== 'undefined') {
+      const w = Arcade.wavePreview(P, 128);
+      const crushed = new Float32Array(128);
+      let mx = 1e-9;
+      for (let i = 0; i < 128; i++) {
+        crushed[i] = w.lead[i] * 0.65 + w.bass[i] * 0.35;
+        if (Math.abs(crushed[i]) > mx) mx = Math.abs(crushed[i]);
+      }
+      for (let i = 0; i < 128; i++) crushed[i] /= mx;
+      return { clean: w.lead, crushed };
+    }
     const a = tb.cell(P.wave, P.layer), b = tb.cell(P.wave + P.sweep * 4, P.layer + P.drift * 2.5);
     const N = 128, raw = SD.waveSamples(a, b, 0.5, N), clean = new Float32Array(N);
     let mx = 1e-9;
@@ -983,6 +1008,41 @@ const Sound = (() => {
   Hooks.on('buses', (_b, eng) => attach(eng));
   Hooks.on('voice', voiceHook, 0);
 
+  function overridesOf(sig) {
+    if (!sig) return { ...preO };
+    const key = keyOf(sig);
+    if (pending && pending.key === key) return { ...pending.o };
+    if (key === cur.key && cur.P && cur.tables) return { ...cur.o };
+    return { ...((bank[key] && bank[key].o) || {}), ...preO };
+  }
+
+  Hooks.on('compose', (cfg, sigil) => {
+    if (typeof Arcade === 'undefined') return;
+    const o = overridesOf(sigil);
+    const arcOn = o.eng === 1 || (o.eng === undefined && prefs.engine === 'arcade');
+    if (!arcOn) return;
+    cfg.soundEngine = 'arcade';
+    const d = Arcade.derive(sigil.hash, 0);
+    const moodMul = clamp((cfg.bpm || 86) / 86, 0.65, 1.45);
+    cfg.bpm = Math.round(clamp(o.aTempo != null ? o.aTempo : d.aTempo * moodMul, 60, 220));
+    cfg.master = Object.assign({}, cfg.master || {}, { house: Object.assign({ arp: 1.5 }, (cfg.master && cfg.master.house) || {}) });
+  }, 40);
+
+  Hooks.on('score', (events, ctx) => {
+    if (typeof Arcade === 'undefined' || !ctx.cfg || ctx.cfg.soundEngine !== 'arcade') return undefined;
+    const o = overridesOf(ctx.sigil);
+    return Arcade.score(events, ctx, { ...Arcade.derive(ctx.sigil.hash, 0), ...o, aTempo: ctx.cfg.bpm });
+  }, 30);
+
+  Hooks.on('meta', (parts) => {
+    if (prefs.engine !== 'arcade' || !app.song) return parts;
+    const i = parts.indexOf(TIMBRE_NAMES[app.song.leadTimbre]);
+    const label = 'arcade · 4ch';
+    if (i >= 0) parts[i] = label;
+    else parts.splice(Math.min(2, parts.length), 0, label);
+    return parts;
+  }, 8);
+
   Hooks.on('beforeCast', (ctx) => {
     const seq = [];
     for (const ch of ctx.text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase()) {
@@ -995,12 +1055,15 @@ const Sound = (() => {
   Hooks.on('link', (link) => {
     const d = link.sound ? SD.decodePatch(link.sound) : null;
     pending = d ? { key: link.members.join('+'), ...d } : null;
+    if (d && d.o && d.o.eng === 1) { prefs.engine = 'arcade'; Prefs.set('sound.engine', 'arcade'); Hooks.emit('engineMode', 'arcade'); notify(); }
+    else if (d && d.o && d.o.eng === 0) { prefs.engine = 'cube'; Prefs.set('sound.engine', 'cube'); Hooks.emit('engineMode', 'cube'); notify(); }
     vowelMemory = null;
   });
 
   Hooks.on('shareKey', (key, sig) => {
     if (!sig || keyOf(sig) !== cur.key) return undefined;
-    const code = SD.encodePatch(cur.o, cur.variant);
+    const o = prefs.engine === 'arcade' ? { ...cur.o, eng: 1 } : (() => { const x = { ...cur.o }; delete x.eng; return x; })();
+    const code = SD.encodePatch(o, cur.variant);
     return code ? key + '!' + code : undefined;
   }, 20);
 
@@ -1019,6 +1082,46 @@ const Sound = (() => {
     }
   };
 
+  function setEngine(next) {
+    const eng = next === 'arcade' ? 'arcade' : 'cube';
+    if (eng === prefs.engine && (!app.song || (eng === 'arcade') === !!(app.song.cfg && app.song.cfg.arcade))) {
+      notify();
+      return;
+    }
+    prefs.engine = eng;
+    Prefs.set('sound.engine', eng);
+    if (app.sigil) {
+      if (eng === 'arcade') cur.o.eng = 1; else delete cur.o.eng;
+      persist();
+    }
+    recompute();
+    refreshEngine();
+    if (app.song && app.sigil && typeof Arcade !== 'undefined') {
+      Arcade.sync(app.song, app.sigil, cur.P, eng === 'arcade');
+      if (eng === 'cube' && typeof DrumEngine !== 'undefined') DrumEngine.sync(app.song, app.sigil, false);
+      const e = app.engine;
+      if (e && e.song === app.song) {
+        e.events = app.song.events;
+        const targetBpm = eng === 'arcade'
+          ? (cur.P.aTempo || app.song.bpm)
+          : (typeof Mixer !== 'undefined' && Mixer.state
+              ? (Mixer.state.lock || Math.round(app.song.bpm * (Mixer.state.tempo || 1)))
+              : app.song.bpm);
+        e.setTempo(clamp(targetBpm, 40, 240));
+        SigilPlan.replan(e);
+        SigilPlan.sendReverb(e, app.sigil);
+      }
+      if (typeof renderMeta === 'function') renderMeta();
+      if (app.mode === 'playing' && typeof shareKey === 'function') {
+        history.replaceState(null, '', '#' + shareKey());
+      }
+    }
+    Hooks.emit('engineMode', eng);
+    notify();
+  }
+
+  recompute();
+
   const api = {
     SD, prepare, attach, noteOn, live,
     paramsAt(eng, beat) {
@@ -1028,7 +1131,7 @@ const Sound = (() => {
     },
     recentNotes: () => notes,
     setMany(obj) {
-      if (!app.sigil) return;
+      if (!app.sigil) { Object.assign(preO, obj); recompute(); notify(); return; }
       Object.assign(cur.o, obj);
       persist(); recompute(); refreshEngine(); notify();
     },
@@ -1039,13 +1142,8 @@ const Sound = (() => {
      * else this device's bank. For code that runs at composition time, before attach() has
      * synced the live patch to the new sigil (the drum engine reads `take` this way).
      */
-    overridesFor(sig) {
-      if (!sig) return {};
-      const key = keyOf(sig);
-      if (pending && pending.key === key) return { ...pending.o };
-      if (key === cur.key && cur.P) return { ...cur.o };
-      return { ...((bank[key] && bank[key].o) || {}) };
-    },
+    overridesFor: overridesOf,
+    get engine() { return prefs.engine; },
     get mode() { return prefs.mode; },
     get lite() { return prefs.lite; },
     get keysOn() { return prefs.keys; },
@@ -1058,7 +1156,11 @@ const Sound = (() => {
     lastVowel: () => lastVowel,
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
 
-    setMode(m) { prefs.mode = m; Prefs.set('sound.mode', m); notify(); },
+    setEngine,
+    setMode(m) {
+      if (m === 'arcade' || m === 'cube') { setEngine(m); return; }
+      prefs.mode = m; Prefs.set('sound.mode', m); notify();
+    },
     setLite(v) { prefs.lite = !!v; Prefs.set('sound.lite', prefs.lite); notify(); },
     setLensWave(v) { prefs.lensWave = !!v; Prefs.set('sound.lensWave', prefs.lensWave); notify(); },
     setVowelMemory(v) { prefs.vowelMemory = !!v; Prefs.set('sound.vowelMemory', prefs.vowelMemory); notify(); },
@@ -1077,15 +1179,50 @@ const Sound = (() => {
     toggleKeys(force) { prefs.keys = force ?? !prefs.keys; notify(); return prefs.keys; },
     toggleFreeze(force) { frozen = force ?? !frozen; notify(); return frozen; },
 
-    set(name, v) { if (!app.sigil) return; cur.o[name] = v; persist(); recompute(); refreshEngine(); notify(); },
+    set(name, v) {
+      if (!app.sigil) { preO[name] = v; recompute(); notify(); return; }
+      cur.o[name] = v; persist(); recompute(); refreshEngine(); notify();
+    },
     /** Return one knob to this sigil's own value (and drop it from the patch code). */
-    unset(name) { if (!app.sigil) return; delete cur.o[name]; persist(); recompute(); refreshEngine(); notify(); },
-    reset() { cur.o = {}; cur.mut = 0; persist(); recompute(); refreshEngine(); notify(); },
+    unset(name) {
+      if (!app.sigil) { delete preO[name]; recompute(); notify(); return; }
+      delete cur.o[name]; persist(); recompute(); refreshEngine(); notify();
+    },
+    reset() {
+      if (!app.sigil) {
+        for (const k of Object.keys(preO)) delete preO[k];
+        recompute(); notify();
+        return;
+      }
+      if (prefs.engine === 'arcade' && typeof Arcade !== 'undefined') {
+        for (const m of Arcade.MACROS) delete cur.o[m.name];
+        cur.o.eng = 1;
+      } else {
+        const arcSaved = {};
+        if (typeof Arcade !== 'undefined') for (const m of Arcade.MACROS) if (cur.o[m.name] !== undefined) arcSaved[m.name] = cur.o[m.name];
+        cur.o = arcSaved;
+      }
+      cur.mut = 0; persist(); recompute(); refreshEngine();
+      if (prefs.engine === 'arcade' && app.engine && app.song === app.engine.song && cur.P) {
+        app.engine.setTempo(cur.P.aTempo || app.song.bpm);
+        if (typeof renderMeta === 'function') renderMeta();
+      }
+      notify();
+    },
     mutate() {
       if (!app.sigil) return;
       cur.mut++;
-      cur.o = SD.mutate(app.sigil.hash, cur.mut, cur.base, cur.o);
-      persist(); recompute(); refreshEngine(); notify();
+      if (prefs.engine === 'arcade' && typeof Arcade !== 'undefined') {
+        cur.o = { ...Arcade.mutate(app.sigil.hash, cur.mut, cur.base, cur.o), eng: 1 };
+      } else {
+        cur.o = SD.mutate(app.sigil.hash, cur.mut, cur.base, cur.o);
+      }
+      persist(); recompute(); refreshEngine();
+      if (prefs.engine === 'arcade' && app.engine && app.song === app.engine.song && cur.P) {
+        app.engine.setTempo(cur.P.aTempo || app.song.bpm);
+        if (typeof renderMeta === 'function') renderMeta();
+      }
+      notify();
     },
     dream(delta) {
       if (!app.sigil) return;

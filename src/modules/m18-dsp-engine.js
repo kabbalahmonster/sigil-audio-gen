@@ -20,21 +20,32 @@ const DspEngine = (() => {
 
   /* ── Sound patch → engine ───────────────────────────────────────────── */
   const PLAN_KEYS = ['drumX', 'drumY', 'kSub', 'kPunch', 'kDecay', 'kTone', 'sBody', 'sSnap', 'sTone', 'hTone', 'hDecay',
-    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc'];     // (the palette's choices are baked into the rows)
+    'pal', 'palOff', 'iLead', 'iAlt', 'iHarm', 'iBell', 'iBass', 'iArp', 'iPad', 'iDrone', 'iComp', 'iPerc',
+    'eng', 'aScale', 'aComplex', 'aSwing', 'aDrum', 'aArp'];
   const planNow = () => {
     const st = Sound.state();
-    return st.P ? PLAN_KEYS.map((k) => st.P[k]).join(',') + `|${Sound.vowelMemoryOn}|${st.variant}` : '';
+    return st.P ? PLAN_KEYS.map((k) => st.P[k]).join(',') + `|${Sound.vowelMemoryOn}|${st.variant}|${Sound.engine}` : '';
   };
-  const verbNow = () => { const P = Sound.state().P || {}; return `${Sound.sigilVerbOn}|${Sound.state().variant}|${P.pal | 0}|${P.palOff | 0}|${[P.iLead, P.iAlt, P.iHarm, P.iBell, P.iBass, P.iArp, P.iPad, P.iDrone, P.iComp, P.iPerc].join(',')}`; };
+  const verbNow = () => {
+    const P = Sound.state().P || {};
+    return `${Sound.engine}|${P.aSpace ?? ''}|${Sound.sigilVerbOn}|${Sound.state().variant}|${P.pal | 0}|${P.palOff | 0}|${[P.iLead, P.iAlt, P.iHarm, P.iBell, P.iBass, P.iArp, P.iPad, P.iDrone, P.iComp, P.iPerc].join(',')}`;
+  };
   let planSig = '', verbSig = '', planT = 0;
 
   function onSound() {
-    const e = live();
-    if (!e || !Sound.state().P) return;
+    const e = live(), st = Sound.state();
+    if (!e || !st.P) return;
+    if (Sound.engine === 'arcade' && typeof Arcade !== 'undefined') {
+      if (Arcade.sync(app.song, app.sigil, st.P, true)) e.events = app.song.events;
+      if (st.P.aTempo && Math.abs(60 / e.spb - st.P.aTempo) >= 0.5) {
+        e.setTempo(st.P.aTempo);
+        if (typeof renderMeta === 'function') renderMeta();
+      }
+    }
     SigilPlan.refreshSections(e);                                   // instant knobs
-    e.setParams({ waveOff: SigilPlan.waveOffset(), voices: Sound.lite ? Math.min(28, Engine.voiceBudget()) : Engine.voiceBudget() });
+    e.setParams({ waveOff: SigilPlan.waveOffset(), voices: Sound.lite && Sound.engine !== 'arcade' ? Math.min(28, Engine.voiceBudget()) : Engine.voiceBudget() });
     const ps = planNow();
-    if (ps !== planSig) { planSig = ps; clearTimeout(planT); planT = setTimeout(() => SigilPlan.replan(live()), 150); }
+    if (ps !== planSig) { planSig = ps; clearTimeout(planT); planT = setTimeout(() => SigilPlan.replan(live()), Sound.engine === 'arcade' ? 75 : 150); }
     const vs = verbNow();
     if (vs !== verbSig) { verbSig = vs; SigilPlan.sendReverb(e, app.sigil); }
   }
